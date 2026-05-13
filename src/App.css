@@ -1,0 +1,150 @@
+/* ── Tailwind v4 ─────────────────────────────────────────────────────── */
+@import "tailwindcss";
+
+/* ── Design Tokens ───────────────────────────────────────────────────── */
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  /* Accent palette — electric cyan/teal */
+  --color-accent-50:  oklch(0.97 0.02 180);
+  --color-accent-100: oklch(0.92 0.04 180);
+  --color-accent-200: oklch(0.85 0.08 180);
+  --color-accent-300: oklch(0.76 0.12 180);
+  --color-accent-400: oklch(0.68 0.16 180);
+  --color-accent-500: oklch(0.60 0.18 180);
+  --color-accent-600: oklch(0.50 0.16 180);
+  --color-accent-700: oklch(0.42 0.12 180);
+
+  /* Danger palette — vivid rose/red */
+  --color-danger-400: oklch(0.68 0.19 15);
+  --color-danger-500: oklch(0.60 0.22 15);
+  --color-danger-600: oklch(0.50 0.20 15);
+
+  /* Surface layers */
+  --color-surface-0:   #09090b;
+  --color-surface-50:  #18181b;
+  --color-surface-100: #27272a;
+  --color-surface-200: #3f3f46;
+}
+
+/* ── Base resets ─────────────────────────────────────────────────────── */
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--color-surface-0);
+  color: #e4e4e7;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Scrollbar styling ───────────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #3f3f46;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #52525b;
+}
+
+/* ── Glow keyframes ──────────────────────────────────────────────────── */
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 20px oklch(0.60 0.18 180 / 0.15); }
+  50%      { box-shadow: 0 0 40px oklch(0.60 0.18 180 / 0.30); }
+}
+@keyframes scan-sweep {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+@keyframes fade-in-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes toast-in {
+  from { opacity: 0; transform: translateX(100%); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+@keyframes toast-out {
+  from { opacity: 1; transform: translateX(0); }
+  to   { opacity: 0; transform: translateX(100%); }
+}
+
+/* ── Utility classes ─────────────────────────────────────────────────── */
+.animate-pulse-glow {
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+.animate-fade-in-up {
+  animation: fade-in-up 0.4s ease-out both;
+}
+.animate-toast-in {
+  animation: toast-in 0.3s ease-out both;
+}
+.animate-toast-out {
+  animation: toast-out 0.25s ease-in both;
+}
+
+/* Scan progress shimmer */
+.scan-shimmer {
+  position: relative;
+  overflow: hidden;
+}
+.scan-shimmer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    oklch(0.60 0.18 180 / 0.08) 50%,
+    transparent 100%
+  );
+  animation: scan-sweep 1.5s ease-in-out infinite;
+}
+
+/* Glass card effect */
+.glass-card {
+  background: linear-gradient(
+    145deg,
+    oklch(0.20 0.005 240 / 0.80),
+    oklch(0.14 0.005 240 / 0.60)
+  );
+  backdrop-filter: blur(12px);
+  border: 1px solid oklch(1 0 0 / 0.06);
+}
+
+/* File row hover */
+.file-row {
+  transition: background-color 0.15s ease, transform 0.15s ease;
+}
+.file-row:hover {
+  background-color: oklch(1 0 0 / 0.04);
+}
+
+/* Size bar animation */
+.size-bar-inner {
+  transition: width 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* Nuke button glow */
+.btn-nuke {
+  transition: all 0.2s ease;
+}
+.btn-nuke:hover {
+  box-shadow: 0 0 16px oklch(0.60 0.22 15 / 0.4);
+  transform: scale(1.05);
+}
