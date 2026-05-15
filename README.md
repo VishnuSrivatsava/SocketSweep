@@ -3,7 +3,7 @@
   <h1>SocketSweep</h1>
   <p><strong>A high-performance Android storage analyzer built to completely bypass the agonizingly slow USB MTP.</strong></p>
   
-  <img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT" />
+  <img src="https://img.shields.io/badge/License-GPL_3.0-blue.svg" alt="License: GPL 3.0" />
   <img src="https://img.shields.io/badge/Tauri-v2-FFC131.svg?logo=tauri&logoColor=white" alt="Tauri v2" />
   <img src="https://img.shields.io/badge/React-19-61DAFB.svg?logo=react&logoColor=black" alt="React 19" />
   <img src="https://img.shields.io/badge/C%2B%2B-17-00599C.svg?logo=c%2B%2B&logoColor=white" alt="C++17" />
@@ -137,3 +137,9 @@ If your device still refuses to scan `/sdcard`, ensure that you haven't blocked 
 
 ### Daemon Fails to Start
 If the daemon is killed immediately or throws `Permission denied`, ensure it is being executed from `/data/local/tmp/`. Modern Android versions prevent executing binaries stored directly on the `/sdcard/`. SocketSweep handles this automatically by pushing to `/data/local/tmp/socketsweep_daemon`.
+
+---
+
+## 📄 License
+
+SocketSweep is released under the **GNU General Public License v3.0**. See the [LICENSE](LICENSE) file for more details.

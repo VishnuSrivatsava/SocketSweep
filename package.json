@@ -2,6 +2,7 @@
   "name": "socketsweep",
   "private": true,
   "version": "1.0.0",
+  "license": "GPL-3.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
