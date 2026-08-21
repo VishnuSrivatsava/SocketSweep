@@ -28,6 +28,9 @@ const TCP_READ_TIMEOUT: Duration = Duration::from_secs(120); // scans can be slo
 /// Tracks the root path of the last successful scan so we can prevent its deletion.
 static SCAN_ROOT: Mutex<Option<String>> = Mutex::new(None);
 
+/// Tracks the serial of the connected device so all ADB calls target the right device.
+static DEVICE_SERIAL: Mutex<Option<String>> = Mutex::new(None);
+
 // ── Resource Resolution ─────────────────────────────────────────────────────
 
 use tauri::Manager;
@@ -126,6 +129,19 @@ fn adb(adb_path: &std::path::Path, args: &[&str]) -> Result<String, String> {
     Ok(stdout)
 }
 
+/// Run an ADB command targeting the stored device serial (if any).
+/// Prepends `-s <serial>` when a device serial is known.
+fn adb_s(adb_path: &std::path::Path, args: &[&str]) -> Result<String, String> {
+    if let Ok(guard) = DEVICE_SERIAL.lock() {
+        if let Some(ref serial) = *guard {
+            let mut full_args = vec!["-s", serial.as_str()];
+            full_args.extend_from_slice(args);
+            return adb(adb_path, &full_args);
+        }
+    }
+    adb(adb_path, args)
+}
+
 // ── TCP helper ──────────────────────────────────────────────────────────────
 
 /// Send a one-line command to the daemon and read the full response.
@@ -176,39 +192,51 @@ fn init_daemon(app: tauri::AppHandle) -> Result<String, String> {
     // 1 — Verify ADB is reachable and a device is connected.
     adb(&adb_path, &["version"])?;
     let devices = adb(&adb_path, &["devices"])?;
-    let connected = devices
+    let device_line = devices
         .lines()
-        .filter(|l| l.contains("device") && !l.starts_with("List"))
-        .count();
-    if connected == 0 {
-        return Err(
-            "No Android device detected. Connect your phone via USB and enable USB Debugging.".into(),
-        );
+        .find(|l| l.ends_with("\tdevice") && !l.starts_with("List"));
+
+    let serial = match device_line {
+        Some(line) => line.split('\t').next().unwrap_or("").trim().to_string(),
+        None => {
+            // Check for unauthorized devices to give a better error.
+            if devices.lines().any(|l| l.contains("unauthorized")) {
+                return Err("USB Debugging not authorised. Check the confirmation dialog on your phone.".into());
+            }
+            return Err(
+                "No Android device detected. Connect your phone via USB and enable USB Debugging.".into(),
+            );
+        }
+    };
+
+    // Store the serial so all subsequent ADB calls (including stop_daemon) target this device.
+    if let Ok(mut guard) = DEVICE_SERIAL.lock() {
+        *guard = Some(serial);
     }
 
     // 2 — Kill any zombie daemon before we push/start.
-    let _ = adb(&adb_path, &["shell", "pkill -f socketsweep_daemon || true"]);
+    let _ = adb_s(&adb_path, &["shell", "pkill -f '[s]ocketsweep_daemon' || true"]);
 
     // 2.5 — Automate MANAGE_EXTERNAL_STORAGE permission for the shell user.
-    let _ = adb(&adb_path, &["shell", "appops set com.android.shell MANAGE_EXTERNAL_STORAGE allow"]);
+    let _ = adb_s(&adb_path, &["shell", "appops set com.android.shell MANAGE_EXTERNAL_STORAGE allow"]);
 
     // 4 — Push binary to device.
-    adb(&adb_path, &["push", &daemon_src.to_string_lossy(), DEVICE_BIN_PATH])?;
+    adb_s(&adb_path, &["push", &daemon_src.to_string_lossy(), DEVICE_BIN_PATH])?;
 
     // 5 — Make it executable.
-    adb(&adb_path, &["shell", "chmod", "+x", DEVICE_BIN_PATH])?;
+    adb_s(&adb_path, &["shell", "chmod", "+x", DEVICE_BIN_PATH])?;
 
     // 5 — Kill any previously running instance (ignore errors).
-    let _ = adb(&adb_path, &["shell", "pkill", "-f", "socketsweep_daemon"]);
+    let _ = adb_s(&adb_path, &["shell", "pkill", "-f", "'[s]ocketsweep_daemon'"]);
     std::thread::sleep(Duration::from_millis(300));
 
     // 6 — Start the daemon in the background on the device.
     let start_cmd = format!("nohup {DEVICE_BIN_PATH} > /dev/null 2>&1 & echo $!; exit");
-    let pid_output = adb(&adb_path, &["shell", &start_cmd])?;
+    let pid_output = adb_s(&adb_path, &["shell", &start_cmd])?;
     let pid = pid_output.trim().to_string();
 
     // 7 — Set up the USB TCP tunnel.
-    adb(&adb_path, &["forward", &format!("tcp:{DAEMON_PORT}"), &format!("tcp:{DAEMON_PORT}")])?;
+    adb_s(&adb_path, &["forward", &format!("tcp:{DAEMON_PORT}"), &format!("tcp:{DAEMON_PORT}")])?;
 
     // 8 — Ping-Retry loop.
     let mut pong = String::new();
@@ -260,8 +288,8 @@ fn ping_daemon() -> Result<String, String> {
 fn stop_daemon(app: tauri::AppHandle) -> Result<String, String> {
     let adb_path = get_bundled_binary(&app, "adb")?;
     let response = daemon_command("SHUTDOWN").unwrap_or_else(|_| "daemon already stopped".into());
-    let _ = adb(&adb_path, &["forward", "--remove", &format!("tcp:{DAEMON_PORT}")]);
-    let _ = adb(&adb_path, &["shell", "rm", DEVICE_BIN_PATH]);
+    let _ = adb_s(&adb_path, &["forward", "--remove", &format!("tcp:{DAEMON_PORT}")]);
+    let _ = adb_s(&adb_path, &["shell", "rm", DEVICE_BIN_PATH]);
     Ok(response)
 }
 

@@ -34,6 +34,37 @@ namespace cfg {
 // ── Globals ─────────────────────────────────────────────────────────────────
 static volatile sig_atomic_t g_running = 1;
 static void on_signal(int) { g_running = 0; }
+static std::string g_scan_root;  // tracks the active scan root for delete validation
+
+// ── Delete path validation ──────────────────────────────────────────────────
+
+/// Returns true if `target` is strictly inside `root` (component-wise).
+/// Rejects: the root itself, paths that escape via "..", and non-existent paths.
+static bool path_is_safe_to_delete(const std::string& target, const std::string& root) {
+    if (target.empty() || root.empty()) return false;
+
+    // Canonicalize both paths to resolve "..", symlinks, etc.
+    char* real_target = ::realpath(target.c_str(), nullptr);
+    char* real_root   = ::realpath(root.c_str(), nullptr);
+    if (!real_target || !real_root) {
+        free(real_target);
+        free(real_root);
+        return false;
+    }
+
+    std::string rt(real_target);
+    std::string rr(real_root);
+    free(real_target);
+    free(real_root);
+
+    // Target must not be the root itself.
+    if (rt == rr) return false;
+
+    // Target must start with root + "/" (component-wise, not just prefix).
+    // This prevents /sdcard/Down from matching /sdcard/Downloads.
+    if (rr.back() != '/') rr += '/';
+    return rt.size() > rr.size() && rt.compare(0, rr.size(), rr) == 0;
+}
 
 // ── Network & Streaming Helpers ─────────────────────────────────────────────
 class JsonStream {
@@ -242,16 +273,24 @@ static void handle_client(int fd) {
     }
     else if (cmd.rfind("DELETE ", 0) == 0) {
         std::string target = trim(cmd.substr(7));
-        std::error_code ec;
-        std::uintmax_t removed = std::filesystem::remove_all(target, ec);
-        if (ec) {
-            out.write("{\"status\":\"error\",\"message\":\"");
-            json_escape_into(out, ec.message());
-            out.write("\"}\n");
+
+        // Server-side delete guard: validate target is strictly inside the scan root.
+        if (g_scan_root.empty()) {
+            out.write("{\"status\":\"error\",\"message\":\"No scan performed yet — cannot validate delete target\"}\n");
+        } else if (!path_is_safe_to_delete(target, g_scan_root)) {
+            out.write("{\"status\":\"error\",\"message\":\"Delete rejected: path is outside scan root or equals scan root\"}\n");
         } else {
-            out.write("{\"status\":\"ok\",\"message\":\"Deleted ");
-            out.write(std::to_string(removed));
-            out.write(" items\"}\n");
+            std::error_code ec;
+            std::uintmax_t removed = std::filesystem::remove_all(target, ec);
+            if (ec) {
+                out.write("{\"status\":\"error\",\"message\":\"");
+                json_escape_into(out, ec.message());
+                out.write("\"}\n");
+            } else {
+                out.write("{\"status\":\"ok\",\"message\":\"Deleted ");
+                out.write(std::to_string(removed));
+                out.write(" items\"}\n");
+            }
         }
     }
     else if (cmd.rfind("SCAN", 0) == 0) {
@@ -268,6 +307,7 @@ static void handle_client(int fd) {
             root_name = root.substr(pos + 1);
 
         std::fprintf(stderr, "[engine] SCAN \"%s\" ...\n", root.c_str());
+        g_scan_root = root;  // store for delete validation
 
         auto t0 = std::chrono::steady_clock::now();
         ScanStats stats{};
