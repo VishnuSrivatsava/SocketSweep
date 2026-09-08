@@ -176,7 +176,7 @@ fn daemon_command(cmd: &str) -> Result<String, String> {
 
 // ── Tauri Commands ──────────────────────────────────────────────────────────
 
-#[tauri::command]
+#[tauri::command(async)]
 fn check_adb(app: tauri::AppHandle) -> Result<String, String> {
     let adb_path = get_bundled_binary(&app, "adb")?;
     let version = adb(&adb_path, &["version"])?;
@@ -184,7 +184,7 @@ fn check_adb(app: tauri::AppHandle) -> Result<String, String> {
     Ok(first_line)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn init_daemon(app: tauri::AppHandle) -> Result<String, String> {
     let adb_path = get_bundled_binary(&app, "adb")?;
     let daemon_src = get_bundled_binary(&app, "daemon")?;
@@ -262,7 +262,7 @@ fn init_daemon(app: tauri::AppHandle) -> Result<String, String> {
     ))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn run_scan(path: Option<String>) -> Result<String, String> {
     let effective_root = match path {
         Some(ref p) if !p.is_empty() => p.clone(),
