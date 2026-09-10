@@ -221,6 +221,13 @@ If scanning still shows nothing, check if your OEM requires extra toggles (e.g.,
 ### Samsung Auto Blocker
 If you're on a Samsung device and USB Debugging is greyed out, you probably have **Auto Blocker** enabled. Go to **Settings → Security → Auto Blocker** and turn it off. Auto Blocker disables USB Debugging entirely, so no ADB-based tool (including SocketSweep) will work with it on. It's off by default — you'd only have this issue if you manually turned it on.
 
+### AppImage Fails to Launch on Arch Linux (Wayland)
+If the AppImage crashes or fails to start on Arch Linux under a Wayland session, launch it with the Wayland client library preloaded:
+```bash
+LD_PRELOAD=/usr/lib/libwayland-client.so ./SocketSweep.AppImage
+```
+See [this issue](https://github.com/gitbutlerapp/gitbutler/issues/5282#issuecomment-3598600651) for more context.
+
 ### Daemon Fails to Start
 If you get `Permission denied`, make sure the daemon is being pushed to `/data/local/tmp/`. Modern Android blocks execution from `/sdcard/`. SocketSweep handles this automatically.
 
