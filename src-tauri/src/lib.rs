@@ -284,7 +284,7 @@ fn ping_daemon() -> Result<String, String> {
     daemon_command("PING")
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn stop_daemon(app: tauri::AppHandle) -> Result<String, String> {
     let adb_path = get_bundled_binary(&app, "adb")?;
     let response = daemon_command("SHUTDOWN").unwrap_or_else(|_| "daemon already stopped".into());
@@ -293,7 +293,7 @@ fn stop_daemon(app: tauri::AppHandle) -> Result<String, String> {
     Ok(response)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn delete_item(path: String) -> Result<String, String> {
     // Prevent deletion of the scan root directory.
     if let Ok(root) = SCAN_ROOT.lock() {
