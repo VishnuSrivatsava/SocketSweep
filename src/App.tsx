@@ -20,8 +20,21 @@ interface ScanResponse {
   total_dirs: number;
   total_size: number;
   errors: number;
+  /** Per-phase timings from daemon v1.2+ (issue #3); absent in older daemons. */
+  traverse_ms?: number;
+  sort_ms?: number;
+  serialize_ms?: number;
+  send_ms?: number;
+  bytes_sent?: number;
   tree: FileNode;
 }
+
+/** One-line phase breakdown for the terminal log; null if the daemon predates #3. */
+const scanPhaseLog = (r: ScanResponse): string | null => {
+  if (r.traverse_ms === undefined) return null;
+  const kb = r.bytes_sent !== undefined ? `, ${(r.bytes_sent / 1024).toFixed(0)} KB sent` : "";
+  return `[SCAN] Phases: traverse ${r.traverse_ms}ms · sort ${r.sort_ms}ms · serialize ${r.serialize_ms}ms · send ${r.send_ms}ms${kb}`;
+};
 
 interface Toast {
   id: number;
@@ -709,6 +722,8 @@ function App() {
       setScanData(parsed);
       setPhase("result");
       addLog(`[SCAN] Complete! ${parsed.total_files} files, ${parsed.scan_time_ms}ms.`);
+      const phases = scanPhaseLog(parsed);
+      if (phases) addLog(phases);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       pushToast(message, "error");
@@ -728,6 +743,8 @@ function App() {
       setScanData(parsed);
       setPhase("result");
       addLog(`[SCAN] Complete! ${parsed.scan_time_ms}ms.`);
+      const phases = scanPhaseLog(parsed);
+      if (phases) addLog(phases);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       pushToast(message, "error");
