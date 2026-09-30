@@ -41,8 +41,7 @@ jobs:
             librsvg2-dev \
             libxdo-dev \
             libssl-dev \
-            patchelf \
-            squashfs-tools
+            patchelf
 
       # ── Toolchain setup ───────────────────────────────────────────────────
       # Rust is pre-installed on all GitHub Actions runners (ubuntu, windows,
@@ -231,7 +230,18 @@ jobs:
             find "$APPDIR/apprun-hooks" -type f -exec chmod 755 {} +
           fi
           find "$APPDIR/usr/bin" "$APPDIR/usr/lib" -type f -exec chmod 755 {} +
-          echo "post-chmod modes: $(stat -c '%a' "$APPDIR") AppDir, $(stat -c '%a' "$APPDIR/usr") usr/, $(stat -c '%a' "$APPDIR/AppRun") AppRun"
+
+          # Assert the modes we control on-disk before packing. mksquashfs
+          # stores disk modes verbatim, so these are what the image carries.
+          assert_mode() { [ "$(stat -c '%a' "$2")" = "$1" ] || { echo "::error::$2 mode is $(stat -c '%a' "$2"), expected $1"; exit 1; }; }
+          assert_mode 755 "$APPDIR"
+          assert_mode 755 "$APPDIR/usr"
+          assert_mode 755 "$APPDIR/AppRun"
+          if [ -e "$APPDIR/AppRun.wrapped" ]; then
+            assert_mode 755 "$APPDIR/AppRun.wrapped"
+          fi
+          assert_mode 755 "$APPDIR/usr/lib/SocketSweep/bin/adb"
+          assert_mode 755 "$APPDIR/usr/lib/SocketSweep/bin/daemon"
 
           # Download appimagetool for repacking — pinned to 1.9.1 and
           # checksum-verified (GitHub "continuous" builds are unpinned, and
@@ -249,25 +259,19 @@ jobs:
           # .DirIcon (and the root .desktop, when present) must resolve —
           # test -e follows symlinks, so dangling ones fail here in CI
           # instead of in the catalog PR.
-          # Verify the repacked image. Stored-mode checks use `unsquashfs -ll`
-          # (reads the squashfs metadata directly — umask-proof). Do NOT assert
-          # modes on a runtime --appimage-extract tree: the extractor applies
-          # the shell umask to mkdir'd directories, which false-fails on dirs.
-          STORED_LL=$(unsquashfs -ll "$APPIMAGE" 2>/dev/null)
-          stored_mode() { awk -v n="$1" '$NF == n || $NF ~ ("/" n "$") {print $1; exit}' <<<"$STORED_LL"; }
-          [ "$(stored_mode AppRun)" = "-rwxr-xr-x" ] || { echo "::error::stored AppRun mode: '$(stored_mode AppRun)'"; exit 1; }
-          if [ -n "$(stored_mode AppRun.wrapped)" ]; then
-            [ "$(stored_mode AppRun.wrapped)" = "-rwxr-xr-x" ] || { echo "::error::stored AppRun.wrapped mode: '$(stored_mode AppRun.wrapped)'"; exit 1; }
-          fi
-          [ "$(stored_mode usr)" = "drwxr-xr-x" ] || { echo "::error::stored usr/ mode: '$(stored_mode usr)'"; exit 1; }
-          [ "$(stored_mode usr/lib/SocketSweep/bin/adb)" = "-rwxr-xr-x" ] || { echo "::error::stored adb mode: '$(stored_mode usr/lib/SocketSweep/bin/adb)'"; exit 1; }
-          [ "$(stored_mode usr/lib/SocketSweep/bin/daemon)" = "-rwxr-xr-x" ] || { echo "::error::stored daemon mode: '$(stored_mode usr/lib/SocketSweep/bin/daemon)'"; exit 1; }
-          echo "stored modes OK: $(stored_mode AppRun) AppRun, $(stored_mode usr) usr/"
-
+          # Verify the packed image by re-extracting with umask 0000: the
+          # runtime extractor mkdir()s directories with the shell umask
+          # applied, so a default umask would corrupt directory modes and
+          # false-fail this check (unsquashfs -ll cannot read AppImages
+          # directly — the squashfs sits behind the ELF runtime prefix).
+          # With umask 0000 extracted modes equal stored modes — what
+          # mounts (firejail, desktop integration) actually see.
           rm -rf squashfs-root
-          "$APPIMAGE" --appimage-extract >/dev/null
+          (umask 0000; "$APPIMAGE" --appimage-extract >/dev/null)
           [ -e "$APPDIR/.DirIcon" ] || { echo "::error::.DirIcon is dangling after repack"; exit 1; }
           echo ".DirIcon -> $(readlink "$APPDIR/.DirIcon") (resolves OK)"
+          assert_mode 755 "$APPDIR/usr"
+          assert_mode 755 "$APPDIR/AppRun"
           DESKTOP=$(find "$APPDIR" -maxdepth 1 -name "*.desktop" | head -1)
           if [ -n "$DESKTOP" ] && [ ! -e "$DESKTOP" ]; then
             echo "::error::Root .desktop symlink is dangling after repack"
