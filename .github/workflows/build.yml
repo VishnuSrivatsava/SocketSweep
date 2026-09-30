@@ -13,7 +13,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          # Linux builds on the oldest still-supported Ubuntu LTS so the
+          # bundled glibc requirement stays low (2.35 on jammy) and the
+          # AppImage runs on older distributions — required by the AppImage
+          # catalog ("error-glibc-too-new" otherwise).
+          - os: ubuntu-22.04
             platform: linux
             adb_url: https://dl.google.com/android/repository/platform-tools-latest-linux.zip
           - os: macos-latest
