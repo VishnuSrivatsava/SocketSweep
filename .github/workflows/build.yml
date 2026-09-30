@@ -41,7 +41,8 @@ jobs:
             librsvg2-dev \
             libxdo-dev \
             libssl-dev \
-            patchelf
+            patchelf \
+            squashfs-tools
 
       # ── Toolchain setup ───────────────────────────────────────────────────
       # Rust is pre-installed on all GitHub Actions runners (ubuntu, windows,
@@ -168,17 +169,15 @@ jobs:
       - name: Build Tauri app
         run: npm run tauri build
 
-      # ── Fix AppImage: guarantee root icon + .DirIcon (Linux only) ─────────
-      # Safety net for the AppImage catalog's validation. tauri-bundler >= 2.9.4
-      # already creates .DirIcon and the root .desktop file as relative symlinks
-      # (before that they were absolute symlinks, which dangle inside the mounted
-      # image and read as "missing"), but it places NO .png at the AppDir root —
-      # icons live under usr/share/icons/hicolor/. So the fallback below is the
-      # branch that normally runs: it copies a root icon named to match
-      # Icon=SocketSweep in the desktop file, as the AppDir spec requires.
-      # We extract, guarantee the spec-required root entries, repack with a
-      # pinned checksum-verified appimagetool, and re-verify with the same
-      # dangling-symlink check the catalog CI runs.
+      # ── Fix AppImage: guarantee root icon + .DirIcon + sane modes ─────────
+      # Required for AppImage catalog validation. tauri-bundler 2.11.1 emits a
+      # .DirIcon whose target is an ABSOLUTE path into the build machine
+      # (dangling everywhere else — the .desktop symlink IS relative since
+      # bundler 2.9.4, but .DirIcon is not fixed), and its AppDir carries
+      # root-only directory modes (0700 dirs, 0770 AppRun.wrapped) that make
+      # the packed image unexecutable for non-root users. We extract, fix the
+      # root icon + .DirIcon + permissions, repack with a pinned
+      # checksum-verified appimagetool, and verify the stored squashfs modes.
       - name: Fix AppImage - inject .DirIcon
         if: runner.os == 'Linux'
         run: |
@@ -232,6 +231,7 @@ jobs:
             find "$APPDIR/apprun-hooks" -type f -exec chmod 755 {} +
           fi
           find "$APPDIR/usr/bin" "$APPDIR/usr/lib" -type f -exec chmod 755 {} +
+          echo "post-chmod modes: $(stat -c '%a' "$APPDIR") AppDir, $(stat -c '%a' "$APPDIR/usr") usr/, $(stat -c '%a' "$APPDIR/AppRun") AppRun"
 
           # Download appimagetool for repacking — pinned to 1.9.1 and
           # checksum-verified (GitHub "continuous" builds are unpinned, and
@@ -249,15 +249,25 @@ jobs:
           # .DirIcon (and the root .desktop, when present) must resolve —
           # test -e follows symlinks, so dangling ones fail here in CI
           # instead of in the catalog PR.
+          # Verify the repacked image. Stored-mode checks use `unsquashfs -ll`
+          # (reads the squashfs metadata directly — umask-proof). Do NOT assert
+          # modes on a runtime --appimage-extract tree: the extractor applies
+          # the shell umask to mkdir'd directories, which false-fails on dirs.
+          STORED_LL=$(unsquashfs -ll "$APPIMAGE" 2>/dev/null)
+          stored_mode() { awk -v n="$1" '$NF == n || $NF ~ ("/" n "$") {print $1; exit}' <<<"$STORED_LL"; }
+          [ "$(stored_mode AppRun)" = "-rwxr-xr-x" ] || { echo "::error::stored AppRun mode: '$(stored_mode AppRun)'"; exit 1; }
+          if [ -n "$(stored_mode AppRun.wrapped)" ]; then
+            [ "$(stored_mode AppRun.wrapped)" = "-rwxr-xr-x" ] || { echo "::error::stored AppRun.wrapped mode: '$(stored_mode AppRun.wrapped)'"; exit 1; }
+          fi
+          [ "$(stored_mode usr)" = "drwxr-xr-x" ] || { echo "::error::stored usr/ mode: '$(stored_mode usr)'"; exit 1; }
+          [ "$(stored_mode usr/lib/SocketSweep/bin/adb)" = "-rwxr-xr-x" ] || { echo "::error::stored adb mode: '$(stored_mode usr/lib/SocketSweep/bin/adb)'"; exit 1; }
+          [ "$(stored_mode usr/lib/SocketSweep/bin/daemon)" = "-rwxr-xr-x" ] || { echo "::error::stored daemon mode: '$(stored_mode usr/lib/SocketSweep/bin/daemon)'"; exit 1; }
+          echo "stored modes OK: $(stored_mode AppRun) AppRun, $(stored_mode usr) usr/"
+
           rm -rf squashfs-root
           "$APPIMAGE" --appimage-extract >/dev/null
           [ -e "$APPDIR/.DirIcon" ] || { echo "::error::.DirIcon is dangling after repack"; exit 1; }
           echo ".DirIcon -> $(readlink "$APPDIR/.DirIcon") (resolves OK)"
-          [ "$(stat -c '%a' "$APPDIR/AppRun")" = 755 ] || { echo "::error::AppRun not 755 after repack"; exit 1; }
-          if [ -e "$APPDIR/AppRun.wrapped" ]; then
-            [ "$(stat -c '%a' "$APPDIR/AppRun.wrapped")" = 755 ] || { echo "::error::AppRun.wrapped not 755 after repack"; exit 1; }
-          fi
-          [ "$(stat -c '%a' "$APPDIR/usr")" = 755 ] || { echo "::error::usr/ not traversable (755) after repack"; exit 1; }
           DESKTOP=$(find "$APPDIR" -maxdepth 1 -name "*.desktop" | head -1)
           if [ -n "$DESKTOP" ] && [ ! -e "$DESKTOP" ]; then
             echo "::error::Root .desktop symlink is dangling after repack"
