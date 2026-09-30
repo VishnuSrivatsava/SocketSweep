@@ -168,6 +168,74 @@ jobs:
       - name: Build Tauri app
         run: npm run tauri build
 
+      # ── Fix AppImage: guarantee root icon + .DirIcon (Linux only) ─────────
+      # Safety net for the AppImage catalog's validation. tauri-bundler >= 2.9.4
+      # already creates .DirIcon and the root .desktop file as relative symlinks
+      # (before that they were absolute symlinks, which dangle inside the mounted
+      # image and read as "missing"), but it places NO .png at the AppDir root —
+      # icons live under usr/share/icons/hicolor/. So the fallback below is the
+      # branch that normally runs: it copies a root icon named to match
+      # Icon=SocketSweep in the desktop file, as the AppDir spec requires.
+      # We extract, guarantee the spec-required root entries, repack with a
+      # pinned checksum-verified appimagetool, and re-verify with the same
+      # dangling-symlink check the catalog CI runs.
+      - name: Fix AppImage - inject .DirIcon
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+
+          APPIMAGE=$(find src-tauri/target/release/bundle/appimage -name "*.AppImage" | head -1)
+          [ -n "$APPIMAGE" ] || { echo "::error::No AppImage found in src-tauri/target/release/bundle/appimage"; exit 1; }
+          echo "Patching: $APPIMAGE"
+
+          # The AppImage runtime itself handles extraction (no FUSE needed).
+          # --appimage-extract always outputs to ./squashfs-root/
+          chmod +x "$APPIMAGE"
+          "$APPIMAGE" --appimage-extract
+          APPDIR="$(pwd)/squashfs-root"
+
+          echo "AppDir contents:"
+          ls -la "$APPDIR"
+
+          # Guarantee the root icon (.DirIcon must resolve to a real file).
+          ICON=$(find "$APPDIR" -maxdepth 1 -name "*.png" | head -1)
+          if [ -z "$ICON" ]; then
+            cp src-tauri/icons/128x128.png "$APPDIR/SocketSweep.png"
+            ICON="$APPDIR/SocketSweep.png"
+          fi
+          ICON_NAME=$(basename "$ICON")
+          echo "Linking .DirIcon -> $ICON_NAME"
+          ln -sf "$ICON_NAME" "$APPDIR/.DirIcon"
+
+          # Download appimagetool for repacking — pinned to 1.9.1 and
+          # checksum-verified (GitHub "continuous" builds are unpinned, and
+          # AppImageKit's own releases are marked obsolete).
+          # Use --appimage-extract-and-run because GitHub Actions has no FUSE.
+          curl -fsSL -o appimagetool \
+            "https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage"
+          echo "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0  appimagetool" | shasum -a 256 -c -
+          chmod +x appimagetool
+
+          # Repack in place, replacing the original AppImage.
+          ARCH=x86_64 ./appimagetool --appimage-extract-and-run "$APPDIR" "$APPIMAGE"
+
+          # Verify the repacked image the way the AppImage catalog does:
+          # .DirIcon (and the root .desktop, when present) must resolve —
+          # test -e follows symlinks, so dangling ones fail here in CI
+          # instead of in the catalog PR.
+          rm -rf squashfs-root
+          "$APPIMAGE" --appimage-extract >/dev/null
+          [ -e "$APPDIR/.DirIcon" ] || { echo "::error::.DirIcon is dangling after repack"; exit 1; }
+          echo ".DirIcon -> $(readlink "$APPDIR/.DirIcon") (resolves OK)"
+          DESKTOP=$(find "$APPDIR" -maxdepth 1 -name "*.desktop" | head -1)
+          if [ -n "$DESKTOP" ] && [ ! -e "$DESKTOP" ]; then
+            echo "::error::Root .desktop symlink is dangling after repack"
+            exit 1
+          fi
+
+          rm -rf squashfs-root appimagetool
+          echo "✓ AppImage patched with .DirIcon and verified"
+
       # ── Upload release artifacts ──────────────────────────────────────────
       - name: Upload macOS artifacts
         if: matrix.platform == 'macos'
