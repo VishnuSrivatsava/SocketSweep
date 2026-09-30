@@ -61,6 +61,10 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
+          # Per-image cache: artifacts restored across different runner
+          # images (e.g. 24.04 -> 22.04) can be silently stale and fail
+          # with E0463 "can't find crate" despite matching fingerprints.
+          key: ${{ matrix.os }}
 
       - name: Install frontend dependencies
         run: npm ci
