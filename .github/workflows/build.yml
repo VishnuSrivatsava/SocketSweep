@@ -198,7 +198,13 @@ jobs:
           ls -la "$APPDIR"
 
           # Guarantee the root icon (.DirIcon must resolve to a real file).
-          ICON=$(find "$APPDIR" -maxdepth 1 -name "*.png" | head -1)
+          # Prefer the productName-named png (matches Icon= in the desktop
+          # file); the bundler may also place one named after the binary
+          # (tauri-app.png), which find would otherwise pick first.
+          ICON=$(find "$APPDIR" -maxdepth 1 -name "SocketSweep.png" | head -1)
+          if [ -z "$ICON" ]; then
+            ICON=$(find "$APPDIR" -maxdepth 1 -name "*.png" | head -1)
+          fi
           if [ -z "$ICON" ]; then
             cp src-tauri/icons/128x128.png "$APPDIR/SocketSweep.png"
             ICON="$APPDIR/SocketSweep.png"
@@ -206,6 +212,26 @@ jobs:
           ICON_NAME=$(basename "$ICON")
           echo "Linking .DirIcon -> $ICON_NAME"
           ln -sf "$ICON_NAME" "$APPDIR/.DirIcon"
+
+          # Normalize permissions before repacking. The AppDir produced by
+          # tauri-bundler 2.11.1 contains root-only directory modes (AppDir
+          # root, usr/ and apprun-hooks/ are 0700; AppRun.wrapped is 0770).
+          # Squashfs preserves them, so the app is unexecutable for every
+          # non-root user — the AppImage catalog's firejail run fails with
+          # "AppRun: Permission denied" and desktop users would hit the same.
+          # Dirs must be traversable, everything readable, and binaries,
+          # libraries, resources (usr/bin, usr/lib incl. bundled adb/daemon)
+          # and AppRun hooks executable.
+          find "$APPDIR" -type d -exec chmod 755 {} +
+          find "$APPDIR" -type f -exec chmod 644 {} +
+          chmod 755 "$APPDIR/AppRun"
+          if [ -e "$APPDIR/AppRun.wrapped" ]; then
+            chmod 755 "$APPDIR/AppRun.wrapped"
+          fi
+          if [ -d "$APPDIR/apprun-hooks" ]; then
+            find "$APPDIR/apprun-hooks" -type f -exec chmod 755 {} +
+          fi
+          find "$APPDIR/usr/bin" "$APPDIR/usr/lib" -type f -exec chmod 755 {} +
 
           # Download appimagetool for repacking — pinned to 1.9.1 and
           # checksum-verified (GitHub "continuous" builds are unpinned, and
@@ -227,6 +253,11 @@ jobs:
           "$APPIMAGE" --appimage-extract >/dev/null
           [ -e "$APPDIR/.DirIcon" ] || { echo "::error::.DirIcon is dangling after repack"; exit 1; }
           echo ".DirIcon -> $(readlink "$APPDIR/.DirIcon") (resolves OK)"
+          [ "$(stat -c '%a' "$APPDIR/AppRun")" = 755 ] || { echo "::error::AppRun not 755 after repack"; exit 1; }
+          if [ -e "$APPDIR/AppRun.wrapped" ]; then
+            [ "$(stat -c '%a' "$APPDIR/AppRun.wrapped")" = 755 ] || { echo "::error::AppRun.wrapped not 755 after repack"; exit 1; }
+          fi
+          [ "$(stat -c '%a' "$APPDIR/usr")" = 755 ] || { echo "::error::usr/ not traversable (755) after repack"; exit 1; }
           DESKTOP=$(find "$APPDIR" -maxdepth 1 -name "*.desktop" | head -1)
           if [ -n "$DESKTOP" ] && [ ! -e "$DESKTOP" ]; then
             echo "::error::Root .desktop symlink is dangling after repack"
