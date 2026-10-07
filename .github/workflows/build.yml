@@ -69,6 +69,10 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Test daemon protocol on host
+        if: runner.os != 'Windows'
+        run: python3 -m unittest discover -s tests -v
+
       # ── Cross-compile C++ daemon for Android aarch64 ──────────────────────
       # The daemon always targets Android ARM64, regardless of host OS.
       # Uses the pre-installed Android NDK on GitHub Actions runners.
@@ -177,6 +181,9 @@ jobs:
       # platform installers (.dmg / .deb / .AppImage / .msi / .exe).
       - name: Build Tauri app
         run: npm run tauri build
+
+      - name: Test Rust bridge
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
 
       # ── Fix AppImage: guarantee root icon + .DirIcon + sane modes ─────────
       # Required for AppImage catalog validation. tauri-bundler 2.11.1 emits a

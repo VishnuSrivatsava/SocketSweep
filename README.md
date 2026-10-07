@@ -110,6 +110,11 @@ Instead of going through MTP, SocketSweep does something completely different:
 
 The architecture was inspired by [scrcpy](https://github.com/Genymobile/scrcpy) — the "push a native binary via ADB, communicate over a local socket" pattern.
 
+Each connection authenticates with a fresh 256-bit session secret before the
+daemon accepts a command. The secret reaches the phone through a shell-owned
+startup file with mode `0600`; the daemon reads and removes that file before
+listening. The app and daemon must use the same protocol version.
+
 ---
 
 ## 🏗 Architecture (For Developers)
@@ -154,8 +159,9 @@ sequenceDiagram
     R->>A: pkill daemon (Cleanup)
     R->>A: push daemon /data/local/tmp
     R->>A: appops set MANAGE_EXTERNAL_STORAGE allow
-    R->>A: nohup ./daemon &
+    R->>A: Write private startup secret, launch daemon
     R->>A: adb forward tcp:5050 tcp:5050
+    R->>D: AUTH session secret (on every connection)
     R->>D: Ping-Retry Loop (150ms)
     D-->>R: ACK Connection
     R-->>U: Connected!
@@ -195,7 +201,9 @@ export NDK=/path/to/your/android-ndk-r26d
 cd engine
 bash ./build.sh
 ```
-*This generates the stripped `daemon` binary in the `engine/` directory.*
+*This generates the stripped `daemon` binary in the `engine/` directory and
+copies it into `src-tauri/bin/daemon`, which Tauri bundles. Rebuild after changing
+the daemon so local development uses the current protocol.*
 
 ### 2. Install Frontend Dependencies
 ```bash
@@ -208,6 +216,21 @@ npm install
 npm run tauri dev
 ```
 *Ensure your Android device is plugged in via USB and **USB Debugging** is enabled.*
+
+### 4. Run regression tests
+
+```bash
+# macOS/Linux: compiles the host daemon and uses disposable local files
+python3 -m unittest discover -s tests -v
+
+# Build the frontend first when testing from a clean checkout
+npm run build
+cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
+```
+
+The line-based protocol preserves spaces in filenames. Paths containing a
+newline, carriage return, or null byte are rejected before sending, so they
+cannot cause a different file to be deleted.
 
 ---
 

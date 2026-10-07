@@ -30,3 +30,5 @@ output.json
 # Exclude local JSON test dumps
 out*.json
 
+# Python daemon regression tests
+__pycache__/
