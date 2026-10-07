@@ -7,6 +7,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
+#include <cerrno>
 #include <string>
 #include <vector>
 
@@ -20,6 +22,8 @@
 #include <unistd.h>
 #include <filesystem>
 #include <iostream>
+#include <fstream>
+#include <poll.h>
 
 // ── Configuration ───────────────────────────────────────────────────────────
 namespace cfg {
@@ -29,12 +33,14 @@ namespace cfg {
     constexpr int         LISTEN_BACKLOG    = 4;
     constexpr int         MAX_DEPTH         = 64;
     constexpr int         RECV_TIMEOUT_SEC  = 30;
+    constexpr size_t      MAX_COMMAND_BYTES = 16 * 1024;
 }
 
 // ── Globals ─────────────────────────────────────────────────────────────────
 static volatile sig_atomic_t g_running = 1;
 static void on_signal(int) { g_running = 0; }
 static std::string g_scan_root;  // tracks the active scan root for delete validation
+static std::string g_session_token;
 
 // Per-phase scan timing (see SCAN in handle_client). Counters reset per scan.
 static int64_t g_sort_ns    = 0;  // cumulative time sorting directory children
@@ -123,23 +129,33 @@ public:
     }
 };
 
-static std::string recv_line(int fd) {
-    std::string line;
+static bool recv_line(int fd, std::string& line) {
+    line.clear();
+    const auto deadline = std::chrono::steady_clock::now() +
+        std::chrono::seconds(cfg::RECV_TIMEOUT_SEC);
     char c;
     while (true) {
+        const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+            deadline - std::chrono::steady_clock::now()).count();
+        if (remaining <= 0) return false;
+        struct pollfd event { fd, POLLIN, 0 };
+        int ready = ::poll(&event, 1, static_cast<int>(remaining));
+        if (ready < 0 && errno == EINTR) continue;
+        if (ready <= 0) return false;
         ssize_t n = ::recv(fd, &c, 1, 0);
         if (n < 0 && errno == EINTR) continue;
-        if (n <= 0) break;
-        if (c == '\n') break;
-        if (c != '\r') line += c;
+        if (n <= 0) return false;
+        if (c == '\n') return true;
+        // Never normalize path bytes or execute an incomplete/oversized line.
+        if (c == '\r' || c == '\0' || line.size() >= cfg::MAX_COMMAND_BYTES) return false;
+        line += c;
     }
-    return line;
 }
 
-static std::string trim(std::string s) {
-    while (!s.empty() && s.back()  == ' ') s.pop_back();
-    size_t start = s.find_first_not_of(' ');
-    return (start == std::string::npos) ? "" : s.substr(start);
+static bool valid_token(const std::string& token) {
+    return token.size() == 64 && std::all_of(token.begin(), token.end(), [](char c) {
+        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+    });
 }
 
 // ── Data Model ──────────────────────────────────────────────────────────────
@@ -271,14 +287,22 @@ static FileNode scan(const std::string& path, const std::string& name,
 static void handle_client(int fd) {
     struct timeval tv { cfg::RECV_TIMEOUT_SEC, 0 };
     ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-
-    std::string cmd = trim(recv_line(fd));
-    if (cmd.empty()) return;
+    ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
     JsonStream out(fd);
+    std::string auth;
+    if (!recv_line(fd, auth) || auth != "AUTH " + g_session_token) {
+        out.write("{\"status\":\"error\",\"message\":\"Authentication failed\"}\n");
+        return;
+    }
+    std::string cmd;
+    if (!recv_line(fd, cmd) || cmd.empty()) {
+        out.write("{\"status\":\"error\",\"message\":\"Invalid command framing\"}\n");
+        return;
+    }
 
     if (cmd == "PING") {
-        out.write("{\"status\":\"ok\",\"message\":\"pong\"}\n");
+        out.write("{\"status\":\"ok\",\"message\":\"pong\",\"protocol_version\":2}\n");
     }
     else if (cmd == "SHUTDOWN") {
         out.write("{\"status\":\"ok\",\"message\":\"shutting down\"}\n");
@@ -287,7 +311,7 @@ static void handle_client(int fd) {
         return;
     }
     else if (cmd.rfind("DELETE ", 0) == 0) {
-        std::string target = trim(cmd.substr(7));
+        std::string target = cmd.substr(7);
 
         // Server-side delete guard: validate target is strictly inside the scan root.
         if (g_scan_root.empty()) {
@@ -308,10 +332,10 @@ static void handle_client(int fd) {
             }
         }
     }
-    else if (cmd.rfind("SCAN", 0) == 0) {
+    else if (cmd == "SCAN" || cmd.rfind("SCAN ", 0) == 0) {
         std::string root = cfg::DEFAULT_ROOT;
         if (cmd.size() > 4) {
-            std::string arg = trim(cmd.substr(4));
+            std::string arg = cmd.substr(5);
             if (!arg.empty()) root = arg;
         }
         while (root.size() > 1 && root.back() == '/') root.pop_back();
@@ -322,7 +346,13 @@ static void handle_client(int fd) {
             root_name = root.substr(pos + 1);
 
         std::fprintf(stderr, "[engine] SCAN \"%s\" ...\n", root.c_str());
-        g_scan_root = root;  // store for delete validation
+        g_scan_root.clear();
+
+        struct stat root_info{};
+        if (::stat(root.c_str(), &root_info) != 0 || !S_ISDIR(root_info.st_mode)) {
+            out.write("{\"status\":\"error\",\"message\":\"Scan root is not an accessible directory\"}\n");
+            return;
+        }
 
         g_sort_ns    = 0;
         g_send_ns    = 0;
@@ -331,6 +361,7 @@ static void handle_client(int fd) {
         auto t0 = std::chrono::steady_clock::now();
         ScanStats stats{};
         FileNode tree = scan(root, root_name, stats, 0);
+        g_scan_root = root;
         auto t1 = std::chrono::steady_clock::now();
         int64_t ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
         int64_t traverse_ms = ms - ns_to_ms(g_sort_ns);
@@ -391,6 +422,21 @@ int main(int argc, char* argv[]) {
 
     uint16_t port = cfg::PORT;
     if (argc > 1) port = static_cast<uint16_t>(std::atoi(argv[1]));
+
+    // A shell-owned 0600 file supplies the secret, keeping it out of process
+    // arguments. Consume and unlink it before accepting any connections.
+    if (argc != 3) {
+        std::fprintf(stderr, "[engine] Usage: daemon PORT TOKEN_FILE\n");
+        return 1;
+    }
+    {
+        std::ifstream token_file(argv[2]);
+        std::getline(token_file, g_session_token);
+    }
+    if (::unlink(argv[2]) != 0 || !valid_token(g_session_token)) {
+        std::fprintf(stderr, "[engine] Failed to load session token\n");
+        return 1;
+    }
 
     ::signal(SIGINT,  on_signal);
     ::signal(SIGTERM, on_signal);

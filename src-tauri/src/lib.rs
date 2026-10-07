@@ -6,7 +6,8 @@
 // React frontend can display meaningful error messages.
 //
 // Wire protocol (matches Phase 1 daemon):
-//   → "PING\n"              ← {"status":"ok","message":"pong"}
+// Each connection starts with "AUTH <session token>\n", then one command.
+//   → "PING\n"              ← {"status":"ok","message":"pong","protocol_version":2}
 //   → "SCAN [path]\n"       ← {"status":"ok","scan_time_ms":…,"tree":{…}}
 //   → "SHUTDOWN\n"          ← {"status":"ok","message":"shutting down"}
 // ============================================================================
@@ -22,6 +23,7 @@ use std::time::Duration;
 const DAEMON_PORT: u16 = 5050;
 const DAEMON_ADDR: &str = "127.0.0.1:5050";
 const DEVICE_BIN_PATH: &str = "/data/local/tmp/socketsweep_daemon";
+const DEVICE_TOKEN_PATH: &str = "/data/local/tmp/socketsweep_token";
 const TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const TCP_READ_TIMEOUT: Duration = Duration::from_secs(120); // scans can be slow
 
@@ -30,6 +32,9 @@ static SCAN_ROOT: Mutex<Option<String>> = Mutex::new(None);
 
 /// Tracks the serial of the connected device so all ADB calls target the right device.
 static DEVICE_SERIAL: Mutex<Option<String>> = Mutex::new(None);
+static SESSION_TOKEN: Mutex<Option<String>> = Mutex::new(None);
+// Keep connection changes, scans, and deletes in order across async commands.
+static DAEMON_OPERATION: Mutex<()> = Mutex::new(());
 
 // ── Resource Resolution ─────────────────────────────────────────────────────
 
@@ -62,11 +67,16 @@ fn get_bundled_binary(app: &tauri::AppHandle, name: &str) -> Result<std::path::P
 /// Run an ADB command and return its stdout. Maps any failure to a
 /// human-readable `Err(String)`.
 fn adb(adb_path: &std::path::Path, args: &[&str]) -> Result<String, String> {
+    adb_with_input(adb_path, args, None)
+}
+
+fn adb_with_input(adb_path: &std::path::Path, args: &[&str], input: Option<&[u8]>) -> Result<String, String> {
     use std::io::Read;
     use std::time::{Duration, Instant};
 
     let mut child = Command::new(adb_path)
         .args(args)
+        .stdin(if input.is_some() { std::process::Stdio::piped() } else { std::process::Stdio::null() })
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -86,6 +96,15 @@ fn adb(adb_path: &std::path::Path, args: &[&str]) -> Result<String, String> {
         let _ = stderr_pipe.read_to_end(&mut buf);
         buf
     });
+
+    if let Some(bytes) = input {
+        let result = child.stdin.take().unwrap().write_all(bytes);
+        if let Err(e) = result {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("Failed to provide ADB input: {e}"));
+        }
+    }
 
     let timeout_secs = 15;
     let timeout = Duration::from_secs(timeout_secs);
@@ -146,6 +165,20 @@ fn adb_s(adb_path: &std::path::Path, args: &[&str]) -> Result<String, String> {
 
 /// Send a one-line command to the daemon and read the full response.
 fn daemon_command(cmd: &str) -> Result<String, String> {
+    let token = SESSION_TOKEN.lock().map_err(|_| "Session state is unavailable")?
+        .clone().ok_or("No active daemon session. Connect your device first.")?;
+    daemon_command_with_token(cmd, &token)
+}
+
+fn command_payload(cmd: &str, token: &str) -> Result<String, String> {
+    if cmd.is_empty() || cmd.len() > 16 * 1024 || cmd.contains(['\r', '\n', '\0']) {
+        return Err("This path cannot be sent safely: it contains a line break or null byte, or is too long.".into());
+    }
+    Ok(format!("AUTH {token}\n{cmd}\n"))
+}
+
+fn daemon_command_with_token(cmd: &str, token: &str) -> Result<String, String> {
+    let payload = command_payload(cmd, token)?;
     let mut stream = TcpStream::connect_timeout(
         &DAEMON_ADDR.parse().unwrap(),
         TCP_CONNECT_TIMEOUT,
@@ -155,12 +188,8 @@ fn daemon_command(cmd: &str) -> Result<String, String> {
     stream
         .set_read_timeout(Some(TCP_READ_TIMEOUT))
         .map_err(|e| format!("Failed to set read timeout: {e}"))?;
-
-    let payload = if cmd.ends_with('\n') {
-        cmd.to_string()
-    } else {
-        format!("{cmd}\n")
-    };
+    stream.set_write_timeout(Some(TCP_CONNECT_TIMEOUT))
+        .map_err(|e| format!("Failed to set write timeout: {e}"))?;
     stream
         .write_all(payload.as_bytes())
         .map_err(|e| format!("Failed to send command to daemon: {e}"))?;
@@ -170,8 +199,38 @@ fn daemon_command(cmd: &str) -> Result<String, String> {
         .read_to_end(&mut response_bytes)
         .map_err(|e| format!("Failed to read daemon response: {e}"))?;
 
-    let response = String::from_utf8_lossy(&response_bytes).trim().to_string();
-    Ok(response)
+    decode_daemon_response(response_bytes)
+}
+
+fn decode_daemon_response(bytes: Vec<u8>) -> Result<String, String> {
+    // Replacement characters would change paths, potentially selecting a
+    // different file when a displayed node is later deleted.
+    String::from_utf8(bytes)
+        .map(|response| response.trim().to_string())
+        .map_err(|_| "Daemon returned invalid UTF-8 filenames. This scan cannot be displayed safely.".into())
+}
+
+#[derive(serde::Deserialize)]
+struct DaemonStatus {
+    status: String,
+    message: Option<String>,
+    protocol_version: Option<u32>,
+}
+
+fn require_ok(response: &str) -> Result<DaemonStatus, String> {
+    // Ignore the tree here rather than allocating a second copy of the scan.
+    let parsed: DaemonStatus = serde_json::from_str(response)
+        .map_err(|_| "Daemon returned an invalid response".to_string())?;
+    if parsed.status != "ok" {
+        return Err(parsed.message.unwrap_or_else(|| "Daemon command failed".into()));
+    }
+    Ok(parsed)
+}
+
+fn new_session_token() -> Result<String, String> {
+    let mut bytes = [0_u8; 32];
+    getrandom::fill(&mut bytes).map_err(|e| format!("Failed to create daemon session: {e}"))?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 // ── Tauri Commands ──────────────────────────────────────────────────────────
@@ -186,6 +245,28 @@ fn check_adb(app: tauri::AppHandle) -> Result<String, String> {
 
 #[tauri::command(async)]
 fn init_daemon(app: tauri::AppHandle) -> Result<String, String> {
+    let _operation = DAEMON_OPERATION.lock().map_err(|_| "Daemon state is unavailable")?;
+    *SESSION_TOKEN.lock().map_err(|_| "Session state is unavailable")? = None;
+    *SCAN_ROOT.lock().map_err(|_| "Scan state is unavailable")? = None;
+    *DEVICE_SERIAL.lock().map_err(|_| "Device state is unavailable")? = None;
+    let result = init_daemon_inner(app.clone());
+    if result.is_err() {
+        // A failed push/start/handshake must not leave a live daemon or a
+        // startup secret behind. Only target the device selected by this init.
+        let has_device = DEVICE_SERIAL.lock().map_err(|_| "Device state is unavailable")?.is_some();
+        if has_device {
+            if let Ok(adb_path) = get_bundled_binary(&app, "adb") {
+                let _ = adb_s(&adb_path, &["shell", "pkill -f '[s]ocketsweep_daemon' || true"]);
+                let _ = adb_s(&adb_path, &["forward", "--remove", &format!("tcp:{DAEMON_PORT}")]);
+                let _ = adb_s(&adb_path, &["shell", "rm", "-f", DEVICE_TOKEN_PATH]);
+            }
+        }
+        *DEVICE_SERIAL.lock().map_err(|_| "Device state is unavailable")? = None;
+    }
+    result
+}
+
+fn init_daemon_inner(app: tauri::AppHandle) -> Result<String, String> {
     let adb_path = get_bundled_binary(&app, "adb")?;
     let daemon_src = get_bundled_binary(&app, "daemon")?;
 
@@ -217,6 +298,14 @@ fn init_daemon(app: tauri::AppHandle) -> Result<String, String> {
     // 2 — Kill any zombie daemon before we push/start.
     let _ = adb_s(&adb_path, &["shell", "pkill -f '[s]ocketsweep_daemon' || true"]);
 
+    // Transfer the fresh secret over stdin into a shell-owned file. Neither
+    // the startup arguments nor the frontend response contain the secret.
+    let token = new_session_token()?;
+    let serial = DEVICE_SERIAL.lock().map_err(|_| "Device state is unavailable")?
+        .clone().ok_or("No connected device")?;
+    let token_cmd = format!("rm -f {DEVICE_TOKEN_PATH} && umask 077 && cat > {DEVICE_TOKEN_PATH}");
+    adb_with_input(&adb_path, &["-s", &serial, "shell", &token_cmd], Some(format!("{token}\n").as_bytes()))?;
+
     // 2.5 — Automate MANAGE_EXTERNAL_STORAGE permission for the shell user.
     let _ = adb_s(&adb_path, &["shell", "appops set com.android.shell MANAGE_EXTERNAL_STORAGE allow"]);
 
@@ -231,7 +320,7 @@ fn init_daemon(app: tauri::AppHandle) -> Result<String, String> {
     std::thread::sleep(Duration::from_millis(300));
 
     // 6 — Start the daemon in the background on the device.
-    let start_cmd = format!("nohup {DEVICE_BIN_PATH} > /dev/null 2>&1 & echo $!; exit");
+    let start_cmd = format!("nohup {DEVICE_BIN_PATH} {DAEMON_PORT} {DEVICE_TOKEN_PATH} > /dev/null 2>&1 & echo $!; exit");
     let pid_output = adb_s(&adb_path, &["shell", &start_cmd])?;
     let pid = pid_output.trim().to_string();
 
@@ -243,7 +332,13 @@ fn init_daemon(app: tauri::AppHandle) -> Result<String, String> {
     let mut connected_daemon = false;
     for _ in 0..15 {
         std::thread::sleep(Duration::from_millis(150));
-        match daemon_command("PING") {
+        match daemon_command_with_token("PING", &token).and_then(|res| {
+            let parsed = require_ok(&res)?;
+            if parsed.protocol_version != Some(2) {
+                return Err("Bundled daemon is outdated. Rebuild it before connecting.".into());
+            }
+            Ok(res)
+        }) {
             Ok(res) => {
                 pong = res;
                 connected_daemon = true;
@@ -254,8 +349,10 @@ fn init_daemon(app: tauri::AppHandle) -> Result<String, String> {
     }
 
     if !connected_daemon {
-        return Err("Daemon started but failed to respond to PING over TCP tunnel.".into());
+        return Err("Daemon did not complete the authenticated handshake. Rebuild the bundled daemon and reconnect.".into());
     }
+
+    *SESSION_TOKEN.lock().map_err(|_| "Session state is unavailable")? = Some(token);
 
     Ok(format!(
         "{{\"daemon_pid\":\"{pid}\",\"ping_response\":{pong}}}"
@@ -264,12 +361,15 @@ fn init_daemon(app: tauri::AppHandle) -> Result<String, String> {
 
 #[tauri::command(async)]
 fn run_scan(path: Option<String>) -> Result<String, String> {
+    let _operation = DAEMON_OPERATION.lock().map_err(|_| "Daemon state is unavailable")?;
     let effective_root = match path {
         Some(ref p) if !p.is_empty() => p.clone(),
         _ => "/sdcard".to_string(), // daemon default
     };
     let cmd = format!("SCAN {effective_root}");
+    *SCAN_ROOT.lock().map_err(|_| "Scan state is unavailable")? = None;
     let response = daemon_command(&cmd)?;
+    require_ok(&response)?;
 
     // Store the scan root so delete_item can guard against it.
     if let Ok(mut root) = SCAN_ROOT.lock() {
@@ -279,30 +379,38 @@ fn run_scan(path: Option<String>) -> Result<String, String> {
     Ok(response)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn ping_daemon() -> Result<String, String> {
+    let _operation = DAEMON_OPERATION.lock().map_err(|_| "Daemon state is unavailable")?;
     daemon_command("PING")
 }
 
 #[tauri::command(async)]
 fn stop_daemon(app: tauri::AppHandle) -> Result<String, String> {
+    let _operation = DAEMON_OPERATION.lock().map_err(|_| "Daemon state is unavailable")?;
     let adb_path = get_bundled_binary(&app, "adb")?;
     let response = daemon_command("SHUTDOWN").unwrap_or_else(|_| "daemon already stopped".into());
     let _ = adb_s(&adb_path, &["forward", "--remove", &format!("tcp:{DAEMON_PORT}")]);
-    let _ = adb_s(&adb_path, &["shell", "rm", DEVICE_BIN_PATH]);
+    let _ = adb_s(&adb_path, &["shell", "rm", "-f", DEVICE_BIN_PATH, DEVICE_TOKEN_PATH]);
+    *SESSION_TOKEN.lock().map_err(|_| "Session state is unavailable")? = None;
+    *SCAN_ROOT.lock().map_err(|_| "Scan state is unavailable")? = None;
+    *DEVICE_SERIAL.lock().map_err(|_| "Device state is unavailable")? = None;
     Ok(response)
 }
 
 #[tauri::command(async)]
 fn delete_item(path: String) -> Result<String, String> {
+    let _operation = DAEMON_OPERATION.lock().map_err(|_| "Daemon state is unavailable")?;
     // Prevent deletion of the scan root directory.
-    if let Ok(root) = SCAN_ROOT.lock() {
-        if let Some(ref scan_root) = *root {
-            if path == *scan_root {
-                return Err("Cannot delete the scan root directory.".into());
-            }
+    let root = SCAN_ROOT.lock().map_err(|_| "Scan state is unavailable")?;
+    match root.as_ref() {
+        Some(scan_root) if path == *scan_root => {
+            return Err("Cannot delete the scan root directory.".into());
         }
+        None => return Err("Scan your device before deleting files.".into()),
+        _ => {}
     }
+    drop(root);
     daemon_command(&format!("DELETE {path}"))
 }
 
@@ -322,4 +430,47 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn paths_keep_their_exact_spaces() {
+        assert_eq!(command_payload("DELETE /sdcard/ report ", "token").unwrap(),
+            "AUTH token\nDELETE /sdcard/ report \n");
+    }
+
+    #[test]
+    fn paths_with_protocol_delimiters_are_rejected() {
+        for path in ["/sdcard/report\nother", "/sdcard/report\r", "/sdcard/report\0other"] {
+            assert!(command_payload(&format!("DELETE {path}"), "token").is_err());
+            assert!(command_payload(&format!("SCAN {path}"), "token").is_err());
+        }
+        assert!(command_payload(&"x".repeat(16 * 1024 + 1), "token").is_err());
+    }
+
+    #[test]
+    fn session_tokens_are_fresh_and_have_full_entropy() {
+        let first = new_session_token().unwrap();
+        let second = new_session_token().unwrap();
+        assert_eq!(first.len(), 64);
+        assert!(first.bytes().all(|b| b.is_ascii_hexdigit()));
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn daemon_errors_cannot_be_treated_as_success() {
+        assert!(require_ok("{\"status\":\"ok\"}").is_ok());
+        assert!(require_ok("{\"status\":\"error\",\"message\":\"Authentication failed\"}").is_err());
+        assert!(require_ok("invalid").is_err());
+    }
+
+    #[test]
+    fn invalid_filename_bytes_are_not_replaced() {
+        assert!(decode_daemon_response(b"{\"path\":\"/sdcard/report\xff\"}".to_vec()).is_err());
+        assert_eq!(decode_daemon_response("{\"path\":\"/sdcard/写真\"}\n".as_bytes().to_vec()).unwrap(),
+            "{\"path\":\"/sdcard/写真\"}");
+    }
 }
