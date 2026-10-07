@@ -199,8 +199,15 @@ fn daemon_command_with_token(cmd: &str, token: &str) -> Result<String, String> {
         .read_to_end(&mut response_bytes)
         .map_err(|e| format!("Failed to read daemon response: {e}"))?;
 
-    let response = String::from_utf8_lossy(&response_bytes).trim().to_string();
-    Ok(response)
+    decode_daemon_response(response_bytes)
+}
+
+fn decode_daemon_response(bytes: Vec<u8>) -> Result<String, String> {
+    // Replacement characters would change paths, potentially selecting a
+    // different file when a displayed node is later deleted.
+    String::from_utf8(bytes)
+        .map(|response| response.trim().to_string())
+        .map_err(|_| "Daemon returned invalid UTF-8 filenames. This scan cannot be displayed safely.".into())
 }
 
 #[derive(serde::Deserialize)]
@@ -458,5 +465,12 @@ mod tests {
         assert!(require_ok("{\"status\":\"ok\"}").is_ok());
         assert!(require_ok("{\"status\":\"error\",\"message\":\"Authentication failed\"}").is_err());
         assert!(require_ok("invalid").is_err());
+    }
+
+    #[test]
+    fn invalid_filename_bytes_are_not_replaced() {
+        assert!(decode_daemon_response(b"{\"path\":\"/sdcard/report\xff\"}".to_vec()).is_err());
+        assert_eq!(decode_daemon_response("{\"path\":\"/sdcard/写真\"}\n".as_bytes().to_vec()).unwrap(),
+            "{\"path\":\"/sdcard/写真\"}");
     }
 }

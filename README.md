@@ -230,7 +230,8 @@ cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
 
 The line-based protocol preserves spaces in filenames. Paths containing a
 newline, carriage return, or null byte are rejected before sending, so they
-cannot cause a different file to be deleted.
+cannot cause a different file to be deleted. Scan responses containing invalid
+UTF-8 filenames are also rejected rather than replacing filename bytes.
 
 ---
 
