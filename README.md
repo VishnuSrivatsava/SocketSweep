@@ -176,7 +176,7 @@ sequenceDiagram
     %% Delete Phase
     U->>R: invoke("delete_item", { path })
     R->>D: TCP Send: `DELETE /sdcard/... \n`
-    Note over D: std::filesystem::remove_all
+    Note over D: Descriptor-relative traversal and unlinkat<br/>Child symlinks are never followed
     D-->>R: {"status":"ok"}
     R-->>U: Update UI / Rescan
 ```
@@ -232,6 +232,18 @@ The line-based protocol preserves spaces in filenames. Paths containing a
 newline, carriage return, or null byte are rejected before sending, so they
 cannot cause a different file to be deleted. Scan responses containing invalid
 UTF-8 filenames are also rejected rather than replacing filename bytes.
+
+Deletion is anchored to the directory opened for the successful scan. Child
+directories are opened one component at a time without following symlinks, and
+removal uses those handles instead of resolving the original full path again.
+Detected changes to roots or directory entries stop deletion. Parent symlinks
+and traversal into another filesystem are rejected. `/sdcard` root aliases remain supported.
+Recursive deletion has a depth limit of 64 directories.
+
+Deletion is not transactional: concurrent filesystem changes or permission
+errors can stop it after some entries were removed. Rescan before retrying.
+An operation already in progress uses the opened directory identities; renaming
+a path cannot redirect it into a different directory through a new symlink.
 
 ---
 
