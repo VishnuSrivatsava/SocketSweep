@@ -20,7 +20,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
-#include <filesystem>
+#include "safe_delete.h"
 #include <iostream>
 #include <fstream>
 #include <poll.h>
@@ -39,7 +39,7 @@ namespace cfg {
 // ── Globals ─────────────────────────────────────────────────────────────────
 static volatile sig_atomic_t g_running = 1;
 static void on_signal(int) { g_running = 0; }
-static std::string g_scan_root;  // tracks the active scan root for delete validation
+static safe_delete::Root g_scan_root; // pins the successful scan root for deletion
 static std::string g_session_token;
 
 // Per-phase scan timing (see SCAN in handle_client). Counters reset per scan.
@@ -48,36 +48,6 @@ static int64_t g_send_ns    = 0;  // cumulative time blocked in ::send (socket w
 static int64_t g_send_bytes = 0;  // cumulative bytes handed to ::send
 
 static inline int64_t ns_to_ms(int64_t ns) { return ns / 1000000; }
-
-// ── Delete path validation ──────────────────────────────────────────────────
-
-/// Returns true if `target` is strictly inside `root` (component-wise).
-/// Rejects: the root itself, paths that escape via "..", and non-existent paths.
-static bool path_is_safe_to_delete(const std::string& target, const std::string& root) {
-    if (target.empty() || root.empty()) return false;
-
-    // Canonicalize both paths to resolve "..", symlinks, etc.
-    char* real_target = ::realpath(target.c_str(), nullptr);
-    char* real_root   = ::realpath(root.c_str(), nullptr);
-    if (!real_target || !real_root) {
-        free(real_target);
-        free(real_root);
-        return false;
-    }
-
-    std::string rt(real_target);
-    std::string rr(real_root);
-    free(real_target);
-    free(real_root);
-
-    // Target must not be the root itself.
-    if (rt == rr) return false;
-
-    // Target must start with root + "/" (component-wise, not just prefix).
-    // This prevents /sdcard/Down from matching /sdcard/Downloads.
-    if (rr.back() != '/') rr += '/';
-    return rt.size() > rr.size() && rt.compare(0, rr.size(), rr) == 0;
-}
 
 // ── Network & Streaming Helpers ─────────────────────────────────────────────
 class JsonStream {
@@ -313,23 +283,18 @@ static void handle_client(int fd) {
     else if (cmd.rfind("DELETE ", 0) == 0) {
         std::string target = cmd.substr(7);
 
-        // Server-side delete guard: validate target is strictly inside the scan root.
-        if (g_scan_root.empty()) {
-            out.write("{\"status\":\"error\",\"message\":\"No scan performed yet — cannot validate delete target\"}\n");
-        } else if (!path_is_safe_to_delete(target, g_scan_root)) {
-            out.write("{\"status\":\"error\",\"message\":\"Delete rejected: path is outside scan root or equals scan root\"}\n");
-        } else {
-            std::error_code ec;
-            std::uintmax_t removed = std::filesystem::remove_all(target, ec);
-            if (ec) {
-                out.write("{\"status\":\"error\",\"message\":\"");
-                json_escape_into(out, ec.message());
-                out.write("\"}\n");
-            } else {
-                out.write("{\"status\":\"ok\",\"message\":\"Deleted ");
-                out.write(std::to_string(removed));
-                out.write(" items\"}\n");
+        const auto result = safe_delete::remove(g_scan_root, target, cfg::MAX_DEPTH);
+        if (!result.error.empty()) {
+            out.write("{\"status\":\"error\",\"message\":\"");
+            json_escape_into(out, result.error);
+            if (result.removed > 0) {
+                out.write("; some items were removed. Rescan before trying again");
             }
+            out.write("\"}\n");
+        } else {
+            out.write("{\"status\":\"ok\",\"message\":\"Deleted ");
+            out.write(std::to_string(result.removed));
+            out.write(" items\"}\n");
         }
     }
     else if (cmd == "SCAN" || cmd.rfind("SCAN ", 0) == 0) {
@@ -348,8 +313,7 @@ static void handle_client(int fd) {
         std::fprintf(stderr, "[engine] SCAN \"%s\" ...\n", root.c_str());
         g_scan_root.clear();
 
-        struct stat root_info{};
-        if (::stat(root.c_str(), &root_info) != 0 || !S_ISDIR(root_info.st_mode)) {
+        if (!g_scan_root.open(root)) {
             out.write("{\"status\":\"error\",\"message\":\"Scan root is not an accessible directory\"}\n");
             return;
         }
@@ -361,7 +325,11 @@ static void handle_client(int fd) {
         auto t0 = std::chrono::steady_clock::now();
         ScanStats stats{};
         FileNode tree = scan(root, root_name, stats, 0);
-        g_scan_root = root;
+        if (!g_scan_root.unchanged()) {
+            g_scan_root.clear();
+            out.write("{\"status\":\"error\",\"message\":\"Scan root changed during scan; scan again\"}\n");
+            return;
+        }
         auto t1 = std::chrono::steady_clock::now();
         int64_t ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
         int64_t traverse_ms = ms - ns_to_ms(g_sort_ns);

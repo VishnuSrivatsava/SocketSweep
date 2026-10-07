@@ -152,6 +152,75 @@ class DaemonTests(unittest.TestCase):
     def test_scan_verb_must_be_exact(self):
         self.assertEqual(self.request(f"SCANOTHER {self.root}")["status"], "error")
 
+    def test_recursive_delete_never_follows_child_symlinks(self):
+        directory = self.root / "selected"
+        (directory / "nested").mkdir(parents=True)
+        (directory / "nested" / "file").write_text("delete")
+        outside = Path(self.files.name) / "outside"
+        outside.mkdir()
+        (outside / "keep").write_text("keep")
+        (directory / "link").symlink_to(outside, target_is_directory=True)
+        self.scan()
+        result = self.request(f"DELETE {directory}")
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["message"], "Deleted 4 items")
+        self.assertFalse(directory.exists())
+        self.assertEqual((outside / "keep").read_text(), "keep")
+
+    def test_changed_scan_root_is_rejected(self):
+        (self.root / "keep").write_text("original")
+        self.scan()
+        self.root.rename(Path(self.files.name) / "original-root")
+        self.root.mkdir()
+        (self.root / "keep").write_text("replacement")
+        self.assertEqual(self.request(f"DELETE {self.root / 'keep'}")["status"], "error")
+        self.assertEqual((self.root / "keep").read_text(), "replacement")
+        self.assertEqual((Path(self.files.name) / "original-root" / "keep").read_text(), "original")
+
+    def test_scan_root_alias_is_supported_and_retargeting_rejected(self):
+        (self.root / "remove").write_text("delete")
+        alias = Path(self.files.name) / "alias"
+        alias.symlink_to(self.root, target_is_directory=True)
+        self.assertEqual(self.request(f"SCAN {alias}")["status"], "ok")
+        self.assertEqual(self.request(f"DELETE {alias / 'remove'}")["status"], "ok")
+        outside = Path(self.files.name) / "outside"
+        outside.mkdir()
+        (outside / "keep").write_text("keep")
+        alias.unlink()
+        alias.symlink_to(outside, target_is_directory=True)
+        self.assertEqual(self.request(f"DELETE {alias / 'keep'}")["status"], "error")
+        self.assertTrue((outside / "keep").exists())
+
+
+class DeletionRaceTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.build_dir = tempfile.TemporaryDirectory(prefix="socketsweep-race-build-")
+        cls.binary = str(Path(cls.build_dir.name) / "race-tests")
+        compiler = os.environ.get("CXX") or shutil.which("clang++") or "c++"
+        source = Path(__file__).resolve().parent / "safe_delete_test.cpp"
+        subprocess.run([compiler, "-std=c++17", "-O2", "-Wall", "-Wextra",
+                        "-Wpedantic", "-fno-exceptions", "-fno-rtti",
+                        str(source), "-o", cls.binary], check=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.build_dir.cleanup()
+
+    def run_case(self, name):
+        result = subprocess.run([self.binary, name], capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_parent_symlink_replacement_before_open(self): self.run_case("parent_symlink")
+    def test_parent_replacement_after_open(self): self.run_case("parent_replaced")
+    def test_directory_inode_replacement(self): self.run_case("directory_inode")
+    def test_recursive_child_symlink_replacement(self): self.run_case("recursive_child")
+    def test_leaf_replacement_before_identity_check(self): self.run_case("leaf_replaced")
+    def test_leaf_symlink_replacement_at_unlink(self): self.run_case("leaf_unlink")
+    def test_scan_root_alias_swap_at_unlink(self): self.run_case("root_alias")
+    def test_repeated_calls_release_descriptors(self): self.run_case("descriptors")
+    def test_deep_recursion_stops_safely(self): self.run_case("depth")
+
 
 if __name__ == "__main__":
     unittest.main()
