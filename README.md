@@ -236,6 +236,13 @@ bash ./build.sh
 copies it into `src-tauri/bin/daemon`, which Tauri bundles. Rebuild after changing
 the daemon so local development uses the current protocol (v3).*
 
+Ordinary storage scans use a bounded pool of four workers. For daemon-level
+comparisons, append `--threads N` (1–8) after `PORT TOKEN_FILE`; one worker
+provides a serial reference. The pending directory queue holds at most 64 jobs
+and does not keep directory descriptors open. Root and `--read-only` scans
+remain serial, retaining their exclusions and scan-wide inode deduplication.
+The authenticated protocol and deletion checks apply to every worker setting.
+
 ### 2. Install Frontend Dependencies
 ```bash
 cd ..

@@ -26,7 +26,7 @@ class RootScanSandboxTests(unittest.TestCase):
         cls.build = tempfile.TemporaryDirectory(prefix="socketsweep-root-build-")
         cls.binary = Path(cls.build.name) / "daemon"
         source = Path(__file__).resolve().parents[1] / "engine" / "daemon.cpp"
-        subprocess.run([os.environ.get("CXX", "g++"), "-std=c++17", "-O2", "-static",
+        subprocess.run([os.environ.get("CXX", "g++"), "-std=c++17", "-O2", "-pthread", "-static",
                         "-Wall", "-Wextra", "-Wpedantic", "-fno-exceptions",
                         "-fno-rtti", str(source), "-o", str(cls.binary)], check=True)
 

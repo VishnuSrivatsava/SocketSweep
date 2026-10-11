@@ -43,7 +43,7 @@ OUT="$SCRIPT_DIR/daemon"
 echo "[build] Compiling daemon.cpp → daemon (aarch64-linux-android) ..."
 
 "$CC" \
-    -std=c++17 -O2 -Wall -Wextra -Wpedantic \
+    -std=c++17 -O2 -pthread -Wall -Wextra -Wpedantic \
     -fno-exceptions -fno-rtti -DNDEBUG \
     -static-libstdc++ \
     -s \
