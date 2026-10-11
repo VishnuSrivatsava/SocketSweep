@@ -74,6 +74,10 @@ jobs:
         if: runner.os != 'Windows'
         run: python3 -m unittest discover -s tests -v
 
+      - name: Test root scans in a disposable Linux filesystem
+        if: runner.os == 'Linux'
+        run: sudo -n env CXX=g++ python3 -m unittest discover -s tests -p test_root_scan.py -v
+
       # ── Cross-compile C++ daemon for Android aarch64 ──────────────────────
       # The daemon always targets Android ARM64, regardless of host OS.
       # Uses the pre-installed Android NDK on GitHub Actions runners.

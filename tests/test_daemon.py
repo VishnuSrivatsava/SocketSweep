@@ -10,12 +10,14 @@ import secrets
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
 
 
-class DaemonTests(unittest.TestCase):
+class DaemonHarness(unittest.TestCase):
+    read_only = False
     @classmethod
     def setUpClass(cls):
         cls.build_dir = tempfile.TemporaryDirectory(prefix="socketsweep-test-build-")
@@ -42,7 +44,10 @@ class DaemonTests(unittest.TestCase):
         with socket.socket() as reservation:
             reservation.bind(("127.0.0.1", 0))
             self.port = reservation.getsockname()[1]
-        self.process = subprocess.Popen([self.binary, str(self.port), str(token_file)],
+        args = [self.binary, str(self.port), str(token_file)]
+        if self.read_only:
+            args.append("--read-only")
+        self.process = subprocess.Popen(args,
                                         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         self.addCleanup(self.stop)
         for _ in range(100):
@@ -87,9 +92,12 @@ class DaemonTests(unittest.TestCase):
         self.assertEqual(result["status"], "ok")
         return result
 
+
+@unittest.skipIf(os.geteuid() == 0, "Writable daemon tests require an unprivileged user")
+class DaemonTests(DaemonHarness):
     def test_authenticated_ping_and_scan(self):
         (self.root / "photo").write_bytes(b"1234567")
-        self.assertEqual(self.request("PING")["protocol_version"], 2)
+        self.assertEqual(self.request("PING")["protocol_version"], 3)
         result = self.scan()
         self.assertEqual(result["total_files"], 1)
         self.assertEqual(result["total_size"], 7)
@@ -190,6 +198,55 @@ class DaemonTests(unittest.TestCase):
         alias.symlink_to(outside, target_is_directory=True)
         self.assertEqual(self.request(f"DELETE {alias / 'keep'}")["status"], "error")
         self.assertTrue((outside / "keep").exists())
+
+
+class ReadOnlyDaemonTests(DaemonHarness):
+    read_only = True
+
+    def test_read_only_handshake_and_delete_block_before_and_after_scan(self):
+        status = self.request("PING")
+        self.assertEqual(status["protocol_version"], 3)
+        self.assertEqual(status["uid"], os.geteuid())
+        self.assertTrue(status["read_only"])
+        target = self.root / "keep"
+        target.write_text("private app data")
+        for scanned in [False, True]:
+            if scanned:
+                self.assertTrue(self.scan()["read_only"])
+            result = self.request(f"DELETE {target}")
+            self.assertEqual(result["status"], "error")
+            self.assertIn("read-only", result["message"])
+            self.assertEqual(target.read_text(), "private app data")
+
+    def test_hard_links_are_counted_once_and_rescan_resets_seen_entries(self):
+        (self.root / "original").write_bytes(b"1234567")
+        os.link(self.root / "original", self.root / "alias")
+        for _ in range(2):
+            result = self.scan()
+            self.assertEqual(result["total_files"], 1)
+            self.assertEqual(result["total_size"], 7)
+            self.assertEqual(result["skipped"], 1)
+            self.assertEqual(sum(node["size"] for node in result["tree"]["children"]), 7)
+
+    def test_alias_root_is_canonicalized_and_nested_directory_names_are_preserved(self):
+        (self.root / "mnt").mkdir()
+        (self.root / "mnt" / "private-file").write_bytes(b"1234567")
+        alias = Path(self.files.name) / "alias"
+        alias.symlink_to(self.root, target_is_directory=True)
+        result = self.request(f"SCAN {alias}/.")
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["tree"]["path"], str(self.root.resolve()))
+        self.assertEqual(result["total_size"], 7)
+        self.assertEqual(result["tree"]["children"][0]["name"], "mnt")
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux virtual filesystem types")
+    def test_virtual_filesystem_roots_and_aliases_are_rejected(self):
+        alias = Path(self.files.name) / "proc-alias"
+        alias.symlink_to("/proc", target_is_directory=True)
+        for path in ["/proc", "/sys", str(alias)]:
+            result = self.request(f"SCAN {path}")
+            self.assertEqual(result["status"], "error")
+            self.assertIn("Virtual filesystems", result["message"])
 
 
 class DeletionRaceTests(unittest.TestCase):
