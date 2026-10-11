@@ -198,11 +198,15 @@ sequenceDiagram
     R-->>U: Connected!
     
     %% Scan Phase
-    U->>R: invoke("run_scan", { path: "/sdcard" })
-    R->>D: TCP Send: `SCAN /sdcard\n`
-    Note over D: Recursive Fast POSIX Traversal
-    D-->>R: Stream Large JSON Tree
-    R-->>U: Parse & Render Treemap
+    U->>R: invoke("run_scan", { path, scanId, onProgress })
+    R->>D: TCP Send: `SCAN_STREAM /sdcard\n`
+    Note over D: Bounded POSIX Traversal
+    loop During traversal
+        D-->>R: Length-prefixed entry batches
+        R-->>U: Partial counts and recent entries
+    end
+    D-->>R: Completion totals, then EOF
+    R-->>U: Validate and render finished tree
     
     %% Delete Phase
     U->>R: invoke("delete_item", { path })
@@ -242,6 +246,15 @@ provides a serial reference. The pending directory queue holds at most 64 jobs
 and does not keep directory descriptors open. Root and `--read-only` scans
 remain serial, retaining their exclusions and scan-wide inode deduplication.
 The authenticated protocol and deletion checks apply to every worker setting.
+
+The app uses scan stream v1 (advertised alongside protocol v3): bounded JSON
+frames arrive during traversal, with partial counts/recent entries and a cancel
+button. Successful results require verified totals, a terminal completion frame
+and EOF. Rebuild the daemon before running this version locally; older v3
+binaries without the streaming capability are refused. See
+[the stream contract](docs/scan-stream-v1.md) for bounds, completion rules,
+cancellation, timing semantics and the remaining full-tree frontend limitation.
+
 
 ### 2. Install Frontend Dependencies
 ```bash

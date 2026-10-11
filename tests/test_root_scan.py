@@ -16,6 +16,7 @@ import sys
 import tempfile
 import time
 import unittest
+import test_stream_scan
 
 
 @unittest.skipUnless(sys.platform.startswith("linux") and os.geteuid() == 0,
@@ -90,6 +91,26 @@ class RootScanSandboxTests(unittest.TestCase):
                 self.process.kill()
                 self.process.wait()
         self.process.stderr.close()
+
+    connect_scan = test_stream_scan.StreamScanTests.connect_scan
+    collect = test_stream_scan.StreamScanTests.collect
+
+    def test_streamed_root_aliases_preserve_exclusions_deduplication_and_read_only(self):
+        (self.root / "alias").symlink_to("/", target_is_directory=True)
+        os.link(self.root / "data" / "private", self.root / "data" / "hard-link")
+        for path in ["/alias/.", "/./", "/"]:
+            done, entries, _ = self.collect(path)
+            self.assertEqual(done["type"], "done")
+            self.assertEqual(entries[0]["path"], "/")
+            self.assertEqual(done["scan_threads"], 1)
+            self.assertEqual(done["total_files"], 2)
+            self.assertEqual(done["total_size"], len(b"private app data") + len(b"system files"))
+            self.assertEqual(done["skipped"], 8)
+            self.assertTrue(all(not entry["path"].startswith("//") for entry in entries.values()))
+            self.assertFalse(any(entry["name"] in {"proc", "mnt", "storage", "dev", "sys", "data_mirror", "apex"} for entry in entries.values()))
+        result = self.request("DELETE /data/private")
+        self.assertEqual(result["status"], "error")
+        self.assertIn("read-only", result["message"])
 
     def test_whole_internal_scan_excludes_aliases_and_uses_single_slash_paths(self):
         status = self.request("PING")

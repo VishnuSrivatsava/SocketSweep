@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { Treemap, ResponsiveContainer, Tooltip as RechartsTooltip } from "recharts";
 import "./App.css";
 
@@ -10,11 +10,13 @@ interface FileNode {
   path: string;
   type: "file" | "directory";
   size: number;
+  counted?: boolean;
   children?: FileNode[];
 }
 
 interface ScanResponse {
   status: string;
+  streamed?: boolean;
   scan_time_ms: number;
   total_files: number;
   total_dirs: number;
@@ -35,7 +37,7 @@ interface ScanResponse {
 const scanPhaseLog = (r: ScanResponse): string | null => {
   if (r.traverse_ms === undefined) return null;
   const kb = r.bytes_sent !== undefined ? `, ${(r.bytes_sent / 1024).toFixed(0)} KB sent` : "";
-  return `[SCAN] Phases: traverse ${r.traverse_ms}ms · sort ${r.sort_ms}ms · serialize ${r.serialize_ms}ms · send ${r.send_ms}ms${kb}`;
+  return `[SCAN] ${r.streamed ? "Stream timings (overlap): scan" : "Phases: traverse"} ${r.traverse_ms}ms · sort ${r.sort_ms}ms · serialize ${r.serialize_ms}ms · send ${r.send_ms}ms${kb}`;
 };
 
 interface Toast {
@@ -97,10 +99,10 @@ function buildBreadcrumbs(root: FileNode, targetPath: string): { name: string; p
 
 function countNodeStats(node: FileNode): { size: number; files: number; dirs: number } {
   if (node.type === "file") {
-    return { size: node.size, files: 1, dirs: 0 };
+    return { size: node.size, files: node.counted === false ? 0 : 1, dirs: 0 };
   }
   let files = 0;
-  let dirs = 1;
+  let dirs = node.counted === false ? 0 : 1;
   if (node.children) {
     for (const child of node.children) {
       const stats = countNodeStats(child);
@@ -361,7 +363,17 @@ function SetupScreen({ onConnect, loading, rootMode, onRootModeChange, rootPath,
 
 // ── Scanning Screen ─────────────────────────────────────────────────────────
 
-function ScanningScreen({ statusText }: { statusText: string }) {
+interface ScanProgress {
+  scan_id: string;
+  files: number;
+  directories: number;
+  total_size: number;
+  recent_names: string[];
+}
+
+function ScanningScreen({ statusText, progress, onCancel, cancelling }: {
+  statusText: string; progress: ScanProgress | null; onCancel: () => void; cancelling: boolean;
+}) {
   return (
     <div className="flex flex-col items-center justify-center flex-1 gap-8 animate-fade-in-up">
       <div className="relative w-32 h-32">
@@ -386,6 +398,21 @@ function ScanningScreen({ statusText }: { statusText: string }) {
       <div className="text-center">
         <h2 className="text-lg font-semibold text-zinc-200">Scanning Storage</h2>
         <p className="mt-1 text-sm text-zinc-500 font-mono">{statusText}</p>
+        {progress && (
+          <div className="mt-4 space-y-2" aria-live="polite">
+            <p className="text-sm text-zinc-300">
+              {formatNumber(progress.files)} files · {formatNumber(progress.directories)} directories · {formatBytes(progress.total_size)} found
+            </p>
+            <p className="text-xs text-zinc-500">Partial results — totals may increase</p>
+            <ul className="text-xs text-zinc-400 max-w-sm mx-auto space-y-1">
+              {progress.recent_names.map((name, index) => <li className="truncate" key={index}>{name}</li>)}
+            </ul>
+          </div>
+        )}
+        <button onClick={onCancel} disabled={cancelling}
+          className="mt-5 px-4 py-2 rounded-lg text-sm bg-zinc-800 text-zinc-300 hover:bg-zinc-700 disabled:opacity-50">
+          {cancelling ? "Cancelling…" : "Cancel scan"}
+        </button>
       </div>
     </div>
   );
@@ -716,6 +743,9 @@ function App() {
   const [rootMode, setRootMode] = useState(false);
   const [rootPath, setRootPath] = useState("/data");
   const [scanData, setScanData] = useState<ScanResponse | null>(null);
+  const [scanProgress, setScanProgress] = useState<ScanProgress | null>(null);
+  const [cancelling, setCancelling] = useState(false);
+  const activeScan = useRef<string | null>(null);
   const [statusText, setStatusText] = useState("Initializing…");
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
@@ -750,6 +780,37 @@ function App() {
     setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 300);
   }, []);
 
+  const requestScan = useCallback(async (path: string): Promise<ScanResponse> => {
+    const scanId = crypto.randomUUID();
+    activeScan.current = scanId;
+    setScanProgress(null);
+    setCancelling(false);
+    const onProgress = new Channel<ScanProgress>();
+    onProgress.onmessage = (progress) => {
+      if (activeScan.current === scanId && progress.scan_id === scanId) setScanProgress(progress);
+      void invoke("acknowledge_scan_progress", { scanId: progress.scan_id }).catch(() => {
+        // The completed/cancelled scan may already have released its channel.
+      });
+    };
+    try {
+      const raw = await invoke<string>("run_scan", { path, scanId, onProgress });
+      const parsed: ScanResponse = JSON.parse(raw);
+      if (parsed.status !== "ok") throw new Error("Scan returned non-ok status");
+      return parsed;
+    } finally {
+      if (activeScan.current === scanId) activeScan.current = null;
+      setCancelling(false);
+    }
+  }, []);
+
+  const handleCancelScan = useCallback(async () => {
+    const scanId = activeScan.current;
+    if (!scanId) return;
+    setCancelling(true);
+    try { await invoke("cancel_scan", { scanId }); }
+    catch (err) { pushToast(String(err), "error"); setCancelling(false); }
+  }, [pushToast]);
+
   // ── Connect flow ────────────────────────────────────────────────────────
   const handleConnect = useCallback(async () => {
     setPhase("connecting");
@@ -770,8 +831,7 @@ function App() {
       setPhase("scanning");
       setStatusText(`Scanning ${scanPath} …`);
       addLog(`[SCAN] Requesting ${scanPath}${rootMode ? " with read-only root access" : ""}...`);
-      const raw = await invoke<string>("run_scan", { path: scanPath });
-      const parsed: ScanResponse = JSON.parse(raw);
+      const parsed = await requestScan(scanPath);
 
       if (parsed.status !== "ok") throw new Error("Scan returned non-ok status");
 
@@ -785,11 +845,11 @@ function App() {
         try { await invoke<string>("stop_daemon"); } catch { /* show the original connection error */ }
       }
       const message = err instanceof Error ? err.message : String(err);
-      pushToast(message, "error");
-      addLog(`[ERROR] ${message}`);
+      pushToast(message, message === "Scan cancelled" ? "info" : "error");
+      addLog(`${message === "Scan cancelled" ? "[SCAN]" : "[ERROR]"} ${message}`);
       setPhase("setup");
     }
-  }, [pushToast, addLog, rootMode, rootPath]);
+  }, [pushToast, addLog, rootMode, rootPath, requestScan]);
 
   // ── Rescan ──────────────────────────────────────────────────────────────
   const handleRescan = useCallback(async () => {
@@ -799,8 +859,7 @@ function App() {
     setStatusText(`Re-scanning ${scanPath} …`);
     addLog(`[SCAN] Re-scanning ${scanPath}...`);
     try {
-      const raw = await invoke<string>("run_scan", { path: scanPath });
-      const parsed: ScanResponse = JSON.parse(raw);
+      const parsed = await requestScan(scanPath);
       setScanData(parsed);
       setPhase("result");
       addLog(`[SCAN] Complete! ${parsed.scan_time_ms}ms.`);
@@ -808,11 +867,15 @@ function App() {
       if (phases) addLog(phases);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
-      pushToast(message, "error");
-      addLog(`[ERROR] ${message}`);
-      setPhase("result");
+      pushToast(message, message === "Scan cancelled" ? "info" : "error");
+      addLog(`${message === "Scan cancelled" ? "[SCAN]" : "[ERROR]"} ${message}`);
+      // The failed generation is not an authoritative deletion root. Clear
+      // old results rather than offering actions backed by an invalid scan.
+      try { await invoke("stop_daemon"); } catch { /* retain the scan error */ }
+      setScanData(null);
+      setPhase("setup");
     }
-  }, [pushToast, addLog, scanData]);
+  }, [pushToast, addLog, scanData, requestScan]);
 
   // ── Disconnect ──────────────────────────────────────────────────────────
   const handleDisconnect = useCallback(async () => {
@@ -899,7 +962,7 @@ function App() {
             onRootPathChange={setRootPath}
           />
         )}
-        {phase === "scanning" && <ScanningScreen statusText={statusText} />}
+        {phase === "scanning" && <ScanningScreen statusText={statusText} progress={scanProgress} onCancel={handleCancelScan} cancelling={cancelling} />}
         {phase === "result" && scanData && (
           <ResultScreen
             data={scanData}

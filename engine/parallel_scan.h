@@ -31,6 +31,32 @@ struct Task {
     int depth;
 };
 
+inline safe_delete::Fd open_directory(const safe_delete::Root& root, const FileNode& node) {
+    // Reopen from the pinned root one component at a time. In particular,
+    // opening a queued path must not follow a replaced parent symlink.
+    safe_delete::Fd current(::openat(root.fd.get(), ".",
+                                      O_RDONLY | O_DIRECTORY | O_CLOEXEC));
+    if (current.get() < 0) return current;
+    const size_t prefix = root.path.size() + (root.path == "/" ? 0 : 1);
+    size_t start = prefix;
+    while (start < node.path.size()) {
+        size_t end = node.path.find('/', start);
+        if (end == std::string::npos) end = node.path.size();
+        const std::string name = node.path.substr(start, end - start);
+        SOCKETSWEEP_SCAN_CHECKPOINT("before_open", current.get(), name.c_str());
+        current.reset(::openat(current.get(), name.c_str(),
+                                O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
+        if (current.get() < 0) return current;
+        start = end + 1;
+    }
+    struct stat actual{};
+    if (::fstat(current.get(), &actual) != 0 ||
+        actual.st_dev != node.device || actual.st_ino != node.inode) {
+        current.reset();
+    }
+    return current;
+}
+
 // Only directory jobs enter the queue. Its entries own no descriptors. A
 // worker owns its subtree's child vector until enumeration is finished, then
 // publishes pointers into that stable vector. Aggregation and sorting happen
@@ -49,32 +75,6 @@ class Pool {
     size_t queue_peak_ = 1;
     std::array<Worker, MAX_WORKERS> workers_;
 
-    safe_delete::Fd open_directory(const FileNode& node) const {
-        // Reopen from the pinned root one component at a time. In particular,
-        // opening a queued path must not follow a replaced parent symlink.
-        safe_delete::Fd current(::openat(root_.fd.get(), ".",
-                                          O_RDONLY | O_DIRECTORY | O_CLOEXEC));
-        if (current.get() < 0) return current;
-        const size_t prefix = root_.path.size() + (root_.path == "/" ? 0 : 1);
-        size_t start = prefix;
-        while (start < node.path.size()) {
-            size_t end = node.path.find('/', start);
-            if (end == std::string::npos) end = node.path.size();
-            const std::string name = node.path.substr(start, end - start);
-            SOCKETSWEEP_SCAN_CHECKPOINT("before_open", current.get(), name.c_str());
-            current.reset(::openat(current.get(), name.c_str(),
-                                    O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
-            if (current.get() < 0) return current;
-            start = end + 1;
-        }
-        struct stat actual{};
-        if (::fstat(current.get(), &actual) != 0 ||
-            actual.st_dev != node.device || actual.st_ino != node.inode) {
-            current.reset();
-        }
-        return current;
-    }
-
     bool enqueue(Task task) {
         std::lock_guard<std::mutex> lock(mutex_);
         if (queue_.size() >= MAX_PENDING) return false;
@@ -89,7 +89,7 @@ class Pool {
         FileNode& node = *task.node;
         ++stats.dirs;
         if (task.depth >= max_depth_) { ++stats.errors; return; }
-        safe_delete::Fd opened = open_directory(node);
+        safe_delete::Fd opened = open_directory(root_, node);
         if (opened.get() < 0) { ++stats.errors; return; }
         SOCKETSWEEP_SCAN_CHECKPOINT("opened", opened.get(), node.path.c_str());
         DIR* listing = ::fdopendir(opened.get());
