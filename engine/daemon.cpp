@@ -39,6 +39,7 @@ namespace cfg {
     constexpr int         MAX_DEPTH         = 64;
     constexpr int         RECV_TIMEOUT_SEC  = 30;
     constexpr size_t      MAX_COMMAND_BYTES = 16 * 1024;
+    constexpr int         DEFAULT_SCAN_THREADS = 4;
 }
 
 // ── Globals ─────────────────────────────────────────────────────────────────
@@ -47,6 +48,7 @@ static void on_signal(int) { g_running = 0; }
 static safe_delete::Root g_scan_root; // pins the successful scan root for deletion
 static std::string g_session_token;
 static bool g_read_only = false;
+static int g_scan_threads = cfg::DEFAULT_SCAN_THREADS;
 
 // Per-phase scan timing (see SCAN in handle_client). Counters reset per scan.
 static int64_t g_sort_ns    = 0;  // cumulative time sorting directory children
@@ -141,6 +143,10 @@ struct FileNode {
     bool                     is_dir = false;
     int64_t                  size   = 0;
     std::vector<FileNode>    children;
+    // Only directory entries use these identities. Parallel jobs validate an
+    // opened directory before reading it; neither field is sent to the host.
+    dev_t                   device = 0;
+    ino_t                   inode = 0;
 };
 
 struct ScanStats {
@@ -303,6 +309,8 @@ static FileNode scan(const std::string& path, const std::string& name,
     return node;
 }
 
+#include "parallel_scan.h"
+
 // ── Command dispatch ────────────────────────────────────────────────────────
 static void handle_client(int fd) {
     struct timeval tv { cfg::RECV_TIMEOUT_SEC, 0 };
@@ -398,7 +406,22 @@ static void handle_client(int fd) {
 
         auto t0 = std::chrono::steady_clock::now();
         ScanStats stats{};
-        FileNode tree = scan(root, root_name, stats, 0);
+        FileNode tree;
+        int scan_threads = 1;
+        if (g_read_only) {
+            // Preserve serial, scan-wide inode deduplication and exclusions.
+            tree = scan(root, root_name, stats, 0);
+        } else {
+            tree.name = root_name;
+            tree.path = root;
+            tree.is_dir = true;
+            tree.device = g_scan_root.identity.st_dev;
+            tree.inode = g_scan_root.identity.st_ino;
+            const auto result = parallel_scan::run(g_scan_root, tree, stats,
+                                                   g_scan_threads, cfg::MAX_DEPTH);
+            scan_threads = result.workers;
+            g_sort_ns = result.sort_ns;
+        }
         if (!g_scan_root.unchanged()) {
             g_scan_root.clear();
             out.write("{\"status\":\"error\",\"message\":\"Scan root changed during scan; scan again\"}\n");
@@ -419,6 +442,8 @@ static void handle_client(int fd) {
 
         out.write("{\"status\":\"ok\",\"scan_time_ms\":");
         out.write(std::to_string(ms));
+        out.write(",\"scan_threads\":");
+        out.write(std::to_string(scan_threads));
         out.write(",\"total_files\":");
         out.write(std::to_string(stats.files));
         out.write(",\"total_dirs\":");
@@ -471,12 +496,28 @@ int main(int argc, char* argv[]) {
 
     // A shell-owned 0600 file supplies the secret, keeping it out of process
     // arguments. Consume and unlink it before accepting any connections.
-    if (argc != 3 && !(argc == 4 && std::strcmp(argv[3], "--read-only") == 0)) {
-        std::fprintf(stderr, "[engine] Usage: daemon PORT TOKEN_FILE [--read-only]\n");
+    bool read_only_requested = false;
+    bool threads_requested = false;
+    bool valid_args = argc >= 3;
+    for (int i = 3; valid_args && i < argc; ++i) {
+        if (std::strcmp(argv[i], "--read-only") == 0 && !read_only_requested) {
+            read_only_requested = true;
+        } else if (std::strcmp(argv[i], "--threads") == 0 && !threads_requested && i + 1 < argc) {
+            threads_requested = true;
+            const std::string value = argv[++i];
+            valid_args = value.size() == 1 && value[0] >= '1' &&
+                         value[0] <= '0' + parallel_scan::MAX_WORKERS;
+            if (valid_args) g_scan_threads = value[0] - '0';
+        } else {
+            valid_args = false;
+        }
+    }
+    if (!valid_args) {
+        std::fprintf(stderr, "[engine] Usage: daemon PORT TOKEN_FILE [--read-only] [--threads 1..8]\n");
         return 1;
     }
     // Even an already-root ADB shell using the default launch cannot delete.
-    g_read_only = argc == 4 || ::geteuid() == 0;
+    g_read_only = read_only_requested || ::geteuid() == 0;
     {
         std::ifstream token_file(argv[2]);
         std::getline(token_file, g_session_token);

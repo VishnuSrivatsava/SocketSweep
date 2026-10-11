@@ -18,13 +18,14 @@ import unittest
 
 class DaemonHarness(unittest.TestCase):
     read_only = False
+    scan_threads = None
     @classmethod
     def setUpClass(cls):
         cls.build_dir = tempfile.TemporaryDirectory(prefix="socketsweep-test-build-")
         cls.binary = str(Path(cls.build_dir.name) / "daemon")
         compiler = os.environ.get("CXX") or shutil.which("clang++") or "c++"
         source = Path(__file__).resolve().parents[1] / "engine" / "daemon.cpp"
-        subprocess.run([compiler, "-std=c++17", "-O2", "-Wall", "-Wextra",
+        subprocess.run([compiler, "-std=c++17", "-O2", "-pthread", "-Wall", "-Wextra",
                         "-Wpedantic", "-fno-exceptions", "-fno-rtti",
                         str(source), "-o", cls.binary], check=True)
 
@@ -47,6 +48,8 @@ class DaemonHarness(unittest.TestCase):
         args = [self.binary, str(self.port), str(token_file)]
         if self.read_only:
             args.append("--read-only")
+        if self.scan_threads is not None:
+            args.extend(["--threads", str(self.scan_threads)])
         self.process = subprocess.Popen(args,
                                         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         self.addCleanup(self.stop)
@@ -202,6 +205,7 @@ class DaemonTests(DaemonHarness):
 
 class ReadOnlyDaemonTests(DaemonHarness):
     read_only = True
+    scan_threads = 8
 
     def test_read_only_handshake_and_delete_block_before_and_after_scan(self):
         status = self.request("PING")
@@ -212,7 +216,9 @@ class ReadOnlyDaemonTests(DaemonHarness):
         target.write_text("private app data")
         for scanned in [False, True]:
             if scanned:
-                self.assertTrue(self.scan()["read_only"])
+                result = self.scan()
+                self.assertTrue(result["read_only"])
+                self.assertEqual(result["scan_threads"], 1)
             result = self.request(f"DELETE {target}")
             self.assertEqual(result["status"], "error")
             self.assertIn("read-only", result["message"])
@@ -256,7 +262,7 @@ class DeletionRaceTests(unittest.TestCase):
         cls.binary = str(Path(cls.build_dir.name) / "race-tests")
         compiler = os.environ.get("CXX") or shutil.which("clang++") or "c++"
         source = Path(__file__).resolve().parent / "safe_delete_test.cpp"
-        subprocess.run([compiler, "-std=c++17", "-O2", "-Wall", "-Wextra",
+        subprocess.run([compiler, "-std=c++17", "-O2", "-pthread", "-Wall", "-Wextra",
                         "-Wpedantic", "-fno-exceptions", "-fno-rtti",
                         str(source), "-o", cls.binary], check=True)
 

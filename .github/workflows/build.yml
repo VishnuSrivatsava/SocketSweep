@@ -92,7 +92,7 @@ jobs:
           echo "Compiler: $CC"
 
           "$CC" \
-            -std=c++17 -O2 -Wall -Wextra -Wpedantic \
+            -std=c++17 -O2 -pthread -Wall -Wextra -Wpedantic \
             -fno-exceptions -fno-rtti -DNDEBUG \
             -static-libstdc++ \
             -s \
@@ -113,7 +113,7 @@ jobs:
           Write-Host "Compiler: $CC"
 
           & $CC `
-            -std=c++17 -O2 -Wall -Wextra -Wpedantic `
+            -std=c++17 -O2 -pthread -Wall -Wextra -Wpedantic `
             -fno-exceptions -fno-rtti -DNDEBUG `
             -static-libstdc++ `
             -s `
