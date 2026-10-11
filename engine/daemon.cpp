@@ -11,6 +11,11 @@
 #include <cerrno>
 #include <string>
 #include <vector>
+#include <set>
+#if defined(__linux__)
+#include <linux/magic.h>
+#include <sys/vfs.h>
+#endif
 
 #include <arpa/inet.h>
 #include <dirent.h>
@@ -41,6 +46,7 @@ static volatile sig_atomic_t g_running = 1;
 static void on_signal(int) { g_running = 0; }
 static safe_delete::Root g_scan_root; // pins the successful scan root for deletion
 static std::string g_session_token;
+static bool g_read_only = false;
 
 // Per-phase scan timing (see SCAN in handle_client). Counters reset per scan.
 static int64_t g_sort_ns    = 0;  // cumulative time sorting directory children
@@ -142,6 +148,8 @@ struct ScanStats {
     int64_t dirs       = 0;
     int64_t total_size = 0;
     int64_t errors     = 0;
+    int64_t skipped    = 0;
+    std::set<std::pair<dev_t, ino_t>> seen;
 };
 
 // ── JSON helpers ────────────────────────────────────────────────────────────
@@ -190,6 +198,35 @@ static void serialize_node(JsonStream& out, const FileNode& node) {
 }
 
 // ── Recursive Scanner ───────────────────────────────────────────────────────
+static bool virtual_filesystem(const std::string& path) {
+#if defined(__linux__)
+    struct statfs fs{};
+    if (::statfs(path.c_str(), &fs) != 0) return false; // traversal reports access errors
+    switch (static_cast<unsigned long>(fs.f_type)) {
+        case PROC_SUPER_MAGIC: case SYSFS_MAGIC: case DEVPTS_SUPER_MAGIC:
+        case CGROUP_SUPER_MAGIC: case CGROUP2_SUPER_MAGIC: case DEBUGFS_MAGIC:
+        case TRACEFS_MAGIC: case SECURITYFS_MAGIC: case SELINUX_MAGIC:
+        case BPF_FS_MAGIC: case NSFS_MAGIC:
+            return true;
+        default: return false;
+    }
+#else
+    (void)path;
+    return false;
+#endif
+}
+
+static bool root_mount_alias(const char* name) {
+    // /data/media is the canonical internal media tree. FUSE views can have
+    // different device/inode identities, so inode deduplication alone cannot
+    // prevent them being counted again through /mnt or /storage. APEX images
+    // are already represented by their package files on /system or /data.
+    return std::strcmp(name, "mnt") == 0 || std::strcmp(name, "storage") == 0 ||
+           std::strcmp(name, "data_mirror") == 0 || std::strcmp(name, "apex") == 0 ||
+           std::strcmp(name, "proc") == 0 || std::strcmp(name, "sys") == 0 ||
+           std::strcmp(name, "dev") == 0;
+}
+
 static FileNode scan(const std::string& path, const std::string& name,
                      ScanStats& st, int depth)
 {
@@ -205,6 +242,15 @@ static FileNode scan(const std::string& path, const std::string& name,
     }
 
     if (depth > 0 && S_ISLNK(info.st_mode)) return node;
+    node.is_dir = S_ISDIR(info.st_mode);
+
+    if (g_read_only && (S_ISREG(info.st_mode) || S_ISDIR(info.st_mode))) {
+        if ((S_ISDIR(info.st_mode) && virtual_filesystem(path)) ||
+            !st.seen.emplace(info.st_dev, info.st_ino).second) {
+            ++st.skipped;
+            return node;
+        }
+    }
 
     if (S_ISREG(info.st_mode)) {
         node.size = info.st_size;
@@ -234,7 +280,11 @@ static FileNode scan(const std::string& path, const std::string& name,
         if (ent->d_type == DT_LNK) continue;
         #endif
 
-        std::string child_path = path + '/' + ent->d_name;
+        if (g_read_only && path == "/" && root_mount_alias(ent->d_name)) {
+            ++st.skipped;
+            continue;
+        }
+        std::string child_path = (path == "/" ? path : path + '/') + ent->d_name;
 
         FileNode child = scan(child_path, ent->d_name, st, depth + 1);
         node.size += child.size;
@@ -272,7 +322,11 @@ static void handle_client(int fd) {
     }
 
     if (cmd == "PING") {
-        out.write("{\"status\":\"ok\",\"message\":\"pong\",\"protocol_version\":2}\n");
+        out.write("{\"status\":\"ok\",\"message\":\"pong\",\"protocol_version\":3,\"uid\":");
+        out.write(std::to_string(::geteuid()));
+        out.write(",\"read_only\":");
+        out.write(g_read_only ? "true" : "false");
+        out.write("}\n");
     }
     else if (cmd == "SHUTDOWN") {
         out.write("{\"status\":\"ok\",\"message\":\"shutting down\"}\n");
@@ -281,6 +335,10 @@ static void handle_client(int fd) {
         return;
     }
     else if (cmd.rfind("DELETE ", 0) == 0) {
+        if (g_read_only) {
+            out.write("{\"status\":\"error\",\"message\":\"Root scans are read-only; deletion is disabled\"}\n");
+            return;
+        }
         std::string target = cmd.substr(7);
 
         const auto result = safe_delete::remove(g_scan_root, target, cfg::MAX_DEPTH);
@@ -304,6 +362,22 @@ static void handle_client(int fd) {
             if (!arg.empty()) root = arg;
         }
         while (root.size() > 1 && root.back() == '/') root.pop_back();
+
+        if (g_read_only) {
+            // Resolve aliases once so /./ or a symlink to / cannot bypass the
+            // whole-device exclusions. Read-only scans never enable deletion.
+            char* canonical = ::realpath(root.c_str(), nullptr);
+            if (!canonical) {
+                out.write("{\"status\":\"error\",\"message\":\"Scan root is not an accessible directory\"}\n");
+                return;
+            }
+            root = canonical;
+            std::free(canonical);
+            if (virtual_filesystem(root)) {
+                out.write("{\"status\":\"error\",\"message\":\"Virtual filesystems are excluded from root scans\"}\n");
+                return;
+            }
+        }
 
         std::string root_name = root;
         auto pos = root.rfind('/');
@@ -353,6 +427,10 @@ static void handle_client(int fd) {
         out.write(std::to_string(stats.total_size));
         out.write(",\"errors\":");
         out.write(std::to_string(stats.errors));
+        out.write(",\"skipped\":");
+        out.write(std::to_string(stats.skipped));
+        out.write(",\"read_only\":");
+        out.write(g_read_only ? "true" : "false");
         out.write(",\"tree\":");
         serialize_node(out, tree);
 
@@ -393,10 +471,12 @@ int main(int argc, char* argv[]) {
 
     // A shell-owned 0600 file supplies the secret, keeping it out of process
     // arguments. Consume and unlink it before accepting any connections.
-    if (argc != 3) {
-        std::fprintf(stderr, "[engine] Usage: daemon PORT TOKEN_FILE\n");
+    if (argc != 3 && !(argc == 4 && std::strcmp(argv[3], "--read-only") == 0)) {
+        std::fprintf(stderr, "[engine] Usage: daemon PORT TOKEN_FILE [--read-only]\n");
         return 1;
     }
+    // Even an already-root ADB shell using the default launch cannot delete.
+    g_read_only = argc == 4 || ::geteuid() == 0;
     {
         std::ifstream token_file(argv[2]);
         std::getline(token_file, g_session_token);

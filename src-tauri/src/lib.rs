@@ -7,7 +7,7 @@
 //
 // Wire protocol (matches Phase 1 daemon):
 // Each connection starts with "AUTH <session token>\n", then one command.
-//   → "PING\n"              ← {"status":"ok","message":"pong","protocol_version":2}
+//   → "PING\n"              ← {"status":"ok","protocol_version":3,"uid":…,"read_only":…}
 //   → "SCAN [path]\n"       ← {"status":"ok","scan_time_ms":…,"tree":{…}}
 //   → "SHUTDOWN\n"          ← {"status":"ok","message":"shutting down"}
 // ============================================================================
@@ -33,8 +33,44 @@ static SCAN_ROOT: Mutex<Option<String>> = Mutex::new(None);
 /// Tracks the serial of the connected device so all ADB calls target the right device.
 static DEVICE_SERIAL: Mutex<Option<String>> = Mutex::new(None);
 static SESSION_TOKEN: Mutex<Option<String>> = Mutex::new(None);
+static READ_ONLY: Mutex<bool> = Mutex::new(false);
+static DEVICE_PRIVILEGE: Mutex<Privilege> = Mutex::new(Privilege::Shell);
 // Keep connection changes, scans, and deletes in order across async commands.
 static DAEMON_OPERATION: Mutex<()> = Mutex::new(());
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Privilege {
+    Shell,
+    Su,
+}
+
+fn select_privilege(
+    root_mode: bool,
+    mut execute: impl FnMut(&[&str]) -> Result<String, String>,
+) -> Result<Privilege, String> {
+    if !root_mode {
+        return Ok(Privilege::Shell);
+    }
+    if execute(&["shell", "id -u"])?.trim() == "0" {
+        return Ok(Privilege::Shell); // adbd was already started as root
+    }
+    if execute(&["shell", "su -c 'id -u'"]).is_ok_and(|uid| uid.trim() == "0") {
+        return Ok(Privilege::Su);
+    }
+    Err("Root access was not granted. Approve shell access in your phone's root manager and retry, or use adb root on a supported debug build before connecting.".into())
+}
+
+fn device_shell_command(privilege: Privilege, command: &str) -> String {
+    match privilege {
+        Privilege::Shell => command.to_string(),
+        Privilege::Su => format!("su -c '{}'", command.replace('\'', "'\\''")),
+    }
+}
+
+fn device_shell(adb_path: &std::path::Path, command: &str) -> Result<String, String> {
+    let privilege = *DEVICE_PRIVILEGE.lock().map_err(|_| "Device state is unavailable")?;
+    adb_s(adb_path, &["shell", &device_shell_command(privilege, command)])
+}
 
 // ── Resource Resolution ─────────────────────────────────────────────────────
 
@@ -215,6 +251,22 @@ struct DaemonStatus {
     status: String,
     message: Option<String>,
     protocol_version: Option<u32>,
+    uid: Option<u32>,
+    read_only: Option<bool>,
+}
+
+fn require_handshake(response: &str, root_mode: bool) -> Result<DaemonStatus, String> {
+    let parsed = require_ok(response)?;
+    if parsed.protocol_version != Some(3) || parsed.uid.is_none() || parsed.read_only.is_none() {
+        return Err("Bundled daemon is outdated. Rebuild it before connecting.".into());
+    }
+    if (root_mode && parsed.uid != Some(0)) || (parsed.uid == Some(0) && parsed.read_only != Some(true)) {
+        return Err("Daemon did not start with read-only root access.".into());
+    }
+    if root_mode && parsed.read_only != Some(true) {
+        return Err("Root scans must be read-only.".into());
+    }
+    Ok(parsed)
 }
 
 fn require_ok(response: &str) -> Result<DaemonStatus, String> {
@@ -244,29 +296,36 @@ fn check_adb(app: tauri::AppHandle) -> Result<String, String> {
 }
 
 #[tauri::command(async)]
-fn init_daemon(app: tauri::AppHandle) -> Result<String, String> {
+fn init_daemon(app: tauri::AppHandle, root_mode: Option<bool>) -> Result<String, String> {
     let _operation = DAEMON_OPERATION.lock().map_err(|_| "Daemon state is unavailable")?;
+    let has_session = DEVICE_SERIAL.lock().map_err(|_| "Device state is unavailable")?.is_some();
+    if has_session {
+        stop_daemon_inner(&app)?;
+    }
     *SESSION_TOKEN.lock().map_err(|_| "Session state is unavailable")? = None;
     *SCAN_ROOT.lock().map_err(|_| "Scan state is unavailable")? = None;
     *DEVICE_SERIAL.lock().map_err(|_| "Device state is unavailable")? = None;
-    let result = init_daemon_inner(app.clone());
+    *READ_ONLY.lock().map_err(|_| "Session state is unavailable")? = false;
+    *DEVICE_PRIVILEGE.lock().map_err(|_| "Device state is unavailable")? = Privilege::Shell;
+    let result = init_daemon_inner(app.clone(), root_mode.unwrap_or(false));
     if result.is_err() {
         // A failed push/start/handshake must not leave a live daemon or a
         // startup secret behind. Only target the device selected by this init.
         let has_device = DEVICE_SERIAL.lock().map_err(|_| "Device state is unavailable")?.is_some();
         if has_device {
             if let Ok(adb_path) = get_bundled_binary(&app, "adb") {
-                let _ = adb_s(&adb_path, &["shell", "pkill -f '[s]ocketsweep_daemon' || true"]);
+                let _ = device_shell(&adb_path, "pkill -f '[s]ocketsweep_daemon' || true");
                 let _ = adb_s(&adb_path, &["forward", "--remove", &format!("tcp:{DAEMON_PORT}")]);
                 let _ = adb_s(&adb_path, &["shell", "rm", "-f", DEVICE_TOKEN_PATH]);
             }
         }
         *DEVICE_SERIAL.lock().map_err(|_| "Device state is unavailable")? = None;
+        *DEVICE_PRIVILEGE.lock().map_err(|_| "Device state is unavailable")? = Privilege::Shell;
     }
     result
 }
 
-fn init_daemon_inner(app: tauri::AppHandle) -> Result<String, String> {
+fn init_daemon_inner(app: tauri::AppHandle, root_mode: bool) -> Result<String, String> {
     let adb_path = get_bundled_binary(&app, "adb")?;
     let daemon_src = get_bundled_binary(&app, "daemon")?;
 
@@ -295,8 +354,12 @@ fn init_daemon_inner(app: tauri::AppHandle) -> Result<String, String> {
         *guard = Some(serial);
     }
 
+    let privilege = select_privilege(root_mode, |args| adb_s(&adb_path, args))?;
+    *DEVICE_PRIVILEGE.lock().map_err(|_| "Device state is unavailable")? = privilege;
+
     // 2 — Kill any zombie daemon before we push/start.
-    let _ = adb_s(&adb_path, &["shell", "pkill -f '[s]ocketsweep_daemon' || true"]);
+    device_shell(&adb_path, "pkill -f '[s]ocketsweep_daemon' || true")?;
+    std::thread::sleep(Duration::from_millis(300));
 
     // Transfer the fresh secret over stdin into a shell-owned file. Neither
     // the startup arguments nor the frontend response contain the secret.
@@ -315,14 +378,11 @@ fn init_daemon_inner(app: tauri::AppHandle) -> Result<String, String> {
     // 5 — Make it executable.
     adb_s(&adb_path, &["shell", "chmod", "+x", DEVICE_BIN_PATH])?;
 
-    // 5 — Kill any previously running instance (ignore errors).
-    let _ = adb_s(&adb_path, &["shell", "pkill", "-f", "'[s]ocketsweep_daemon'"]);
-    std::thread::sleep(Duration::from_millis(300));
-
     // 6 — Start the daemon in the background on the device.
-    let start_cmd = format!("nohup {DEVICE_BIN_PATH} {DAEMON_PORT} {DEVICE_TOKEN_PATH} > /dev/null 2>&1 & echo $!; exit");
-    let pid_output = adb_s(&adb_path, &["shell", &start_cmd])?;
-    let pid = pid_output.trim().to_string();
+    let mode_arg = if root_mode { " --read-only" } else { "" };
+    let start_cmd = format!("nohup {DEVICE_BIN_PATH} {DAEMON_PORT} {DEVICE_TOKEN_PATH}{mode_arg} > /dev/null 2>&1 & echo $!; exit");
+    let pid_output = device_shell(&adb_path, &start_cmd)?;
+    let pid: u32 = pid_output.trim().parse().map_err(|_| "Daemon launch did not return a process ID")?;
 
     // 7 — Set up the USB TCP tunnel.
     adb_s(&adb_path, &["forward", &format!("tcp:{DAEMON_PORT}"), &format!("tcp:{DAEMON_PORT}")])?;
@@ -330,13 +390,11 @@ fn init_daemon_inner(app: tauri::AppHandle) -> Result<String, String> {
     // 8 — Ping-Retry loop.
     let mut pong = String::new();
     let mut connected_daemon = false;
+    let mut handshake_error = String::new();
     for _ in 0..15 {
         std::thread::sleep(Duration::from_millis(150));
         match daemon_command_with_token("PING", &token).and_then(|res| {
-            let parsed = require_ok(&res)?;
-            if parsed.protocol_version != Some(2) {
-                return Err("Bundled daemon is outdated. Rebuild it before connecting.".into());
-            }
+            require_handshake(&res, root_mode)?;
             Ok(res)
         }) {
             Ok(res) => {
@@ -344,15 +402,19 @@ fn init_daemon_inner(app: tauri::AppHandle) -> Result<String, String> {
                 connected_daemon = true;
                 break;
             }
-            Err(_) => continue,
+            Err(error) => {
+                handshake_error = error;
+                continue;
+            }
         }
     }
 
     if !connected_daemon {
-        return Err("Daemon did not complete the authenticated handshake. Rebuild the bundled daemon and reconnect.".into());
+        return Err(format!("Daemon did not complete the authenticated handshake: {handshake_error}"));
     }
 
     *SESSION_TOKEN.lock().map_err(|_| "Session state is unavailable")? = Some(token);
+    *READ_ONLY.lock().map_err(|_| "Session state is unavailable")? = require_handshake(&pong, root_mode)?.read_only.unwrap();
 
     Ok(format!(
         "{{\"daemon_pid\":\"{pid}\",\"ping_response\":{pong}}}"
@@ -388,19 +450,34 @@ fn ping_daemon() -> Result<String, String> {
 #[tauri::command(async)]
 fn stop_daemon(app: tauri::AppHandle) -> Result<String, String> {
     let _operation = DAEMON_OPERATION.lock().map_err(|_| "Daemon state is unavailable")?;
-    let adb_path = get_bundled_binary(&app, "adb")?;
-    let response = daemon_command("SHUTDOWN").unwrap_or_else(|_| "daemon already stopped".into());
-    let _ = adb_s(&adb_path, &["forward", "--remove", &format!("tcp:{DAEMON_PORT}")]);
-    let _ = adb_s(&adb_path, &["shell", "rm", "-f", DEVICE_BIN_PATH, DEVICE_TOKEN_PATH]);
+    stop_daemon_inner(&app)
+}
+
+fn stop_daemon_inner(app: &tauri::AppHandle) -> Result<String, String> {
+    let adb_path = get_bundled_binary(app, "adb")?;
+    let response = daemon_command("SHUTDOWN");
+    let has_device = DEVICE_SERIAL.lock().map_err(|_| "Device state is unavailable")?.is_some();
+    if has_device {
+        if response.is_err() {
+            let _ = device_shell(&adb_path, "pkill -f '[s]ocketsweep_daemon' || true");
+        }
+        let _ = adb_s(&adb_path, &["forward", "--remove", &format!("tcp:{DAEMON_PORT}")]);
+        let _ = adb_s(&adb_path, &["shell", "rm", "-f", DEVICE_BIN_PATH, DEVICE_TOKEN_PATH]);
+    }
     *SESSION_TOKEN.lock().map_err(|_| "Session state is unavailable")? = None;
     *SCAN_ROOT.lock().map_err(|_| "Scan state is unavailable")? = None;
     *DEVICE_SERIAL.lock().map_err(|_| "Device state is unavailable")? = None;
-    Ok(response)
+    *DEVICE_PRIVILEGE.lock().map_err(|_| "Device state is unavailable")? = Privilege::Shell;
+    *READ_ONLY.lock().map_err(|_| "Session state is unavailable")? = false;
+    Ok(response.unwrap_or_else(|_| "daemon already stopped".into()))
 }
 
 #[tauri::command(async)]
 fn delete_item(path: String) -> Result<String, String> {
     let _operation = DAEMON_OPERATION.lock().map_err(|_| "Daemon state is unavailable")?;
+    if *READ_ONLY.lock().map_err(|_| "Session state is unavailable")? {
+        return Err("Root scans are read-only; deletion is disabled.".into());
+    }
     // Prevent deletion of the scan root directory.
     let root = SCAN_ROOT.lock().map_err(|_| "Scan state is unavailable")?;
     match root.as_ref() {
@@ -435,6 +512,44 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn root_access_is_explicit_and_verified_without_restarting_adbd() {
+        assert_eq!(select_privilege(false, |_| panic!("Normal mode must not request root")).unwrap(), Privilege::Shell);
+        assert_eq!(select_privilege(true, |args| {
+            assert_eq!(args, ["shell", "id -u"]);
+            Ok("0\n".into())
+        }).unwrap(), Privilege::Shell);
+        let mut calls = Vec::new();
+        assert_eq!(select_privilege(true, |args| {
+            calls.push(args.join(" "));
+            Ok(if calls.len() == 1 { "2000\n" } else { "0\n" }.into())
+        }).unwrap(), Privilege::Su);
+        assert_eq!(calls, ["shell id -u", "shell su -c 'id -u'"]);
+        assert!(select_privilege(true, |_| Ok("2000\n".into())).is_err());
+        assert!(select_privilege(true, |_| Err("permission denied".into())).is_err());
+    }
+
+    #[test]
+    fn root_handshake_rejects_wrong_uid_writable_daemon_and_old_protocol() {
+        let response = |version, uid, read_only| format!("{{\"status\":\"ok\",\"protocol_version\":{version},\"uid\":{uid},\"read_only\":{read_only}}}");
+        assert!(require_handshake(&response(3, 0, true), true).is_ok());
+        assert!(require_handshake(&response(3, 2000, false), false).is_ok());
+        assert!(require_handshake(&response(3, 0, true), false).is_ok());
+        assert!(require_handshake(&response(3, 2000, true), true).is_err());
+        assert!(require_handshake(&response(3, 0, false), true).is_err());
+        assert!(require_handshake(&response(3, 0, false), false).is_err());
+        assert!(require_handshake(&response(2, 0, true), true).is_err());
+        assert!(require_handshake("{\"status\":\"ok\",\"protocol_version\":3}", true).is_err());
+    }
+
+    #[test]
+    fn su_wraps_the_complete_shell_command_without_exposing_its_quotes() {
+        let command = "pkill -f '[s]ocketsweep_daemon' || true";
+        assert_eq!(device_shell_command(Privilege::Shell, command), command);
+        let wrapped = device_shell_command(Privilege::Su, command);
+        assert_eq!(wrapped, "su -c 'pkill -f '\\''[s]ocketsweep_daemon'\\'' || true'");
+    }
 
     #[test]
     fn paths_keep_their_exact_spaces() {

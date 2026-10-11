@@ -99,6 +99,35 @@ Go to **Settings → About Phone → tap "Build Number" 7 times** to unlock Deve
 
 That's it. No apps to install on your phone, no Wi-Fi setup, no root required.
 
+### Optional: scan with root access
+
+This option is included in source builds and the next release; v1.1.1 does not
+expose it.
+
+On an already-rooted device, enable **Scan with root access (read-only)** before
+connecting. Choose **App and user data (`/data`)** to include private app files,
+**Internal data and system (`/`)** for a broader internal scan, or **Shared storage
+(`/sdcard`)**. Rescan keeps the current scan location.
+
+SocketSweep uses an already-root ADB shell when available; otherwise it requests
+access through `su`. Approve shell access in your phone's root manager when
+prompted. On supported debug builds, you can run `adb root` yourself before
+connecting. SocketSweep does not restart ADB or root your device, and refuses a
+root session unless the daemon confirms UID 0 and read-only mode.
+
+Root scans disable deletion in the UI, bridge, and daemon. A daemon running as
+root is always read-only, even if the root option was left off. Disconnect and
+use an ordinary non-root ADB shell to restore the normal shared-storage workflow.
+
+The internal `/` scan excludes `/proc`, `/sys`, `/dev`, `/mnt`, `/storage`,
+`/data_mirror`, and `/apex` to avoid virtual files and duplicate views of storage.
+It includes internal shared media through `/data/media`; removable storage is
+outside this scan's scope. Virtual filesystems are skipped elsewhere too, and
+files or directories with the same device/inode identity are counted once per
+root scan. Symlinks are not followed below the scan root. Totals use logical file
+sizes, rather than allocated blocks, so they need not match `du` or Android's
+storage screen exactly. Access errors and excluded entries are shown in results.
+
 ---
 
 ## 🧠 How It Works (The Short Version)
@@ -205,7 +234,7 @@ bash ./build.sh
 ```
 *This generates the stripped `daemon` binary in the `engine/` directory and
 copies it into `src-tauri/bin/daemon`, which Tauri bundles. Rebuild after changing
-the daemon so local development uses the current protocol.*
+the daemon so local development uses the current protocol (v3).*
 
 ### 2. Install Frontend Dependencies
 ```bash

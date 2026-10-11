@@ -20,6 +20,8 @@ interface ScanResponse {
   total_dirs: number;
   total_size: number;
   errors: number;
+  read_only: boolean;
+  skipped: number;
   /** Per-phase timings from daemon v1.2+ (issue #3); absent in older daemons. */
   traverse_ms?: number;
   sort_ms?: number;
@@ -252,7 +254,14 @@ function TerminalLog({ logs }: { logs: string[] }) {
 
 // ── Setup Screen ────────────────────────────────────────────────────────────
 
-function SetupScreen({ onConnect, loading }: { onConnect: () => void; loading: boolean }) {
+function SetupScreen({ onConnect, loading, rootMode, onRootModeChange, rootPath, onRootPathChange }: {
+  onConnect: () => void;
+  loading: boolean;
+  rootMode: boolean;
+  onRootModeChange: (enabled: boolean) => void;
+  rootPath: string;
+  onRootPathChange: (path: string) => void;
+}) {
   return (
     <div className="flex flex-col items-center justify-center flex-1 gap-8 animate-fade-in-up">
       {/* Hero */}
@@ -277,6 +286,41 @@ function SetupScreen({ onConnect, loading }: { onConnect: () => void; loading: b
             <span className="text-zinc-600">Bypasses MTP — direct POSIX scanning.</span>
           </p>
         </div>
+      </div>
+
+      <div className="w-full max-w-sm px-6 space-y-3 text-sm">
+        <label className="flex items-center gap-3 text-zinc-300">
+          <input
+            id="scan-as-root"
+            type="checkbox"
+            checked={rootMode}
+            disabled={loading}
+            onChange={(event) => onRootModeChange(event.target.checked)}
+            className="accent-teal-500"
+          />
+          Scan with root access (read-only)
+        </label>
+        {rootMode && (
+          <>
+            <label className="block text-xs text-zinc-400" htmlFor="root-scan-path">Scan location</label>
+            <select
+              id="root-scan-path"
+              value={rootPath}
+              disabled={loading}
+              onChange={(event) => onRootPathChange(event.target.value)}
+              className="w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-zinc-200"
+            >
+              <option value="/data">App and user data (/data)</option>
+              <option value="/">Internal data and system (/)</option>
+              <option value="/sdcard">Shared storage (/sdcard)</option>
+            </select>
+            <p className="text-xs leading-relaxed text-zinc-400">
+              Requires a rooted device. Approve shell access on your phone if prompted.
+              Internal scans exclude virtual filesystems and duplicate storage views;
+              removable storage is excluded from the whole-device scan.
+            </p>
+          </>
+        )}
       </div>
 
       {/* Connect Button */}
@@ -378,7 +422,7 @@ function FileTreeNode({
   node: FileNode;
   parentSize: number;
   depth: number;
-  onNuke: (path: string, name: string) => void;
+  onNuke?: (path: string, name: string) => void;
   onZoom: (path: string) => void;
 }) {
   const [open, setOpen] = useState(depth < 1);
@@ -429,7 +473,7 @@ function FileTreeNode({
           {formatBytes(node.size)}
         </span>
 
-        {depth > 0 && (
+        {depth > 0 && onNuke && (
           <button
             className="btn-nuke opacity-0 group-hover:opacity-100 ml-1 px-2 py-1 rounded-md
               bg-danger-600/20 border border-danger-500/30 text-danger-400
@@ -437,7 +481,7 @@ function FileTreeNode({
               cursor-pointer"
             onClick={(e) => {
               e.stopPropagation();
-              onNuke(node.path, node.name);
+              onNuke?.(node.path, node.name);
             }}
             title={`Delete ${node.name}`}
           >
@@ -597,6 +641,12 @@ function ResultScreen({
         </div>
       </header>
 
+      {data.read_only && (
+        <div className="px-6 pt-3 text-xs text-accent-300">
+          Root access · Read-only · Deletion disabled
+        </div>
+      )}
+
       {/* Stats row */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 px-6 py-4 shrink-0">
         <StatCard label="Total Size" value={formatBytes(data.total_size)} accent />
@@ -644,13 +694,15 @@ function ResultScreen({
       <div className="flex-1 overflow-y-auto px-3 pb-4 min-h-0">
         <div className="flex items-center gap-2 px-3 py-2 mb-1">
           <span className="text-xs font-semibold text-zinc-500 uppercase tracking-wider flex-1">Storage Map</span>
-          <span className="text-xs text-zinc-600">{data.errors > 0 ? `${data.errors} access errors skipped` : ""}</span>
+          <span className="text-xs text-zinc-500">
+            {[data.errors > 0 ? `${data.errors} access errors` : "", data.skipped > 0 ? `${data.skipped} excluded or duplicate entries` : ""].filter(Boolean).join(" · ")}
+          </span>
         </div>
         <FileTreeNode
           node={renderNode}
           parentSize={renderNode.size}
           depth={0}
-          onNuke={onNuke}
+          onNuke={data.read_only ? undefined : onNuke}
           onZoom={setZoomPath}
         />
       </div>
@@ -662,6 +714,8 @@ function ResultScreen({
 
 function App() {
   const [phase, setPhase] = useState<AppPhase>("setup");
+  const [rootMode, setRootMode] = useState(false);
+  const [rootPath, setRootPath] = useState("/data");
   const [scanData, setScanData] = useState<ScanResponse | null>(null);
   const [statusText, setStatusText] = useState("Initializing…");
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -700,21 +754,24 @@ function App() {
   // ── Connect flow ────────────────────────────────────────────────────────
   const handleConnect = useCallback(async () => {
     setPhase("connecting");
+    const scanPath = rootMode ? rootPath : "/sdcard";
+    let initialized = false;
     try {
       setStatusText("Checking ADB…");
       addLog("[ADB] Checking version...");
       const adbVersion = await invoke<string>("check_adb");
       addLog(`[ADB] Found: ${adbVersion}`);
 
-      setStatusText("Pushing daemon to device…");
+      setStatusText(rootMode ? "Requesting root access…" : "Pushing daemon to device…");
       addLog("[ADB] Killing old daemon, pushing new binary...");
-      await invoke<string>("init_daemon");
+      await invoke<string>("init_daemon", { rootMode });
+      initialized = true;
       addLog("[SOCKET] Daemon started and connected via TCP tunnel!");
 
       setPhase("scanning");
-      setStatusText("Scanning /sdcard …");
-      addLog("[SCAN] Requesting /sdcard (Fast POSIX traversal)...");
-      const raw = await invoke<string>("run_scan", { path: "/sdcard" });
+      setStatusText(`Scanning ${scanPath} …`);
+      addLog(`[SCAN] Requesting ${scanPath}${rootMode ? " with read-only root access" : ""}...`);
+      const raw = await invoke<string>("run_scan", { path: scanPath });
       const parsed: ScanResponse = JSON.parse(raw);
 
       if (parsed.status !== "ok") throw new Error("Scan returned non-ok status");
@@ -725,20 +782,25 @@ function App() {
       const phases = scanPhaseLog(parsed);
       if (phases) addLog(phases);
     } catch (err: unknown) {
+      if (initialized) {
+        try { await invoke<string>("stop_daemon"); } catch { /* show the original connection error */ }
+      }
       const message = err instanceof Error ? err.message : String(err);
       pushToast(message, "error");
       addLog(`[ERROR] ${message}`);
       setPhase("setup");
     }
-  }, [pushToast, addLog]);
+  }, [pushToast, addLog, rootMode, rootPath]);
 
   // ── Rescan ──────────────────────────────────────────────────────────────
   const handleRescan = useCallback(async () => {
+    if (!scanData) return;
+    const scanPath = scanData.tree.path;
     setPhase("scanning");
-    setStatusText("Re-scanning /sdcard …");
-    addLog("[SCAN] Re-scanning /sdcard...");
+    setStatusText(`Re-scanning ${scanPath} …`);
+    addLog(`[SCAN] Re-scanning ${scanPath}...`);
     try {
-      const raw = await invoke<string>("run_scan", { path: "/sdcard" });
+      const raw = await invoke<string>("run_scan", { path: scanPath });
       const parsed: ScanResponse = JSON.parse(raw);
       setScanData(parsed);
       setPhase("result");
@@ -751,7 +813,7 @@ function App() {
       addLog(`[ERROR] ${message}`);
       setPhase("result");
     }
-  }, [pushToast, addLog]);
+  }, [pushToast, addLog, scanData]);
 
   // ── Disconnect ──────────────────────────────────────────────────────────
   const handleDisconnect = useCallback(async () => {
@@ -771,13 +833,15 @@ function App() {
 
   // ── Nuke (Delete) ───────────────────────────────────────────────────────
   const handleNuke = useCallback((path: string, name: string) => {
+    if (scanData?.read_only) return;
     setConfirmDelete({ path, name });
-  }, []);
+  }, [scanData]);
 
   const executeDelete = useCallback(async () => {
     if (!confirmDelete) return;
     const { path, name } = confirmDelete;
     setConfirmDelete(null);
+    if (scanData?.read_only) return;
 
     // Guard: never delete the scan root
     if (scanData && path === scanData.tree.path) {
@@ -826,8 +890,16 @@ function App() {
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
 
       <div className="flex-1 flex flex-col min-h-0">
-        {phase === "setup" && <SetupScreen onConnect={handleConnect} loading={false} />}
-        {phase === "connecting" && <SetupScreen onConnect={handleConnect} loading={true} />}
+        {(phase === "setup" || phase === "connecting") && (
+          <SetupScreen
+            onConnect={handleConnect}
+            loading={phase === "connecting"}
+            rootMode={rootMode}
+            onRootModeChange={setRootMode}
+            rootPath={rootPath}
+            onRootPathChange={setRootPath}
+          />
+        )}
         {phase === "scanning" && <ScanningScreen statusText={statusText} />}
         {phase === "result" && scanData && (
           <ResultScreen
