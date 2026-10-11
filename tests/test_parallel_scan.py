@@ -35,6 +35,14 @@ class ParallelScanTests(unittest.TestCase):
     def test_queued_directory_inode_replacement_is_reported(self): self.run_case("inode")
     def test_opened_directory_cannot_redirect_to_symlink_target(self): self.run_case("opened")
     def test_low_descriptor_limit_cleanup_and_worker_creation_failure(self): self.run_case("resources")
+    def test_stream_all_worker_counts_match_serial_statistics(self): self.run_case("stream_equivalence")
+    def test_stream_low_descriptor_limit_and_worker_creation_failure(self): self.run_case("stream_resources")
+    def test_stream_queued_symlink_replacement_is_not_followed(self): self.run_case("stream_symlink")
+    def test_stream_queued_inode_replacement_is_reported(self): self.run_case("stream_inode")
+    def test_stream_opened_directory_cannot_redirect(self): self.run_case("stream_opened")
+    def test_results_precede_completion_and_cancel_never_enables_deletion(self): self.run_case("stream_cancel")
+    def test_stream_staging_budget_fails_without_success(self): self.run_case("stream_budget")
+    def test_stream_root_replacement_fails_without_success(self): self.run_case("stream_root")
 
 
 class ParallelProtocolTests(DaemonHarness):

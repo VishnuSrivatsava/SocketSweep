@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 #include <set>
+#include <limits>
 #if defined(__linux__)
 #include <linux/magic.h>
 #include <sys/vfs.h>
@@ -29,6 +30,8 @@
 #include <iostream>
 #include <fstream>
 #include <poll.h>
+#include <atomic>
+#include <mutex>
 
 // ── Configuration ───────────────────────────────────────────────────────────
 namespace cfg {
@@ -159,7 +162,8 @@ struct ScanStats {
 };
 
 // ── JSON helpers ────────────────────────────────────────────────────────────
-static void json_escape_into(JsonStream& out, const std::string& s) {
+template <typename Output>
+static void json_escape_into(Output& out, const std::string& s) {
     for (unsigned char c : s) {
         switch (c) {
             case '"':  out.write("\\\"", 2); break;
@@ -181,6 +185,8 @@ static void json_escape_into(JsonStream& out, const std::string& s) {
         }
     }
 }
+
+#include "scan_output.h"
 
 static void serialize_node(JsonStream& out, const FileNode& node) {
     out.write("{\"name\":\"");
@@ -234,41 +240,54 @@ static bool root_mount_alias(const char* name) {
 }
 
 static FileNode scan(const std::string& path, const std::string& name,
-                     ScanStats& st, int depth)
+                     ScanStats& st, int depth, ScanOutput* output = nullptr, uint64_t parent = 0)
 {
     FileNode node;
     node.name = name;
     node.path = path;
+    uint64_t id = 0;
+    const auto emit = [&](const char* kind, bool counted) {
+        return !output || output->entry(node, parent, kind, counted, id);
+    };
+    if (output && !output->alive()) return node;
 
     struct stat info{};
     int stat_res = (depth == 0) ? ::stat(path.c_str(), &info) : ::lstat(path.c_str(), &info);
     if (stat_res != 0) {
         ++st.errors;
+        emit("other", false);
         return node;
     }
 
-    if (depth > 0 && S_ISLNK(info.st_mode)) return node;
+    if (depth > 0 && S_ISLNK(info.st_mode)) { emit("other", false); return node; }
     node.is_dir = S_ISDIR(info.st_mode);
 
     if (g_read_only && (S_ISREG(info.st_mode) || S_ISDIR(info.st_mode))) {
         if ((S_ISDIR(info.st_mode) && virtual_filesystem(path)) ||
             !st.seen.emplace(info.st_dev, info.st_ino).second) {
             ++st.skipped;
+            emit(node.is_dir ? "directory" : "file", false);
             return node;
         }
     }
 
     if (S_ISREG(info.st_mode)) {
+        if (output && (info.st_size < 0 || st.total_size > std::numeric_limits<int64_t>::max() - info.st_size)) {
+            output->error("Scan byte total overflow");
+            return node;
+        }
         node.size = info.st_size;
         ++st.files;
         st.total_size += info.st_size;
+        emit("file", true);
         return node;
     }
 
-    if (!S_ISDIR(info.st_mode)) return node;
+    if (!S_ISDIR(info.st_mode)) { emit("other", false); return node; }
 
     node.is_dir = true;
     ++st.dirs;
+    if (!emit("directory", true)) return node;
 
     if (depth >= cfg::MAX_DEPTH) { ++st.errors; return node; }
 
@@ -276,7 +295,11 @@ static FileNode scan(const std::string& path, const std::string& name,
     if (!dir) { ++st.errors; return node; }
 
     struct dirent* ent;
-    while ((ent = ::readdir(dir)) != nullptr) {
+    while (true) {
+        if (output && !output->alive()) break;
+        errno = 0;
+        ent = ::readdir(dir);
+        if (!ent) { if (output && errno != 0) ++st.errors; break; }
         if (ent->d_name[0] == '.') {
             if (ent->d_name[1] == '\0') continue;
             if (ent->d_name[1] == '.' && ent->d_name[2] == '\0') continue;
@@ -292,12 +315,13 @@ static FileNode scan(const std::string& path, const std::string& name,
         }
         std::string child_path = (path == "/" ? path : path + '/') + ent->d_name;
 
-        FileNode child = scan(child_path, ent->d_name, st, depth + 1);
+        FileNode child = scan(child_path, ent->d_name, st, depth + 1, output, id);
         node.size += child.size;
-        node.children.push_back(std::move(child));
+        if (!output) node.children.push_back(std::move(child));
     }
     ::closedir(dir);
 
+    if (output) return node; // Completed children have already been sent.
     const auto sort_t0 = std::chrono::steady_clock::now();
     std::sort(node.children.begin(), node.children.end(),
               [](const FileNode& a, const FileNode& b) {
@@ -310,6 +334,7 @@ static FileNode scan(const std::string& path, const std::string& name,
 }
 
 #include "parallel_scan.h"
+#include "stream_scan.h"
 
 // ── Command dispatch ────────────────────────────────────────────────────────
 static void handle_client(int fd) {
@@ -330,7 +355,7 @@ static void handle_client(int fd) {
     }
 
     if (cmd == "PING") {
-        out.write("{\"status\":\"ok\",\"message\":\"pong\",\"protocol_version\":3,\"uid\":");
+        out.write("{\"status\":\"ok\",\"message\":\"pong\",\"protocol_version\":3,\"scan_stream_version\":1,\"uid\":");
         out.write(std::to_string(::geteuid()));
         out.write(",\"read_only\":");
         out.write(g_read_only ? "true" : "false");
@@ -362,6 +387,10 @@ static void handle_client(int fd) {
             out.write(std::to_string(result.removed));
             out.write(" items\"}\n");
         }
+    }
+    else if (cmd == "SCAN_STREAM" || cmd.rfind("SCAN_STREAM ", 0) == 0) {
+        stream_scan::handle(fd, cmd.size() > 11 ? cmd.substr(12) : cfg::DEFAULT_ROOT);
+        return;
     }
     else if (cmd == "SCAN" || cmd.rfind("SCAN ", 0) == 0) {
         std::string root = cfg::DEFAULT_ROOT;

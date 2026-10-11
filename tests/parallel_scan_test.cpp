@@ -5,6 +5,7 @@
 #include <map>
 #include <pthread.h>
 #include <sys/resource.h>
+#include <thread>
 
 static std::function<void(const char*, int, const char*)> checkpoint;
 static void scan_checkpoint(const char* event, int parent, const char* name) {
@@ -52,7 +53,7 @@ struct Snapshot {
     ScanStats stats;
     parallel_scan::Result result;
 };
-static Snapshot run(const std::string& path, int workers) {
+static Snapshot run(const std::string& path, int workers, bool streaming = false) {
     safe_delete::Root root;
     require(root.open(path), "root open failed");
     Snapshot snapshot;
@@ -61,7 +62,24 @@ static Snapshot run(const std::string& path, int workers) {
     snapshot.tree.is_dir = true;
     snapshot.tree.device = root.identity.st_dev;
     snapshot.tree.inode = root.identity.st_ino;
-    snapshot.result = parallel_scan::run(root, snapshot.tree, snapshot.stats, workers, cfg::MAX_DEPTH);
+    if (streaming) {
+        int sockets[2];
+        require(::socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0, "socketpair failed");
+        safe_delete::Fd writer(sockets[0]), reader(sockets[1]);
+        std::thread drain([&] { char bytes[4096]; while (::recv(reader.get(), bytes, sizeof(bytes), 0) > 0) {} });
+        ScanOutput output(writer.get());
+        require(output.start(path), "stream start failed");
+        uint64_t id = 0;
+        require(output.entry(snapshot.tree, 0, "directory", true, id), "stream root failed");
+        stream_scan::Pool pool(root, output, snapshot.tree);
+        snapshot.result.workers = pool.run(snapshot.stats, workers);
+        snapshot.result.queue_peak = pool.queue_peak();
+        require(output.finish(snapshot.stats, 0, snapshot.result.workers), "stream finish failed");
+        ::shutdown(writer.get(), SHUT_WR);
+        drain.join();
+    } else {
+        snapshot.result = parallel_scan::run(root, snapshot.tree, snapshot.stats, workers, cfg::MAX_DEPTH);
+    }
     require(snapshot.result.workers >= 1 && snapshot.result.workers <= workers,
             "worker count out of bounds");
     require(snapshot.result.queue_peak <= parallel_scan::MAX_PENDING, "queue exceeded bound");
@@ -85,7 +103,7 @@ static void same(const Snapshot& actual, const FileNode& expected, const ScanSta
             actual.stats.total_size == stats.total_size && actual.stats.errors == stats.errors &&
             actual.stats.skipped == stats.skipped, "parallel statistics differ from serial reference");
 }
-static void equivalence() {
+static void equivalence(bool streaming = false) {
     Fixture fixture;
     for (int d = 0; d < 180; ++d) {
         const std::string dir = "album " + std::to_string(d);
@@ -108,7 +126,13 @@ static void equivalence() {
     g_read_only = false;
     FileNode expected = scan(fixture.path, fixture.path.substr(fixture.path.rfind('/') + 1), stats, 0);
     for (int workers : {1, 2, 4, 8}) {
-        for (int repeat = 0; repeat < 3; ++repeat) same(run(fixture.path, workers), expected, stats);
+        for (int repeat = 0; repeat < 3; ++repeat) {
+            auto actual = run(fixture.path, workers, streaming);
+            if (!streaming) same(actual, expected, stats);
+            else require(actual.stats.files == stats.files && actual.stats.dirs == stats.dirs &&
+                         actual.stats.total_size == stats.total_size && actual.stats.errors == stats.errors,
+                         "stream statistics differ from serial reference");
+        }
     }
 }
 static void depth() {
@@ -125,7 +149,7 @@ static void depth() {
     require(stats.errors == 1 && stats.dirs == 65 && stats.files == 64, "bad depth fixture");
     for (int workers : {1, 4, 8}) same(run(fixture.path, workers), expected, stats);
 }
-static void replacement(const std::string& kind) {
+static void replacement(const std::string& kind, bool streaming = false) {
     Fixture fixture;
     fixture.dir("root");
     fixture.dir("root/selected");
@@ -151,7 +175,7 @@ static void replacement(const std::string& kind) {
                               (fixture.path + "/root/selected").c_str()) == 0, "race symlink failed");
         }
     };
-    const auto snapshot = run(fixture.path + "/root", 4);
+    const auto snapshot = run(fixture.path + "/root", 4, streaming);
     checkpoint = {};
     require(fired, "race checkpoint not reached");
     require(snapshot.stats.total_size == (kind == "opened" ? 3 : 0), "replacement data scanned");
@@ -165,7 +189,7 @@ static size_t descriptors() {
     ::closedir(dir);
     return count;
 }
-static void resources() {
+static void resources(bool streaming = false) {
     Fixture fixture;
     for (int i = 0; i < 800; ++i) {
         const auto dir = std::to_string(i);
@@ -178,11 +202,11 @@ static void resources() {
     limited.rlim_cur = std::min<rlim_t>(saved.rlim_cur, 32);
     require(::setrlimit(RLIMIT_NOFILE, &limited) == 0, "setrlimit failed");
     const size_t before = descriptors();
-    const auto serial = run(fixture.path, 1);
+    const auto serial = run(fixture.path, 1, streaming);
     require(serial.result.queue_peak == parallel_scan::MAX_PENDING && serial.stats.files == 800,
             "queue saturation fallback lost work");
     for (int i = 0; i < 8; ++i) {
-        const auto snapshot = run(fixture.path, 8);
+        const auto snapshot = run(fixture.path, 8, streaming);
         require(snapshot.stats.files == 800 && snapshot.stats.total_size == 5600 &&
                 snapshot.stats.errors == 0, "low-descriptor scan failed");
     }
@@ -191,11 +215,96 @@ static void resources() {
     for (int failure : {0, 2}) {
         fail_after = failure;
         create_calls = 0;
-        const auto snapshot = run(fixture.path, 8);
+        const auto snapshot = run(fixture.path, 8, streaming);
         require(snapshot.result.workers == failure + 1, "worker creation fallback failed");
         require(snapshot.stats.files == 800 && snapshot.stats.errors == 0, "worker fallback lost files");
     }
     fail_after = -1;
+}
+static std::string read_frame(int fd) {
+    uint32_t size = 0;
+    require(::recv(fd, &size, sizeof(size), MSG_WAITALL) == sizeof(size), "missing frame header");
+    size = ntohl(size);
+    require(size > 0 && size <= ScanOutput::MAX_FRAME_BYTES, "bad frame size");
+    std::string text(size, ' ');
+    require(::recv(fd, text.data(), size, MSG_WAITALL) == size, "missing frame body");
+    return text;
+}
+static void stream_cancel() {
+    Fixture fixture;
+    fixture.dir("selected"); fixture.file("selected/later", 20); fixture.file("early", 7);
+    g_read_only = false;
+    require(g_scan_root.open(fixture.path), "previous root open failed");
+    int sockets[2];
+    require(::socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0, "socketpair failed");
+    safe_delete::Fd writer(sockets[0]), reader(sockets[1]);
+    std::mutex mutex;
+    std::condition_variable ready;
+    bool blocked = false, release = false;
+    checkpoint = [&](const char* event, int, const char* name) {
+        if (std::string(event) != "opened" || std::string(name) != fixture.path + "/selected") return;
+        std::unique_lock<std::mutex> lock(mutex);
+        blocked = true; ready.notify_one();
+        ready.wait(lock, [&] { return release; });
+    };
+    std::thread server([&] { stream_scan::handle(writer.get(), fixture.path); });
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        require(ready.wait_for(lock, std::chrono::seconds(5), [&] { return blocked; }), "traversal barrier not reached");
+    }
+    // Traversal is deterministically unfinished while these records arrive.
+    require(read_frame(reader.get()).find("started") != std::string::npos, "missing start");
+    // Worker callbacks are paused: the first entry is guaranteed to have been
+    // flushed immediately, irrespective of directory enumeration order.
+    require(read_frame(reader.get()).find("entries") != std::string::npos, "missing root record");
+    const auto first = read_frame(reader.get());
+    require(first.find("entries") != std::string::npos, "missing first result");
+    const bool early = first.find("early") != std::string::npos || first.find("selected") != std::string::npos;
+    require(early, "no result before completion");
+    ::shutdown(reader.get(), SHUT_RDWR);
+    {
+        std::lock_guard<std::mutex> lock(mutex); release = true; ready.notify_one();
+    }
+    server.join(); checkpoint = {};
+    require(g_scan_root.fd.get() < 0, "cancelled scan enabled deletion");
+}
+static void stream_limits_and_root_replacement(bool replace) {
+    Fixture fixture;
+    fixture.dir("root"); fixture.file("root/keep", 7);
+    for (int i = 0; i < 30; ++i) fixture.dir("root/dir" + std::to_string(i));
+    const auto path = fixture.path + "/root";
+    g_read_only = false;
+    int sockets[2];
+    require(::socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0, "socketpair failed");
+    safe_delete::Fd writer(sockets[0]), reader(sockets[1]);
+    std::string wire;
+    std::thread drain([&] { char bytes[4096]; ssize_t size; while ((size = ::recv(reader.get(), bytes, sizeof(bytes), 0)) > 0) wire.append(bytes, size); });
+    if (replace) {
+        bool fired = false;
+        checkpoint = [&](const char* event, int, const char* name) {
+            if (fired || std::string(event) != "opened" || std::string(name) != path) return;
+            fired = true;
+            require(::rename(path.c_str(), (fixture.path + "/moved").c_str()) == 0, "root rename failed");
+            fixture.dir("root"); fixture.file("root/replacement", 1000000);
+        };
+        stream_scan::handle(writer.get(), path);
+        checkpoint = {};
+        require(fired && g_scan_root.fd.get() < 0, "changed root enabled deletion");
+    } else {
+        safe_delete::Root root;
+        require(root.open(path), "root open failed");
+        FileNode node; node.name = "root"; node.path = path; node.is_dir = true;
+        node.device = root.identity.st_dev; node.inode = root.identity.st_ino;
+        ScanOutput output(writer.get());
+        require(output.start(path), "stream start failed");
+        uint64_t id = 0; require(output.entry(node, 0, "directory", true, id), "root entry failed");
+        stream_scan::Pool pool(root, output, node, 256);
+        ScanStats stats; const int workers = pool.run(stats, 4);
+        require(!output.finish(stats, 0, workers), "staging budget ignored");
+    }
+    ::shutdown(writer.get(), SHUT_WR); drain.join();
+    require(wire.find("\"type\":\"error\"") != std::string::npos, "missing stream failure");
+    require(wire.find("\"type\":\"done\"") == std::string::npos, "failed stream reported success");
 }
 int main(int argc, char** argv) {
     require(argc == 2, "test case required");
@@ -204,5 +313,11 @@ int main(int argc, char** argv) {
     else if (test == "depth") depth();
     else if (test == "symlink" || test == "inode" || test == "opened") replacement(test);
     else if (test == "resources") resources();
+    else if (test == "stream_equivalence") equivalence(true);
+    else if (test == "stream_resources") resources(true);
+    else if (test == "stream_symlink" || test == "stream_inode" || test == "stream_opened") replacement(test.substr(7), true);
+    else if (test == "stream_cancel") stream_cancel();
+    else if (test == "stream_budget") stream_limits_and_root_replacement(false);
+    else if (test == "stream_root") stream_limits_and_root_replacement(true);
     else require(false, "unknown test case");
 }

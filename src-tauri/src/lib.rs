@@ -8,12 +8,16 @@
 // Wire protocol (matches Phase 1 daemon):
 // Each connection starts with "AUTH <session token>\n", then one command.
 //   → "PING\n"              ← {"status":"ok","protocol_version":3,"uid":…,"read_only":…}
-//   → "SCAN [path]\n"       ← {"status":"ok","scan_time_ms":…,"tree":{…}}
+//   → "SCAN_STREAM path\n" ← length-prefixed JSON frames (scan stream v1)
+//   → "SCAN [path]\n"       ← legacy whole-tree JSON (diagnostics/tests)
 //   → "SHUTDOWN\n"          ← {"status":"ok","message":"shutting down"}
 // ============================================================================
 
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{Shutdown, TcpStream};
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use tauri::ipc::Channel;
+mod scan_stream;
 use std::process::Command;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -251,13 +255,14 @@ struct DaemonStatus {
     status: String,
     message: Option<String>,
     protocol_version: Option<u32>,
+    scan_stream_version: Option<u32>,
     uid: Option<u32>,
     read_only: Option<bool>,
 }
 
 fn require_handshake(response: &str, root_mode: bool) -> Result<DaemonStatus, String> {
     let parsed = require_ok(response)?;
-    if parsed.protocol_version != Some(3) || parsed.uid.is_none() || parsed.read_only.is_none() {
+    if parsed.protocol_version != Some(3) || parsed.scan_stream_version != Some(1) || parsed.uid.is_none() || parsed.read_only.is_none() {
         return Err("Bundled daemon is outdated. Rebuild it before connecting.".into());
     }
     if (root_mode && parsed.uid != Some(0)) || (parsed.uid == Some(0) && parsed.read_only != Some(true)) {
@@ -421,24 +426,172 @@ fn init_daemon_inner(app: tauri::AppHandle, root_mode: bool) -> Result<String, S
     ))
 }
 
-#[tauri::command(async)]
-fn run_scan(path: Option<String>) -> Result<String, String> {
-    let _operation = DAEMON_OPERATION.lock().map_err(|_| "Daemon state is unavailable")?;
-    let effective_root = match path {
-        Some(ref p) if !p.is_empty() => p.clone(),
-        _ => "/sdcard".to_string(), // daemon default
-    };
-    let cmd = format!("SCAN {effective_root}");
-    *SCAN_ROOT.lock().map_err(|_| "Scan state is unavailable")? = None;
-    let response = daemon_command(&cmd)?;
-    require_ok(&response)?;
-
-    // Store the scan root so delete_item can guard against it.
-    if let Ok(mut root) = SCAN_ROOT.lock() {
-        *root = Some(effective_root);
+// Cancellation deliberately bypasses DAEMON_OPERATION: otherwise it would
+// wait for the scan it is meant to stop. IDs prevent a late click cancelling
+// another scan. Registration happens before connect, so early clicks count.
+struct ActiveScan {
+    id: String,
+    cancelled: Arc<AtomicBool>,
+    progress_pending: Arc<AtomicBool>,
+    socket: Option<TcpStream>,
+}
+static ACTIVE_SCAN: Mutex<Option<ActiveScan>> = Mutex::new(None);
+struct ScanRegistration(String);
+impl Drop for ScanRegistration {
+    fn drop(&mut self) {
+        if let Ok(mut active) = ACTIVE_SCAN.lock() {
+            if active.as_ref().is_some_and(|scan| scan.id == self.0) {
+                if let Some(socket) = active.take().and_then(|scan| scan.socket) {
+                    let _ = socket.shutdown(Shutdown::Both);
+                }
+            }
+        }
     }
+}
+#[derive(serde::Serialize)]
+struct ScanProgress {
+    scan_id: String,
+    #[serde(flatten)]
+    progress: scan_stream::Progress,
+}
 
-    Ok(response)
+// At most one progress message may await delivery/acknowledgement. A slow
+// webview cannot turn progress events into an unbounded IPC payload queue.
+#[tauri::command(async)]
+fn acknowledge_scan_progress(scan_id: String) -> Result<(), String> {
+    let active = ACTIVE_SCAN
+        .lock()
+        .map_err(|_| "Scan state is unavailable")?;
+    if let Some(scan) = active.as_ref().filter(|scan| scan.id == scan_id) {
+        scan.progress_pending.store(false, Ordering::SeqCst);
+    }
+    Ok(())
+}
+
+#[tauri::command(async)]
+fn cancel_scan(scan_id: String) -> Result<(), String> {
+    let active = ACTIVE_SCAN
+        .lock()
+        .map_err(|_| "Scan state is unavailable")?;
+    if let Some(scan) = active.as_ref().filter(|scan| scan.id == scan_id) {
+        scan.cancelled.store(true, Ordering::SeqCst);
+        if let Some(socket) = &scan.socket {
+            let _ = socket.shutdown(Shutdown::Both);
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command(async)]
+fn run_scan(
+    path: Option<String>,
+    scan_id: String,
+    on_progress: Channel<ScanProgress>,
+) -> Result<String, String> {
+    if scan_id.is_empty()
+        || scan_id.len() > 64
+        || !scan_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    {
+        return Err("Invalid scan identifier".into());
+    }
+    let _operation = DAEMON_OPERATION
+        .lock()
+        .map_err(|_| "Daemon state is unavailable")?;
+    *SCAN_ROOT.lock().map_err(|_| "Scan state is unavailable")? = None;
+    let effective_root = path
+        .filter(|p| !p.is_empty())
+        .unwrap_or_else(|| "/sdcard".into());
+    let token = SESSION_TOKEN
+        .lock()
+        .map_err(|_| "Session state is unavailable")?
+        .clone()
+        .ok_or("No active daemon session. Connect your device first.")?;
+    let payload = command_payload(&format!("SCAN_STREAM {effective_root}"), &token)?;
+    let read_only = *READ_ONLY
+        .lock()
+        .map_err(|_| "Session state is unavailable")?;
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let progress_pending = Arc::new(AtomicBool::new(false));
+    *ACTIVE_SCAN
+        .lock()
+        .map_err(|_| "Scan state is unavailable")? = Some(ActiveScan {
+        id: scan_id.clone(),
+        cancelled: cancelled.clone(),
+        progress_pending: progress_pending.clone(),
+        socket: None,
+    });
+    let _registration = ScanRegistration(scan_id.clone());
+    let result = (|| {
+        let mut stream =
+            TcpStream::connect_timeout(&DAEMON_ADDR.parse().unwrap(), TCP_CONNECT_TIMEOUT)
+                .map_err(|e| format!("Cannot connect to daemon at {DAEMON_ADDR}: {e}"))?;
+        stream
+            .set_read_timeout(Some(TCP_READ_TIMEOUT))
+            .map_err(|e| e.to_string())?;
+        stream
+            .set_write_timeout(Some(TCP_CONNECT_TIMEOUT))
+            .map_err(|e| e.to_string())?;
+        {
+            let mut active = ACTIVE_SCAN
+                .lock()
+                .map_err(|_| "Scan state is unavailable")?;
+            if cancelled.load(Ordering::SeqCst) {
+                return Err("Scan cancelled".into());
+            }
+            active.as_mut().unwrap().socket = Some(stream.try_clone().map_err(|e| e.to_string())?);
+        }
+        stream
+            .write_all(payload.as_bytes())
+            .map_err(|e| format!("Failed to send scan command: {e}"))?;
+        let response = scan_stream::read(
+            &mut scan_stream::SocketReader::new(&mut stream),
+            read_only,
+            |progress| {
+                if cancelled.load(Ordering::SeqCst) {
+                    return Err("Scan cancelled".into());
+                }
+                if progress_pending
+                    .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_err()
+                {
+                    return Ok(()); // coalesce updates while the previous one awaits acknowledgement
+                }
+                on_progress
+                    .send(ScanProgress {
+                        scan_id: scan_id.clone(),
+                        progress: progress.clone(),
+                    })
+                    .map_err(|e| format!("Cannot deliver scan progress: {e}"))
+            },
+        )?;
+        if !read_only {
+            let normalized = effective_root.trim_end_matches('/');
+            let normalized = if normalized.is_empty() { "/" } else { normalized };
+            if response.root() != normalized {
+                return Err("Daemon scanned an unexpected root".into());
+            }
+        }
+        let json = response.json()?;
+        // Serialize before authorization too: a result exceeding the UI limit
+        // must not leave a bridge deletion root behind.
+        let mut active = ACTIVE_SCAN
+            .lock()
+            .map_err(|_| "Scan state is unavailable")?;
+        if cancelled.load(Ordering::SeqCst) {
+            return Err("Scan cancelled".into());
+        }
+        *SCAN_ROOT.lock().map_err(|_| "Scan state is unavailable")? =
+            Some(response.root().to_string());
+        active.take();
+        Ok(json)
+    })();
+    if cancelled.load(Ordering::SeqCst) {
+        Err("Scan cancelled".into())
+    } else {
+        result
+    }
 }
 
 #[tauri::command(async)]
@@ -501,6 +654,8 @@ pub fn run() {
             check_adb,
             init_daemon,
             run_scan,
+            cancel_scan,
+            acknowledge_scan_progress,
             ping_daemon,
             stop_daemon,
             delete_item,
@@ -532,7 +687,7 @@ mod tests {
 
     #[test]
     fn root_handshake_rejects_wrong_uid_writable_daemon_and_old_protocol() {
-        let response = |version, uid, read_only| format!("{{\"status\":\"ok\",\"protocol_version\":{version},\"uid\":{uid},\"read_only\":{read_only}}}");
+        let response = |version, uid, read_only| format!("{{\"status\":\"ok\",\"protocol_version\":{version},\"scan_stream_version\":1,\"uid\":{uid},\"read_only\":{read_only}}}");
         assert!(require_handshake(&response(3, 0, true), true).is_ok());
         assert!(require_handshake(&response(3, 2000, false), false).is_ok());
         assert!(require_handshake(&response(3, 0, true), false).is_ok());
@@ -541,6 +696,7 @@ mod tests {
         assert!(require_handshake(&response(3, 0, false), false).is_err());
         assert!(require_handshake(&response(2, 0, true), true).is_err());
         assert!(require_handshake("{\"status\":\"ok\",\"protocol_version\":3}", true).is_err());
+        assert!(require_handshake("{\"status\":\"ok\",\"protocol_version\":3,\"uid\":2000,\"read_only\":false}", false).is_err());
     }
 
     #[test]
@@ -580,6 +736,33 @@ mod tests {
         assert!(require_ok("{\"status\":\"ok\"}").is_ok());
         assert!(require_ok("{\"status\":\"error\",\"message\":\"Authentication failed\"}").is_err());
         assert!(require_ok("invalid").is_err());
+    }
+
+    #[test]
+    fn cancellation_is_scoped_to_the_active_id_and_registration_cleans_up() {
+        let _operation = DAEMON_OPERATION.lock().unwrap();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        *ACTIVE_SCAN.lock().unwrap() = Some(ActiveScan {
+            id: "current".into(), cancelled: cancelled.clone(), progress_pending: Arc::new(AtomicBool::new(true)), socket: None,
+        });
+        let registration = ScanRegistration("current".into());
+        acknowledge_scan_progress("previous".into()).unwrap();
+        assert!(ACTIVE_SCAN.lock().unwrap().as_ref().unwrap().progress_pending.load(Ordering::SeqCst));
+        acknowledge_scan_progress("current".into()).unwrap();
+        assert!(!ACTIVE_SCAN.lock().unwrap().as_ref().unwrap().progress_pending.load(Ordering::SeqCst));
+        cancel_scan("previous".into()).unwrap();
+        assert!(!cancelled.load(Ordering::SeqCst));
+        cancel_scan("current".into()).unwrap();
+        assert!(cancelled.load(Ordering::SeqCst));
+        drop(registration);
+        assert!(ACTIVE_SCAN.lock().unwrap().is_none());
+        // An old guard must not clear a newer scan registration.
+        *ACTIVE_SCAN.lock().unwrap() = Some(ActiveScan {
+            id: "next".into(), cancelled, progress_pending: Arc::new(AtomicBool::new(false)), socket: None,
+        });
+        drop(ScanRegistration("current".into()));
+        assert!(ACTIVE_SCAN.lock().unwrap().is_some());
+        drop(ScanRegistration("next".into()));
     }
 
     #[test]
