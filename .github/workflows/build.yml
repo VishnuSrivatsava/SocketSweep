@@ -202,6 +202,7 @@ jobs:
 
           APPIMAGE=$(find src-tauri/target/release/bundle/appimage -name "*.AppImage" | head -1)
           [ -n "$APPIMAGE" ] || { echo "::error::No AppImage found in src-tauri/target/release/bundle/appimage"; exit 1; }
+          APPIMAGE=$(realpath "$APPIMAGE")
           echo "Patching: $APPIMAGE"
 
           # The AppImage runtime itself handles extraction (no FUSE needed).
@@ -269,6 +270,7 @@ jobs:
             "https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage"
           echo "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0  appimagetool" | shasum -a 256 -c -
           chmod +x appimagetool
+          APPIMAGETOOL="$(pwd)/appimagetool"
 
           # Match the versioned Tauri asset name, and follow published stable
           # releases rather than a fixed tag. Derive the repository so forks
@@ -279,8 +281,13 @@ jobs:
           # generates the sidecar from the FINAL image (including its digest).
           # Remove any cached sidecar so a skipped generation cannot pass CI.
           rm -f "$APPIMAGE.zsync"
-          ARCH=x86_64 ./appimagetool --appimage-extract-and-run \
-            --updateinformation "$UPDATE_INFO" "$APPDIR" "$APPIMAGE"
+          # zsyncmake writes basename(AppImage).zsync in its working directory,
+          # so pack from the bundle directory to keep both release assets there.
+          (
+            cd "$(dirname "$APPIMAGE")"
+            ARCH=x86_64 "$APPIMAGETOOL" --appimage-extract-and-run \
+              --updateinformation "$UPDATE_INFO" "$APPDIR" "$APPIMAGE"
+          )
 
           [ "$("$APPIMAGE" --appimage-updateinformation)" = "$UPDATE_INFO" ] || { echo "::error::AppImage update information does not match"; exit 1; }
           [ -s "$APPIMAGE.zsync" ] || { echo "::error::AppImage zsync sidecar is missing or empty"; exit 1; }
