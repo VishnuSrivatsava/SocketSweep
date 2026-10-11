@@ -263,98 +263,97 @@ function SetupScreen({ onConnect, loading, rootMode, onRootModeChange, rootPath,
   onRootPathChange: (path: string) => void;
 }) {
   return (
-    <div className="flex flex-col items-center justify-center flex-1 gap-8 animate-fade-in-up">
-      {/* Hero */}
-      <div className="flex flex-col items-center gap-6">
-        <div className={`
-          w-24 h-24 rounded-2xl bg-gradient-to-br from-accent-500/20 to-accent-700/10
-          border border-accent-500/20 flex items-center justify-center
-          ${loading ? "animate-pulse-glow" : ""}
-        `}>
-          <span className="text-accent-400">
-            <IconUsb />
-          </span>
-        </div>
+    <div className="flex-1 min-h-0 overflow-y-auto px-6 py-8">
+      <div className="min-h-full flex flex-col items-center justify-center gap-8 animate-fade-in-up">
+        {/* Hero */}
+        <div className="flex flex-col items-center gap-6">
+          <div className={`
+            w-24 h-24 rounded-2xl bg-gradient-to-br from-accent-500/20 to-accent-700/10
+            border border-accent-500/20 flex items-center justify-center
+            ${loading ? "animate-pulse-glow" : ""}
+          `}>
+            <span className="text-accent-400">
+              <IconUsb />
+            </span>
+          </div>
 
-        <div className="text-center">
-          <h1 className="text-3xl font-bold tracking-tight bg-gradient-to-r from-zinc-100 to-zinc-400 bg-clip-text text-transparent">
-            SocketSweep
-          </h1>
-          <p className="mt-2 text-sm text-zinc-500 max-w-xs leading-relaxed">
-            High-performance Android storage analyzer.
-            <br />
-            <span className="text-zinc-600">Bypasses MTP — direct POSIX scanning.</span>
-          </p>
-        </div>
-      </div>
-
-      <div className="w-full max-w-sm px-6 space-y-3 text-sm">
-        <label className="flex items-center gap-3 text-zinc-300">
-          <input
-            id="scan-as-root"
-            type="checkbox"
-            checked={rootMode}
-            disabled={loading}
-            onChange={(event) => onRootModeChange(event.target.checked)}
-            className="accent-teal-500"
-          />
-          Scan with root access (read-only)
-        </label>
-        {rootMode && (
-          <>
-            <label className="block text-xs text-zinc-400" htmlFor="root-scan-path">Scan location</label>
-            <select
-              id="root-scan-path"
-              value={rootPath}
-              disabled={loading}
-              onChange={(event) => onRootPathChange(event.target.value)}
-              className="w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-zinc-200"
-            >
-              <option value="/data">App and user data (/data)</option>
-              <option value="/">Internal data and system (/)</option>
-              <option value="/sdcard">Shared storage (/sdcard)</option>
-            </select>
-            <p className="text-xs leading-relaxed text-zinc-400">
-              Requires a rooted device. Approve shell access on your phone if prompted.
-              Internal scans exclude virtual filesystems and duplicate storage views;
-              removable storage is excluded from the whole-device scan.
+          <div className="text-center">
+            <h1 className="text-3xl font-bold tracking-tight bg-gradient-to-r from-zinc-100 to-zinc-400 bg-clip-text text-transparent">
+              SocketSweep
+            </h1>
+            <p className="mx-auto mt-2 text-sm text-zinc-500 max-w-xs leading-relaxed">
+              High-performance Android storage analyzer.
+              <br />
+              <span className="text-zinc-600">Bypasses MTP — direct POSIX scanning.</span>
             </p>
-          </>
-        )}
-      </div>
+          </div>
+        </div>
 
-      {/* Connect Button */}
-      <button
-        id="btn-connect"
-        onClick={onConnect}
-        disabled={loading}
-        className={`
-          group relative px-8 py-3 rounded-xl font-semibold text-sm
-          transition-all duration-300 cursor-pointer
-          ${loading
-            ? "bg-zinc-800 text-zinc-500 cursor-wait"
-            : "bg-gradient-to-r from-accent-600 to-accent-500 text-white hover:from-accent-500 hover:to-accent-400 hover:shadow-lg hover:shadow-accent-500/20 hover:-translate-y-0.5"
-          }
-        `}
-      >
-        {loading ? (
-          <span className="flex items-center gap-2">
-            <Spinner size={16} />
-            Connecting…
-          </span>
-        ) : (
-          <span className="flex items-center gap-2">
-            <IconUsb />
-            Connect Device
-          </span>
-        )}
-      </button>
+        <div className="w-full max-w-xs flex flex-col items-center gap-5 text-sm">
+          <label className="flex items-center justify-center gap-2.5 text-zinc-300 cursor-pointer">
+            <input
+              id="scan-as-root"
+              type="checkbox"
+              checked={rootMode}
+              disabled={loading}
+              onChange={(event) => onRootModeChange(event.target.checked)}
+              className="size-4 shrink-0 accent-accent-500 cursor-pointer"
+            />
+            <span>Scan with root access (read-only)</span>
+          </label>
+          {rootMode && (
+            <div className="w-full space-y-3 rounded-xl border border-zinc-800 bg-zinc-900/50 p-4">
+              <label className="block text-xs text-zinc-400" htmlFor="root-scan-path">Scan location</label>
+              <select
+                id="root-scan-path"
+                value={rootPath}
+                disabled={loading}
+                onChange={(event) => onRootPathChange(event.target.value)}
+                className="w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-zinc-200"
+              >
+                <option value="/data">App and user data (/data)</option>
+                <option value="/">Internal data and system (/)</option>
+                <option value="/sdcard">Shared storage (/sdcard)</option>
+              </select>
+              <p className="text-xs leading-relaxed text-zinc-400">
+                Requires a rooted device. Approve shell access on your phone if prompted.
+                Internal scans exclude virtual filesystems and duplicate storage views;
+                removable storage is excluded from the whole-device scan.
+              </p>
+            </div>
+          )}
+          {/* Connect Button */}
+          <button
+            id="btn-connect"
+            onClick={onConnect}
+            disabled={loading}
+            className={`
+              group relative w-full flex justify-center px-8 py-3 rounded-xl font-semibold text-sm
+              transition-all duration-300 cursor-pointer
+              ${loading
+                ? "bg-zinc-800 text-zinc-500 cursor-wait"
+                : "bg-gradient-to-r from-accent-600 to-accent-500 text-white hover:from-accent-500 hover:to-accent-400 hover:shadow-lg hover:shadow-accent-500/20 hover:-translate-y-0.5"
+              }
+            `}
+          >
+            {loading ? (
+              <span className="flex items-center gap-2">
+                <Spinner size={16} />
+                Connecting…
+              </span>
+            ) : (
+              <span className="flex items-center gap-2">
+                <IconUsb />
+                Connect Device
+              </span>
+            )}
+          </button>
+        </div>
 
-      {/* Requirements hint */}
-      <div className="flex flex-col items-center gap-1.5 text-xs text-zinc-600">
-        <p>• Android device connected via USB</p>
-        <p>• USB Debugging enabled in Developer Options</p>
-        <p>• ADB installed and in your PATH</p>
+        {/* Requirements hint */}
+        <div className="max-w-xs text-center text-xs leading-relaxed text-zinc-500">
+          <p>Connect your phone via USB with USB debugging enabled.</p>
+        </div>
       </div>
     </div>
   );
