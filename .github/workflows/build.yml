@@ -45,7 +45,8 @@ jobs:
             librsvg2-dev \
             libxdo-dev \
             libssl-dev \
-            patchelf
+            patchelf \
+            zsync
 
       # ── Toolchain setup ───────────────────────────────────────────────────
       # Rust is pre-installed on all GitHub Actions runners (ubuntu, windows,
@@ -194,13 +195,14 @@ jobs:
       # the packed image unexecutable for non-root users. We extract, fix the
       # root icon + .DirIcon + permissions, repack with a pinned
       # checksum-verified appimagetool, and verify the stored squashfs modes.
-      - name: Fix AppImage - inject .DirIcon
+      - name: Fix AppImage and enable delta updates
         if: runner.os == 'Linux'
         run: |
           set -euo pipefail
 
           APPIMAGE=$(find src-tauri/target/release/bundle/appimage -name "*.AppImage" | head -1)
           [ -n "$APPIMAGE" ] || { echo "::error::No AppImage found in src-tauri/target/release/bundle/appimage"; exit 1; }
+          APPIMAGE=$(realpath "$APPIMAGE")
           echo "Patching: $APPIMAGE"
 
           # The AppImage runtime itself handles extraction (no FUSE needed).
@@ -268,9 +270,48 @@ jobs:
             "https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage"
           echo "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0  appimagetool" | shasum -a 256 -c -
           chmod +x appimagetool
+          APPIMAGETOOL="$(pwd)/appimagetool"
 
-          # Repack in place, replacing the original AppImage.
-          ARCH=x86_64 ./appimagetool --appimage-extract-and-run "$APPDIR" "$APPIMAGE"
+          # Match the versioned Tauri asset name, and follow published stable
+          # releases rather than a fixed tag. Derive the repository so forks
+          # do not inadvertently update from the upstream project's releases.
+          UPDATE_INFO="gh-releases-zsync|${GITHUB_REPOSITORY%%/*}|${GITHUB_REPOSITORY#*/}|latest|SocketSweep_*_amd64.AppImage.zsync"
+
+          # Repack in place. appimagetool embeds update information and then
+          # generates the sidecar from the FINAL image (including its digest).
+          # Remove any cached sidecar so a skipped generation cannot pass CI.
+          rm -f "$APPIMAGE.zsync"
+          # zsyncmake writes basename(AppImage).zsync in its working directory,
+          # so pack from the bundle directory to keep both release assets there.
+          (
+            cd "$(dirname "$APPIMAGE")"
+            ARCH=x86_64 "$APPIMAGETOOL" --appimage-extract-and-run \
+              --updateinformation "$UPDATE_INFO" "$APPDIR" "$APPIMAGE"
+          )
+
+          [ "$("$APPIMAGE" --appimage-updateinformation)" = "$UPDATE_INFO" ] || { echo "::error::AppImage update information does not match"; exit 1; }
+          [ -s "$APPIMAGE.zsync" ] || { echo "::error::AppImage zsync sidecar is missing or empty"; exit 1; }
+          # Verify the sidecar resolves the sibling release asset and describes
+          # its exact bytes, not a pre-repack or cached AppImage.
+          python3 - "$APPIMAGE" <<'PY'
+          import hashlib
+          import sys
+          from pathlib import Path
+
+          image = Path(sys.argv[1])
+          header = Path(str(image) + ".zsync").read_bytes().split(b"\n\n", 1)[0]
+          fields = dict(line.split(": ", 1) for line in header.decode("utf-8").splitlines())
+          expected = {
+              "Filename": image.name,
+              "URL": image.name,
+              "Length": str(image.stat().st_size),
+              "SHA-1": hashlib.sha1(image.read_bytes()).hexdigest(),
+          }
+          for key, value in expected.items():
+              if fields.get(key) != value:
+                  sys.exit(f"::error::AppImage zsync {key} does not match the final image")
+          print("AppImage zsync filename, URL, size, and checksum verified")
+          PY
 
           # Verify the repacked image the way the AppImage catalog does:
           # .DirIcon (and the root .desktop, when present) must resolve —
@@ -312,6 +353,7 @@ jobs:
           path: |
             src-tauri/target/release/bundle/deb/*.deb
             src-tauri/target/release/bundle/appimage/*.AppImage
+            src-tauri/target/release/bundle/appimage/*.AppImage.zsync
 
       - name: Upload Windows artifacts
         if: matrix.platform == 'windows'

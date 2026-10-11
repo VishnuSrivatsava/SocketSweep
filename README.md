@@ -78,6 +78,8 @@ For comparison, doing the same thing over MTP (plugging in the phone and browsin
 | 🍎 **macOS** (Apple Silicon) | [Disk Image (.dmg)](https://github.com/VishnuSrivatsava/SocketSweep/releases/tag/v1.1.1) |
 | 🐧 **Linux** | [AppImage](https://github.com/VishnuSrivatsava/SocketSweep/releases/tag/v1.1.1) · [.deb](https://github.com/VishnuSrivatsava/SocketSweep/releases/tag/v1.1.1) |
 
+> **AppImage updates:** Starting with the next release, AppImages include update information and a matching `.zsync` release asset for delta updates with [AppImageUpdate](https://github.com/AppImageCommunity/AppImageUpdate). Updates follow the latest published stable release. Existing v1.1.1 downloads need one manual upgrade to an AppImage with this metadata.
+
 > **Arch/AUR note:** The [`socketsweep-bin`](https://aur.archlinux.org/packages/socketsweep-bin) package is currently unmaintained and its checksum check fails until an adopter bumps it to v1.1.1. In the meantime, Arch users can install the .deb directly: `sudo pacman -U SocketSweep_1.1.1_amd64.deb`
 
 > **macOS note:** Since the build is ad-hoc signed, run this once after installing:
