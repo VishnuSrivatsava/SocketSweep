@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { Treemap, ResponsiveContainer, Tooltip as RechartsTooltip } from "recharts";
+import { formatBytes } from "./formatBytes";
 import "./App.css";
 
 // ── Types ───────────────────────────────────────────────────────────────────
@@ -50,14 +51,6 @@ interface Toast {
 type AppPhase = "setup" | "connecting" | "scanning" | "result";
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
-
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  const i = Math.floor(Math.log(bytes) / Math.log(1024));
-  const value = bytes / Math.pow(1024, i);
-  return `${value.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
-}
 
 function formatNumber(n: number): string {
   return n.toLocaleString("en-US");

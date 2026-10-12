@@ -274,6 +274,9 @@ npm run tauri dev
 # macOS/Linux: compiles the host daemon and uses disposable local files
 python3 -m unittest discover -s tests -v
 
+# Frontend helper tests; no app or connected device required
+npm test
+
 # Build the frontend first when testing from a clean checkout
 npm run build
 cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
