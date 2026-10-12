@@ -70,6 +70,9 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Test frontend helpers
+        run: npm test
+
       - name: Test daemon protocol on host
         if: runner.os != 'Windows'
         run: python3 -m unittest discover -s tests -v
