@@ -114,7 +114,7 @@ static bool recv_line(int fd, std::string& line) {
     line.clear();
     const auto deadline = std::chrono::steady_clock::now() +
         std::chrono::seconds(cfg::RECV_TIMEOUT_SEC);
-    char c;
+    char buffer[4096];
     while (true) {
         const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
             deadline - std::chrono::steady_clock::now()).count();
@@ -123,13 +123,27 @@ static bool recv_line(int fd, std::string& line) {
         int ready = ::poll(&event, 1, static_cast<int>(remaining));
         if (ready < 0 && errno == EINTR) continue;
         if (ready <= 0) return false;
-        ssize_t n = ::recv(fd, &c, 1, 0);
-        if (n < 0 && errno == EINTR) continue;
+        if (std::chrono::steady_clock::now() >= deadline) return false;
+
+        // Peek a bounded chunk, then consume only through its first newline.
+        // Surplus bytes stay in the socket across AUTH/command reads, where
+        // ScanOutput can still detect and reject extra command bytes.
+        ssize_t n = ::recv(fd, buffer, sizeof(buffer), MSG_PEEK | MSG_DONTWAIT);
+        if (n < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) continue;
         if (n <= 0) return false;
-        if (c == '\n') return true;
+        const char* newline = static_cast<const char*>(std::memchr(buffer, '\n', static_cast<size_t>(n)));
+        const size_t length = newline ? static_cast<size_t>(newline - buffer) + 1 : static_cast<size_t>(n);
+        n = ::recv(fd, buffer, length, MSG_DONTWAIT);
+        if (n < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) continue;
+        if (n <= 0 || std::chrono::steady_clock::now() >= deadline) return false;
+
+        const bool complete = buffer[n - 1] == '\n';
+        const size_t payload = static_cast<size_t>(n) - (complete ? 1 : 0);
         // Never normalize path bytes or execute an incomplete/oversized line.
-        if (c == '\r' || c == '\0' || line.size() >= cfg::MAX_COMMAND_BYTES) return false;
-        line += c;
+        if (payload > cfg::MAX_COMMAND_BYTES - line.size() ||
+            std::memchr(buffer, '\r', payload) || std::memchr(buffer, '\0', payload)) return false;
+        line.append(buffer, payload);
+        if (complete) return true;
     }
 }
 

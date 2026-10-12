@@ -8,6 +8,11 @@ reference tests and diagnostics. Keep the client's write side open until the
 response finishes: half-close, disconnect, and extra command bytes abort the
 stream. Commands cannot contain CR, LF, or NUL, and retain the 16 KiB limit.
 
+Command input is read in bounded 4 KiB chunks. The daemon peeks before consuming
+through one newline, leaving surplus bytes in the socket for the next AUTH/command
+read or the stream's extra-byte check. Each line has one absolute 30-second
+deadline; short reads and interrupted syscalls do not reset it.
+
 ## Framing and records
 
 Each frame is a four-byte unsigned big-endian byte length followed by UTF-8
