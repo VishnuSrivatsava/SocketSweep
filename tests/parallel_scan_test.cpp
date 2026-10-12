@@ -75,7 +75,8 @@ static Snapshot run(const std::string& path, int workers, bool streaming = false
         snapshot.result.workers = pool.run(snapshot.stats, workers);
         snapshot.result.queue_peak = pool.queue_peak();
         require(output.finish(snapshot.stats, 0, snapshot.result.workers), "stream finish failed");
-        ::shutdown(writer.get(), SHUT_WR);
+        // Match the daemon's terminal close before waiting for the receiver's EOF.
+        writer.reset();
         drain.join();
     } else {
         snapshot.result = parallel_scan::run(root, snapshot.tree, snapshot.stats, workers, cfg::MAX_DEPTH);
@@ -302,7 +303,7 @@ static void stream_limits_and_root_replacement(bool replace) {
         ScanStats stats; const int workers = pool.run(stats, 4);
         require(!output.finish(stats, 0, workers), "staging budget ignored");
     }
-    ::shutdown(writer.get(), SHUT_WR); drain.join();
+    writer.reset(); drain.join();
     require(wire.find("\"type\":\"error\"") != std::string::npos, "missing stream failure");
     require(wire.find("\"type\":\"done\"") == std::string::npos, "failed stream reported success");
 }
