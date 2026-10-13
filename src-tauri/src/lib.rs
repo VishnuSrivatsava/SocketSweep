@@ -653,10 +653,7 @@ fn stop_daemon_inner(app: &tauri::AppHandle) -> Result<String, String> {
     invalidate_scan()?;
     let result = (|| {
         let adb_path = get_bundled_binary(app, "adb")?;
-        let response = daemon_command("SHUTDOWN").and_then(|response| {
-            confirm_shutdown(&response)?;
-            Ok(response)
-        });
+        let response = daemon_command("SHUTDOWN");
         let has_device = DEVICE_SERIAL
             .lock()
             .map_err(|_| "Device state is unavailable")?
@@ -674,9 +671,13 @@ fn stop_daemon_inner(app: &tauri::AppHandle) -> Result<String, String> {
                 &["shell", "rm", "-f", DEVICE_BIN_PATH, DEVICE_TOKEN_PATH],
             );
         }
-        // Cleanup is best effort. A successful pkill command (with || true)
-        // cannot substitute for a missing authenticated shutdown acknowledgement.
-        response
+        // Preserve the existing transport-failure fallback. A rejected or
+        // unrelated reply must not introduce an extra process-kill attempt.
+        // Best-effort cleanup cannot substitute for an acknowledgement.
+        response.and_then(|response| {
+            confirm_shutdown(&response)?;
+            Ok(response)
+        })
     })();
     finish_stop(result)
 }
