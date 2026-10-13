@@ -18,6 +18,7 @@ use std::net::{Shutdown, TcpStream};
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use tauri::ipc::Channel;
 mod scan_stream;
+mod scan_store;
 use std::process::Command;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -29,10 +30,17 @@ const DAEMON_ADDR: &str = "127.0.0.1:5050";
 const DEVICE_BIN_PATH: &str = "/data/local/tmp/socketsweep_daemon";
 const DEVICE_TOKEN_PATH: &str = "/data/local/tmp/socketsweep_token";
 const TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_COMMAND_BYTES: usize = 16 * 1024;
+const MAX_COMMAND_RESPONSE_BYTES: usize = 128 * 1024;
 const TCP_READ_TIMEOUT: Duration = Duration::from_secs(120); // scans can be slow
 
-/// Tracks the root path of the last successful scan so we can prevent its deletion.
-static SCAN_ROOT: Mutex<Option<String>> = Mutex::new(None);
+/// Only complete, current snapshots authorize queries and deletion IDs.
+static SCAN_STORE: Mutex<Option<scan_store::Catalog>> = Mutex::new(None);
+
+fn invalidate_scan() -> Result<(), String> {
+    *SCAN_STORE.lock().map_err(|_| "Scan state is unavailable")? = None;
+    Ok(())
+}
 
 /// Tracks the serial of the connected device so all ADB calls target the right device.
 static DEVICE_SERIAL: Mutex<Option<String>> = Mutex::new(None);
@@ -211,7 +219,7 @@ fn daemon_command(cmd: &str) -> Result<String, String> {
 }
 
 fn command_payload(cmd: &str, token: &str) -> Result<String, String> {
-    if cmd.is_empty() || cmd.len() > 16 * 1024 || cmd.contains(['\r', '\n', '\0']) {
+    if cmd.is_empty() || cmd.len() > MAX_COMMAND_BYTES || cmd.contains(['\r', '\n', '\0']) {
         return Err("This path cannot be sent safely: it contains a line break or null byte, or is too long.".into());
     }
     Ok(format!("AUTH {token}\n{cmd}\n"))
@@ -234,8 +242,9 @@ fn daemon_command_with_token(cmd: &str, token: &str) -> Result<String, String> {
         .write_all(payload.as_bytes())
         .map_err(|e| format!("Failed to send command to daemon: {e}"))?;
 
-    let mut response_bytes = Vec::with_capacity(1024 * 1024);
+    let mut response_bytes = Vec::with_capacity(1024);
     stream
+        .take((MAX_COMMAND_RESPONSE_BYTES + 1) as u64)
         .read_to_end(&mut response_bytes)
         .map_err(|e| format!("Failed to read daemon response: {e}"))?;
 
@@ -243,6 +252,9 @@ fn daemon_command_with_token(cmd: &str, token: &str) -> Result<String, String> {
 }
 
 fn decode_daemon_response(bytes: Vec<u8>) -> Result<String, String> {
+    if bytes.len() > MAX_COMMAND_RESPONSE_BYTES {
+        return Err("Daemon command response exceeds limit".into());
+    }
     // Replacement characters would change paths, potentially selecting a
     // different file when a displayed node is later deleted.
     String::from_utf8(bytes)
@@ -284,9 +296,9 @@ fn require_ok(response: &str) -> Result<DaemonStatus, String> {
     Ok(parsed)
 }
 
-fn new_session_token() -> Result<String, String> {
+fn new_random_id() -> Result<String, String> {
     let mut bytes = [0_u8; 32];
-    getrandom::fill(&mut bytes).map_err(|e| format!("Failed to create daemon session: {e}"))?;
+    getrandom::fill(&mut bytes).map_err(|e| format!("Failed to create secure identifier: {e}"))?;
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
@@ -303,12 +315,12 @@ fn check_adb(app: tauri::AppHandle) -> Result<String, String> {
 #[tauri::command(async)]
 fn init_daemon(app: tauri::AppHandle, root_mode: Option<bool>) -> Result<String, String> {
     let _operation = DAEMON_OPERATION.lock().map_err(|_| "Daemon state is unavailable")?;
+    invalidate_scan()?;
     let has_session = DEVICE_SERIAL.lock().map_err(|_| "Device state is unavailable")?.is_some();
     if has_session {
         stop_daemon_inner(&app)?;
     }
     *SESSION_TOKEN.lock().map_err(|_| "Session state is unavailable")? = None;
-    *SCAN_ROOT.lock().map_err(|_| "Scan state is unavailable")? = None;
     *DEVICE_SERIAL.lock().map_err(|_| "Device state is unavailable")? = None;
     *READ_ONLY.lock().map_err(|_| "Session state is unavailable")? = false;
     *DEVICE_PRIVILEGE.lock().map_err(|_| "Device state is unavailable")? = Privilege::Shell;
@@ -368,7 +380,7 @@ fn init_daemon_inner(app: tauri::AppHandle, root_mode: bool) -> Result<String, S
 
     // Transfer the fresh secret over stdin into a shell-owned file. Neither
     // the startup arguments nor the frontend response contain the secret.
-    let token = new_session_token()?;
+    let token = new_random_id()?;
     let serial = DEVICE_SERIAL.lock().map_err(|_| "Device state is unavailable")?
         .clone().ok_or("No connected device")?;
     let token_cmd = format!("rm -f {DEVICE_TOKEN_PATH} && umask 077 && cat > {DEVICE_TOKEN_PATH}");
@@ -499,7 +511,7 @@ fn run_scan(
     let _operation = DAEMON_OPERATION
         .lock()
         .map_err(|_| "Daemon state is unavailable")?;
-    *SCAN_ROOT.lock().map_err(|_| "Scan state is unavailable")? = None;
+    invalidate_scan()?;
     let effective_root = path
         .filter(|p| !p.is_empty())
         .unwrap_or_else(|| "/sdcard".into());
@@ -573,17 +585,17 @@ fn run_scan(
                 return Err("Daemon scanned an unexpected root".into());
             }
         }
-        let json = response.json()?;
-        // Serialize before authorization too: a result exceeding the UI limit
-        // must not leave a bridge deletion root behind.
+        // Public snapshot generations are independent of the secret daemon token.
+        let catalog = scan_store::Catalog::new(response, new_random_id()?);
+        let json = catalog.summary_json()?;
+        // Serialize bounded metadata before publishing deletion authority.
         let mut active = ACTIVE_SCAN
             .lock()
             .map_err(|_| "Scan state is unavailable")?;
         if cancelled.load(Ordering::SeqCst) {
             return Err("Scan cancelled".into());
         }
-        *SCAN_ROOT.lock().map_err(|_| "Scan state is unavailable")? =
-            Some(response.root().to_string());
+        *SCAN_STORE.lock().map_err(|_| "Scan state is unavailable")? = Some(catalog);
         active.take();
         Ok(json)
     })();
@@ -607,6 +619,7 @@ fn stop_daemon(app: tauri::AppHandle) -> Result<String, String> {
 }
 
 fn stop_daemon_inner(app: &tauri::AppHandle) -> Result<String, String> {
+    invalidate_scan()?;
     let adb_path = get_bundled_binary(app, "adb")?;
     let response = daemon_command("SHUTDOWN");
     let has_device = DEVICE_SERIAL.lock().map_err(|_| "Device state is unavailable")?.is_some();
@@ -618,7 +631,6 @@ fn stop_daemon_inner(app: &tauri::AppHandle) -> Result<String, String> {
         let _ = adb_s(&adb_path, &["shell", "rm", "-f", DEVICE_BIN_PATH, DEVICE_TOKEN_PATH]);
     }
     *SESSION_TOKEN.lock().map_err(|_| "Session state is unavailable")? = None;
-    *SCAN_ROOT.lock().map_err(|_| "Scan state is unavailable")? = None;
     *DEVICE_SERIAL.lock().map_err(|_| "Device state is unavailable")? = None;
     *DEVICE_PRIVILEGE.lock().map_err(|_| "Device state is unavailable")? = Privilege::Shell;
     *READ_ONLY.lock().map_err(|_| "Session state is unavailable")? = false;
@@ -626,22 +638,43 @@ fn stop_daemon_inner(app: &tauri::AppHandle) -> Result<String, String> {
 }
 
 #[tauri::command(async)]
-fn delete_item(path: String) -> Result<String, String> {
-    let _operation = DAEMON_OPERATION.lock().map_err(|_| "Daemon state is unavailable")?;
-    if *READ_ONLY.lock().map_err(|_| "Session state is unavailable")? {
-        return Err("Root scans are read-only; deletion is disabled.".into());
-    }
-    // Prevent deletion of the scan root directory.
-    let root = SCAN_ROOT.lock().map_err(|_| "Scan state is unavailable")?;
-    match root.as_ref() {
-        Some(scan_root) if path == *scan_root => {
-            return Err("Cannot delete the scan root directory.".into());
-        }
-        None => return Err("Scan your device before deleting files.".into()),
-        _ => {}
-    }
-    drop(root);
-    daemon_command(&format!("DELETE {path}"))
+fn get_scan_view(
+    generation: String,
+    revision: u32,
+    node_id: u32,
+    cursor: Option<scan_store::Cursor>,
+) -> Result<String, String> {
+    let store = SCAN_STORE.lock().map_err(|_| "Scan state is unavailable")?;
+    store
+        .as_ref()
+        .ok_or("Scan is unavailable; rescan required")?
+        .view_json(&generation, revision, node_id, cursor)
+}
+
+#[tauri::command(async)]
+fn get_scan_node(generation: String, revision: u32, node_id: u32) -> Result<String, String> {
+    let store = SCAN_STORE.lock().map_err(|_| "Scan state is unavailable")?;
+    store
+        .as_ref()
+        .ok_or("Scan is unavailable; rescan required")?
+        .detail_json(&generation, revision, node_id)
+}
+
+#[tauri::command(async)]
+fn delete_item(generation: String, revision: u32, node_id: u32) -> Result<String, String> {
+    let _operation = DAEMON_OPERATION
+        .lock()
+        .map_err(|_| "Daemon state is unavailable")?;
+    let plan = {
+        let store = SCAN_STORE.lock().map_err(|_| "Scan state is unavailable")?;
+        store
+            .as_ref()
+            .ok_or("Scan your device before deleting files.")?
+            .prepare_delete(&generation, revision, node_id)?
+    };
+    let response = daemon_command(&format!("DELETE {}", plan.path));
+    let mut store = SCAN_STORE.lock().map_err(|_| "Scan state is unavailable")?;
+    scan_store::finish_delete(&mut store, &plan, response)
 }
 
 // ── Tauri entry point ───────────────────────────────────────────────────────
@@ -658,6 +691,8 @@ pub fn run() {
             ping_daemon,
             stop_daemon,
             delete_item,
+            get_scan_view,
+            get_scan_node,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -722,9 +757,9 @@ mod tests {
     }
 
     #[test]
-    fn session_tokens_are_fresh_and_have_full_entropy() {
-        let first = new_session_token().unwrap();
-        let second = new_session_token().unwrap();
+    fn random_identifiers_are_fresh_and_have_full_entropy() {
+        let first = new_random_id().unwrap();
+        let second = new_random_id().unwrap();
         assert_eq!(first.len(), 64);
         assert!(first.bytes().all(|b| b.is_ascii_hexdigit()));
         assert_ne!(first, second);
@@ -762,6 +797,12 @@ mod tests {
         drop(ScanRegistration("current".into()));
         assert!(ACTIVE_SCAN.lock().unwrap().is_some());
         drop(ScanRegistration("next".into()));
+    }
+
+    #[test]
+    fn small_command_responses_have_a_hard_byte_limit() {
+        assert!(decode_daemon_response(vec![b'x'; MAX_COMMAND_RESPONSE_BYTES]).is_ok());
+        assert!(decode_daemon_response(vec![b'x'; MAX_COMMAND_RESPONSE_BYTES + 1]).is_err());
     }
 
     #[test]

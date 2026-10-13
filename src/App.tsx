@@ -2,37 +2,12 @@ import { useState, useCallback, useEffect, useRef } from "react";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { Treemap, ResponsiveContainer, Tooltip as RechartsTooltip } from "recharts";
 import { formatBytes } from "./formatBytes";
+import { sameScan } from "./scanView";
+import type { ScanNode, ScanResponse, NodeDetail, DeleteResult } from "./scanView";
+import { useScanView } from "./useScanView";
 import "./App.css";
 
 // ── Types ───────────────────────────────────────────────────────────────────
-
-interface FileNode {
-  name: string;
-  path: string;
-  type: "file" | "directory";
-  size: number;
-  counted?: boolean;
-  children?: FileNode[];
-}
-
-interface ScanResponse {
-  status: string;
-  streamed?: boolean;
-  scan_time_ms: number;
-  total_files: number;
-  total_dirs: number;
-  total_size: number;
-  errors: number;
-  read_only: boolean;
-  skipped: number;
-  /** Per-phase timings from daemon v1.2+ (issue #3); absent in older daemons. */
-  traverse_ms?: number;
-  sort_ms?: number;
-  serialize_ms?: number;
-  send_ms?: number;
-  bytes_sent?: number;
-  tree: FileNode;
-}
 
 /** One-line phase breakdown for the terminal log; null if the daemon predates #3. */
 const scanPhaseLog = (r: ScanResponse): string | null => {
@@ -54,84 +29,6 @@ type AppPhase = "setup" | "connecting" | "scanning" | "result";
 
 function formatNumber(n: number): string {
   return n.toLocaleString("en-US");
-}
-
-function findNodeByPath(root: FileNode, targetPath: string): FileNode | null {
-  if (root.path === targetPath) return root;
-  if (!root.children) return null;
-  for (const child of root.children) {
-    if (targetPath.startsWith(child.path)) {
-      const found = findNodeByPath(child, targetPath);
-      if (found) return found;
-    }
-  }
-  return null;
-}
-
-function buildBreadcrumbs(root: FileNode, targetPath: string): { name: string; path: string }[] {
-  const breadcrumbs: { name: string; path: string }[] = [];
-  let current: FileNode | null = root;
-
-  while (current) {
-    breadcrumbs.push({ name: current.name, path: current.path });
-    if (current.path === targetPath) break;
-
-    let next: FileNode | null = null;
-    if (current.children) {
-      for (const child of current.children) {
-        if (targetPath === child.path || targetPath.startsWith(child.path + "/")) {
-          next = child;
-          break;
-        }
-      }
-    }
-    current = next;
-  }
-  return breadcrumbs;
-}
-
-function countNodeStats(node: FileNode): { size: number; files: number; dirs: number } {
-  if (node.type === "file") {
-    return { size: node.size, files: node.counted === false ? 0 : 1, dirs: 0 };
-  }
-  let files = 0;
-  let dirs = node.counted === false ? 0 : 1;
-  if (node.children) {
-    for (const child of node.children) {
-      const stats = countNodeStats(child);
-      files += stats.files;
-      dirs += stats.dirs;
-    }
-  }
-  return { size: node.size, files, dirs };
-}
-
-function removeNodeByPath(
-  root: FileNode,
-  targetPath: string
-): { removed: boolean; size: number; files: number; dirs: number } {
-  if (!root.children) return { removed: false, size: 0, files: 0, dirs: 0 };
-
-  const index = root.children.findIndex((child) => child.path === targetPath);
-  if (index !== -1) {
-    const node = root.children[index];
-    const stats = countNodeStats(node);
-    root.children.splice(index, 1);
-    root.size -= stats.size;
-    return { removed: true, ...stats };
-  }
-
-  for (const child of root.children) {
-    if (targetPath.startsWith(child.path + "/")) {
-      const result = removeNodeByPath(child, targetPath);
-      if (result.removed) {
-        root.size -= result.size;
-        return result;
-      }
-    }
-  }
-
-  return { removed: false, size: 0, files: 0, dirs: 0 };
 }
 
 // ── Icons (inline SVG) ──────────────────────────────────────────────────────
@@ -431,99 +328,66 @@ function SizeBar({ ratio }: { ratio: number }) {
 
 // ── File Tree Node ──────────────────────────────────────────────────────────
 
-function FileTreeNode({
-  node,
-  parentSize,
-  depth,
-  onNuke,
-  onZoom,
-}: {
-  node: FileNode;
+function QueryError({ error, retry }: { error: string; retry: () => void }) {
+  return <div role="alert" className="px-4 py-2 text-xs text-red-400">
+    {error} <button onClick={retry} className="underline ml-2">Retry</button>
+  </div>;
+}
+
+function FileTreeNode({ node, scope, parentSize, depth, onNuke, onZoom, expanded, toggle, busy, rootView }: {
+  node: ScanNode;
+  scope: ScanResponse;
   parentSize: number;
   depth: number;
-  onNuke?: (path: string, name: string) => void;
-  onZoom: (path: string) => void;
+  onNuke: (nodeId: number) => void;
+  onZoom: (nodeId: number) => void;
+  expanded: Set<number>;
+  toggle: (nodeId: number) => void;
+  busy: boolean;
+  rootView?: ReturnType<typeof useScanView>;
 }) {
-  const [open, setOpen] = useState(depth < 1);
+  const open = expanded.has(node.id);
   const isDir = node.type === "directory";
+  const query = useScanView(scope, node.id, depth > 0 && isDir && open && node.child_count > 0);
+  const view = rootView ?? query;
+  const page = view.page;
   const ratio = parentSize > 0 ? node.size / parentSize : 0;
-
+  const label = <>
+          <span className="w-4 flex-shrink-0 flex items-center justify-center">
+            {isDir ? <IconChevron open={open} className="text-zinc-500" /> : <span className="w-3" />}
+          </span>
+          <span className={isDir ? "text-accent-400" : "text-zinc-500"}>{isDir ? <IconFolder /> : <IconFile />}</span>
+          <span className={`truncate text-sm ${isDir ? "text-zinc-200 font-medium" : "text-zinc-400"}`}>{node.name}</span>
+  </>;
   return (
-    <div className="animate-fade-in-up" style={{ animationDelay: `${depth * 20}ms` }}>
-      <div
-        className={`
-          file-row flex items-center gap-2 px-3 py-1.5 rounded-md cursor-pointer
-          group select-none
-        `}
-        style={{ paddingLeft: `${12 + depth * 16}px` }}
-        onClick={() => {
-          if (isDir) setOpen(!open);
-        }}
-      >
-        <span className="w-4 flex-shrink-0 flex items-center justify-center">
-          {isDir ? (
-            <IconChevron open={open} className="text-zinc-500" />
-          ) : (
-            <span className="w-3" />
-          )}
-        </span>
-
-        <span className={isDir ? "text-accent-400" : "text-zinc-500"}>
-          {isDir ? <IconFolder /> : <IconFile />}
-        </span>
-
-        <span className={`flex-1 truncate text-sm ${isDir ? "text-zinc-200 font-medium" : "text-zinc-400"}`}>
-          {node.name}
-        </span>
-
-        {/* Action Buttons */}
-        {isDir && (
-           <button
-             className="opacity-0 group-hover:opacity-100 mr-2 px-2 py-1 rounded text-[10px] uppercase font-bold tracking-wider bg-accent-500/10 text-accent-400 border border-accent-500/20 hover:bg-accent-500/30"
-             onClick={(e) => { e.stopPropagation(); onZoom(node.path); }}
-           >
-             Zoom
-           </button>
-        )}
-
+    <div>
+      <div className="file-row flex items-center gap-2 px-3 py-1.5 rounded-md group select-none"
+        style={{ paddingLeft: `${12 + depth * 16}px` }}>
+        {isDir ? <button className="flex items-center gap-2 min-w-0 flex-1 text-left" disabled={busy}
+          aria-expanded={open} onClick={() => toggle(node.id)}>{label}</button>
+          : <span className="flex items-center gap-2 min-w-0 flex-1 text-left">{label}</span>}
+        {isDir && <button disabled={busy} onClick={() => onZoom(node.id)}
+          className="opacity-0 group-hover:opacity-100 focus:opacity-100 mr-2 px-2 py-1 rounded text-[10px] uppercase font-bold bg-accent-500/10 text-accent-400 border border-accent-500/20">Zoom</button>}
         <SizeBar ratio={ratio} />
-
-        <span className="w-20 text-right text-xs font-mono text-zinc-500 flex-shrink-0">
-          {formatBytes(node.size)}
-        </span>
-
-        {depth > 0 && onNuke && (
-          <button
-            className="btn-nuke opacity-0 group-hover:opacity-100 ml-1 px-2 py-1 rounded-md
-              bg-danger-600/20 border border-danger-500/30 text-danger-400
-              hover:bg-danger-500/30 hover:text-danger-400 text-[10px] uppercase font-bold tracking-wider flex items-center gap-1
-              cursor-pointer"
-            onClick={(e) => {
-              e.stopPropagation();
-              onNuke?.(node.path, node.name);
-            }}
-            title={`Delete ${node.name}`}
-          >
-            <IconNuke />
-            <span className="hidden sm:inline">Delete</span>
-          </button>
-        )}
+        <span className="w-20 text-right text-xs font-mono text-zinc-500 flex-shrink-0">{formatBytes(node.size)}</span>
+        {depth > 0 && node.can_delete && <button disabled={busy} onClick={() => onNuke(node.id)}
+          title={`Delete ${node.name}`} aria-label={`Delete ${node.name}`}
+          className="btn-nuke opacity-0 group-hover:opacity-100 focus:opacity-100 ml-1 px-2 py-1 rounded-md bg-danger-600/20 border border-danger-500/30 text-danger-400 hover:bg-danger-500/30 text-[10px] uppercase font-bold flex items-center gap-1">
+          <IconNuke /><span className="hidden sm:inline">Delete</span>
+        </button>}
       </div>
-
-      {isDir && open && node.children && (
-        <div>
-          {node.children.map((child, i) => (
-            <FileTreeNode
-              key={`${child.path}-${i}`}
-              node={child}
-              parentSize={node.size}
-              depth={depth + 1}
-              onNuke={onNuke}
-              onZoom={onZoom}
-            />
-          ))}
-        </div>
-      )}
+      {isDir && open && node.child_count > 0 && <div>
+        {!page && !view.error && <p role="status" className="px-4 py-2 text-xs text-zinc-500">Loading entries…</p>}
+        {view.error && <QueryError error={view.error} retry={view.retry} />}
+        {page?.children.map(child => <FileTreeNode key={child.id} node={child} scope={scope} parentSize={node.size}
+          depth={depth + 1} onNuke={onNuke} onZoom={onZoom} expanded={expanded} toggle={toggle} busy={busy} />)}
+        {page && (page.previous_cursor || page.next_cursor) && <nav aria-label={`Pages in ${node.name}`}
+          className="flex items-center gap-3 py-2 text-xs text-zinc-400" style={{ paddingLeft: `${28 + depth * 16}px` }}>
+          <button disabled={!page.previous_cursor || busy} onClick={() => view.go(page.previous_cursor)} className="px-2 py-1 bg-zinc-800 rounded disabled:opacity-30">Previous</button>
+          <span>{page.children.length} entries on this page of {formatNumber(node.child_count)}</span>
+          <button disabled={!page.next_cursor || busy} onClick={() => view.go(page.next_cursor)} className="px-2 py-1 bg-zinc-800 rounded disabled:opacity-30">Next</button>
+        </nav>}
+      </div>}
     </div>
   );
 }
@@ -582,32 +446,38 @@ function ResultScreen({
   onRescan,
   onDisconnect,
   onNuke,
+  busy,
 }: {
   data: ScanResponse;
   onRescan: () => void;
   onDisconnect: () => void;
-  onNuke: (path: string, name: string) => void;
+  onNuke: (nodeId: number) => void;
+  busy: boolean;
 }) {
-  const [zoomPath, setZoomPath] = useState<string>(data.tree.path);
-  
-  // Find node to render based on zoom
-  const renderNode = findNodeByPath(data.tree, zoomPath) || data.tree;
+  const [zoomId, setZoomId] = useState(data.root.id);
+  const [expanded, setExpanded] = useState(() => new Set([data.root.id]));
+  const view = useScanView(data, zoomId, true);
+  const page = view.page;
+  const onZoom = (id: number) => {
+    setExpanded(previous => new Set(previous).add(id));
+    setZoomId(id);
+  };
+  const toggle = (id: number) => setExpanded(previous => {
+    const next = new Set(previous);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  useEffect(() => {
+    if (view.error === "Scan node is no longer available") onZoom(data.root.id);
+  }, [view.error, data.root.id]);
 
   const bgColors = [
     "#0d9488", "#0284c7", "#4f46e5", "#7c3aed", 
     "#c026d3", "#e11d48", "#ea580c", "#ca8a04",
   ];
 
-  // Flatten immediate children for a clean 1-level treemap
-  const treemapData = (renderNode.children || [])
-    .filter(c => c.size > 0)
-    .map(c => ({
-      name: c.name,
-      size: c.size,
-      path: c.path,
-    }));
-
-  const breadcrumbs = buildBreadcrumbs(data.tree, zoomPath);
+  const treemapData = (page?.chart ?? []).map(tile => ({ ...tile, nodeId: tile.node_id }));
+  const breadcrumbs = page?.breadcrumbs ?? [];
 
   return (
     <div className="flex flex-col h-full animate-fade-in-up">
@@ -618,9 +488,9 @@ function ResultScreen({
           <h1 className="text-base font-semibold text-zinc-200 tracking-tight">SocketSweep</h1>
           <div className="flex items-center text-xs text-zinc-500 font-mono">
             {breadcrumbs.map((crumb, idx) => (
-              <span key={crumb.path} className="inline-flex items-center">
+              <span key={crumb.id} className="inline-flex items-center">
                 <button 
-                  onClick={() => setZoomPath(crumb.path)}
+                  disabled={busy} onClick={() => onZoom(crumb.id)}
                   className={`hover:text-zinc-300 transition-colors ${idx === breadcrumbs.length - 1 ? 'text-zinc-300 font-semibold' : ''}`}
                 >
                   {crumb.name}
@@ -633,9 +503,9 @@ function ResultScreen({
           </div>
         </div>
         <div className="flex items-center gap-2">
-          {zoomPath !== data.tree.path && (
+          {zoomId !== data.root.id && (
             <button
-              onClick={() => setZoomPath(data.tree.path)}
+              disabled={busy} onClick={() => onZoom(data.root.id)}
               className="px-3 py-1.5 rounded-lg text-xs font-medium bg-zinc-800 text-zinc-300 hover:bg-zinc-700"
             >
               ← Back to Root
@@ -643,7 +513,7 @@ function ResultScreen({
           )}
           <button
             id="btn-rescan"
-            onClick={onRescan}
+            disabled={busy} onClick={onRescan}
             className="px-3 py-1.5 rounded-lg text-xs font-medium bg-zinc-800 text-zinc-300
               hover:bg-zinc-700 hover:text-zinc-100 border border-zinc-700/50"
           >
@@ -651,7 +521,7 @@ function ResultScreen({
           </button>
           <button
             id="btn-disconnect"
-            onClick={onDisconnect}
+            disabled={busy} onClick={onDisconnect}
             className="px-3 py-1.5 rounded-lg text-xs font-medium bg-zinc-800 text-zinc-400
               hover:bg-red-950/50 hover:text-red-400 border border-zinc-700/50"
           >
@@ -686,7 +556,7 @@ function ResultScreen({
               content={<TreemapContent bgColors={bgColors} />}
               isAnimationActive={false}
               onClick={(e: any) => {
-                if (e && e.path) setZoomPath(e.path);
+                if (!busy && typeof e?.nodeId === "number") onZoom(e.nodeId);
               }}
             >
               <RechartsTooltip 
@@ -697,7 +567,7 @@ function ResultScreen({
                       <div className="bg-zinc-900 border border-zinc-800 p-2 rounded shadow-xl text-xs z-50">
                         <p className="font-semibold text-zinc-200">{p.name}</p>
                         <p className="text-zinc-400 font-mono mt-1">{formatBytes(p.size)}</p>
-                        <p className="text-zinc-600 mt-1">Click to Zoom</p>
+                        {p.node_id !== null && <p className="text-zinc-600 mt-1">Click to Zoom</p>}
                       </div>
                     );
                   }
@@ -717,13 +587,11 @@ function ResultScreen({
             {[data.errors > 0 ? `${data.errors} access errors` : "", data.skipped > 0 ? `${data.skipped} excluded or duplicate entries` : ""].filter(Boolean).join(" · ")}
           </span>
         </div>
-        <FileTreeNode
-          node={renderNode}
-          parentSize={renderNode.size}
-          depth={0}
-          onNuke={data.read_only ? undefined : onNuke}
-          onZoom={setZoomPath}
-        />
+        {!page && !view.error && <p role="status" className="px-3 py-2 text-xs text-zinc-500">Loading storage map…</p>}
+        {view.error && <QueryError error={view.error} retry={view.retry} />}
+        {page && <FileTreeNode node={page.node} scope={data} parentSize={page.node.size} depth={0}
+          onNuke={onNuke} onZoom={onZoom} expanded={expanded} toggle={toggle} busy={busy} rootView={view} />}
+
       </div>
     </div>
   );
@@ -736,6 +604,11 @@ function App() {
   const [rootMode, setRootMode] = useState(false);
   const [rootPath, setRootPath] = useState("/data");
   const [scanData, setScanData] = useState<ScanResponse | null>(null);
+  const snapshot = useRef<ScanResponse | null>(null);
+  const [busy, setBusy] = useState(false);
+  const deleting = useRef(false);
+  const confirmationRequest = useRef(0);
+  const [confirmDelete, setConfirmDelete] = useState<NodeDetail | null>(null);
   const [scanProgress, setScanProgress] = useState<ScanProgress | null>(null);
   const [cancelling, setCancelling] = useState(false);
   const activeScan = useRef<string | null>(null);
@@ -774,6 +647,9 @@ function App() {
   }, []);
 
   const requestScan = useCallback(async (path: string): Promise<ScanResponse> => {
+    snapshot.current = null;
+    confirmationRequest.current += 1;
+    setConfirmDelete(null);
     const scanId = crypto.randomUUID();
     activeScan.current = scanId;
     setScanProgress(null);
@@ -828,6 +704,7 @@ function App() {
 
       if (parsed.status !== "ok") throw new Error("Scan returned non-ok status");
 
+      snapshot.current = parsed;
       setScanData(parsed);
       setPhase("result");
       addLog(`[SCAN] Complete! ${parsed.total_files} files, ${parsed.scan_time_ms}ms.`);
@@ -847,12 +724,13 @@ function App() {
   // ── Rescan ──────────────────────────────────────────────────────────────
   const handleRescan = useCallback(async () => {
     if (!scanData) return;
-    const scanPath = scanData.tree.path;
+    const scanPath = scanData.root_path;
     setPhase("scanning");
     setStatusText(`Re-scanning ${scanPath} …`);
     addLog(`[SCAN] Re-scanning ${scanPath}...`);
     try {
       const parsed = await requestScan(scanPath);
+      snapshot.current = parsed;
       setScanData(parsed);
       setPhase("result");
       addLog(`[SCAN] Complete! ${parsed.scan_time_ms}ms.`);
@@ -872,6 +750,9 @@ function App() {
 
   // ── Disconnect ──────────────────────────────────────────────────────────
   const handleDisconnect = useCallback(async () => {
+    snapshot.current = null;
+    confirmationRequest.current += 1;
+    setConfirmDelete(null);
     addLog("[SOCKET] Disconnecting daemon...");
     try {
       await invoke<string>("stop_daemon");
@@ -884,56 +765,61 @@ function App() {
     setPhase("setup");
   }, [pushToast, addLog]);
 
-  const [confirmDelete, setConfirmDelete] = useState<{path: string, name: string} | null>(null);
-
-  // ── Nuke (Delete) ───────────────────────────────────────────────────────
-  const handleNuke = useCallback((path: string, name: string) => {
-    if (scanData?.read_only) return;
-    setConfirmDelete({ path, name });
-  }, [scanData]);
+  // Resolve confirmation details separately; destructive IPC accepts only IDs.
+  const handleNuke = useCallback(async (nodeId: number) => {
+    const scope = snapshot.current;
+    if (!scope || scope.read_only || deleting.current) return;
+    const request = ++confirmationRequest.current;
+    try {
+      const raw = await invoke<string>("get_scan_node", { generation: scope.generation, revision: scope.revision, nodeId });
+      const detail: NodeDetail = JSON.parse(raw);
+      if (request === confirmationRequest.current && !deleting.current && sameScan(snapshot.current, scope) && sameScan(detail, scope) && detail.node.id === nodeId && detail.node.can_delete) {
+        setConfirmDelete(detail);
+      }
+    } catch (err) {
+      if (request === confirmationRequest.current && sameScan(snapshot.current, scope)) pushToast(String(err), "error");
+    }
+  }, [pushToast]);
 
   const executeDelete = useCallback(async () => {
-    if (!confirmDelete) return;
-    const { path, name } = confirmDelete;
+    const target = confirmDelete;
+    confirmationRequest.current += 1;
     setConfirmDelete(null);
-    if (scanData?.read_only) return;
-
-    // Guard: never delete the scan root
-    if (scanData && path === scanData.tree.path) {
-      pushToast("Cannot delete the scan root directory.", "error");
-      addLog(`[DELETE] Blocked: ${path} is the scan root.`);
-      return;
-    }
-
-    addLog(`[DELETE] Requesting deletion of ${path}...`);
+    if (!target || deleting.current || !sameScan(snapshot.current, target)) return;
+    deleting.current = true;
+    setBusy(true);
+    addLog(`[DELETE] Requesting deletion of ${target.path}...`);
     try {
-      const raw = await invoke<string>("delete_item", { path });
-      const parsed = JSON.parse(raw);
-      if (parsed.status === "ok") {
-        pushToast(`Successfully deleted ${name}`, "success");
-        addLog(`[DELETE] Success: ${parsed.message}`);
-
-        // Update tree client-side instead of doing a full re-scan
-        if (scanData) {
-          const updated = JSON.parse(JSON.stringify(scanData)) as ScanResponse;
-          const result = removeNodeByPath(updated.tree, path);
-          if (result.removed) {
-            updated.total_files -= result.files;
-            updated.total_dirs -= result.dirs;
-            updated.total_size -= result.size;
-            addLog(`[DELETE] Tree updated locally (removed ${result.files} files, ${result.dirs} dirs, ${formatBytes(result.size)})`);
-          }
-          setScanData(updated);
-        }
-      } else {
-        throw new Error(parsed.message || "Unknown error");
+      const raw = await invoke<string>("delete_item", {
+        generation: target.generation, revision: target.revision, nodeId: target.node.id,
+      });
+      if (!sameScan(snapshot.current, target)) return;
+      const result: DeleteResult = JSON.parse(raw);
+      if (result.summary.generation !== target.generation || result.summary.revision !== target.revision + 1) {
+        throw new Error("Deletion returned an unexpected scan snapshot");
       }
+      snapshot.current = result.summary;
+      setScanData(result.summary);
+      pushToast(`Successfully deleted ${target.node.name}`, "success");
+      addLog(`[DELETE] Success: ${result.message}`);
+      addLog(`[DELETE] Scan updated (removed ${result.removed.files} files, ${result.removed.dirs} dirs, ${formatBytes(result.removed.size)})`);
     } catch (err: unknown) {
+      if (!sameScan(snapshot.current, target)) return;
       const message = err instanceof Error ? err.message : String(err);
-      pushToast(`Delete failed: ${message}`, "error");
+      snapshot.current = null;
+      setScanData(null);
+      setPhase("connecting");
+      pushToast(`Delete failed: ${message}. Reconnect and rescan before continuing.`, "error");
       addLog(`[ERROR] Delete failed: ${message}`);
+      // The daemon may have partially deleted a directory before reporting an
+      // error. Discard its snapshot; never offer a blind retry with stale IDs.
+      try { await invoke("stop_daemon"); } catch { /* retain the deletion error */ }
+      setPhase("setup");
+    } finally {
+      deleting.current = false;
+      setBusy(false);
     }
-  }, [confirmDelete, pushToast, addLog, scanData]);
+  }, [confirmDelete, pushToast, addLog]);
 
   useEffect(() => {
     const timers = timerRefs.current;
@@ -958,7 +844,9 @@ function App() {
         {phase === "scanning" && <ScanningScreen statusText={statusText} progress={scanProgress} onCancel={handleCancelScan} cancelling={cancelling} />}
         {phase === "result" && scanData && (
           <ResultScreen
+            key={scanData.generation}
             data={scanData}
+            busy={busy}
             onRescan={handleRescan}
             onDisconnect={handleDisconnect}
             onNuke={handleNuke}
@@ -982,11 +870,11 @@ function App() {
               Are you sure you want to permanently delete:
             </p>
             <p className="text-sm font-mono text-zinc-300 bg-zinc-950 p-2 rounded-lg break-all border border-zinc-800 mb-6">
-              {confirmDelete.name}
+              {confirmDelete.path}
             </p>
             <div className="flex items-center gap-3 justify-end">
               <button
-                onClick={() => setConfirmDelete(null)}
+                onClick={() => { confirmationRequest.current += 1; setConfirmDelete(null); }}
                 className="px-4 py-2 rounded-lg text-sm font-medium text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors"
               >
                 Cancel

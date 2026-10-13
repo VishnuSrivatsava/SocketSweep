@@ -1,4 +1,5 @@
 """Stream contract and end-to-end daemon tests on disposable host fixtures."""
+import errno
 import json
 import os
 import socket
@@ -101,6 +102,33 @@ class StreamScanTests(DaemonHarness):
             actual[entry['path']] = (kind, size)
         self.assertEqual(actual, expected)
         self.assertGreater(len(batches), 5)
+
+    def test_non_utf8_filename_bytes_are_not_silently_replaced(self):
+        path = os.fsencode(self.root) + b'/nonutf-\xff'
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except OSError as error:
+            if error.errno in (errno.EILSEQ, errno.EINVAL):
+                self.skipTest('Filesystem does not support non-UTF-8 filenames')
+            raise
+        os.close(fd)
+        with self.connect_scan() as client:
+            found = False
+            while True:
+                size, = struct.unpack('!I', exact(client, 4))
+                self.assertTrue(0 < size <= MAX_FRAME)
+                payload = exact(client, size)
+                if b'nonutf-\xff' in payload:
+                    # Stream v1 has no raw-byte filename field. Rust must reject
+                    # this JSON rather than replace bytes and publish a wrong path.
+                    with self.assertRaises(UnicodeDecodeError):
+                        payload.decode('utf-8')
+                    found = True
+                    break
+                if json.loads(payload)['type'] in ('done', 'error'):
+                    break
+            self.assertTrue(found)
+        self.assertEqual(self.request('PING')['status'], 'ok')
 
     def test_root_and_first_entry_arrive_before_scan_completion(self):
         for i in range(5000):

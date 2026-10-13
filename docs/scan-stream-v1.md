@@ -64,7 +64,7 @@ invalid ordering, mismatched counts, and any data after completion are errors.
 Error counts and exclusions remain visible even for a successfully completed
 scan with unreadable areas. Partial/cancelled scans are never successful
 baselines. The bridge clears its deletion root before each attempt and only
-sets it after valid completion/EOF and successful response serialization.
+publishes its scan store after valid completion/EOF and bounded metadata serialization.
 The daemon pins its pending root separately and promotes it only after an
 unchanged-root check and successful completion write. Existing descriptor-
 anchored deletion and root read-only checks remain in force.
@@ -87,7 +87,7 @@ interruptible by this socket cancellation mechanism.
 
 The host accepts at most 2,000,000 records, depth 64, and path length 16 KiB.
 A conservative catalog estimate (path bytes, name bytes, 256 bytes per node)
-is capped at 128 MiB; the final UI JSON is capped at 256 MiB. Integer values and
+is capped at 128 MiB; each UI query is capped at 1 MiB. Integer values and
 computed totals must fit JavaScript's exact integer range. These are data
 budgets, not promises that total process RSS equals those limits.
 
@@ -98,19 +98,19 @@ cannot affect a different scan ID. Cancellation bypasses the serialized
 operation lock and closes the active socket. The UI discards failed rescan
 results and returns to setup, avoiding actions based on an obsolete tree.
 
-The host keeps compact names, links and sizes, derives subtree totals, and
-serializes paths directly into the existing dashboard response. It does not
-buffer the whole wire response or build a second recursive host tree. The
-finished frontend still receives one full tree and locally clones it after
-deletion. Persistent Rust ownership, bounded queries and progressive browsing
-remain #29/#30 work; this change provides partial counts/recent entries during
-scanning rather than a browsable incomplete dashboard.
+The host retains compact verified records and directory indexes in a
+[generation-scoped scan store](scan-store.md). The frontend receives metadata,
+128-entry directory pages, and a bounded chart instead of the whole tree.
+Deletion updates host totals and advances the revision; JavaScript does not
+clone or edit a full tree. Scanning still shows partial counts/recent entries,
+not a browsable incomplete dashboard. Virtualized rows and the separate SVG
+chart work remain #30/#31.
 
 ## Timing and attribution
 
 For streamed scans, `scan_time_ms`/`traverse_ms` measure daemon traversal with
 interleaved encoding/writes. `serialize_ms` and `send_ms` are cumulative daemon
-encoding/write times; `sort_ms` measures host aggregation/sorting. These overlap
+encoding/write times; `sort_ms` measures host aggregation/sorting and directory index construction. These overlap
 and must not be added or compared directly with the old exclusive phase split.
 Final host response serialization and frontend rendering are not included.
 
