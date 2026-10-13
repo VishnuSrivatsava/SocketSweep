@@ -98,7 +98,7 @@
   const report = (passed, error) => {
     const output = document.createElement("pre");
     output.id = "scan-test-report";
-    output.textContent = JSON.stringify({ passed, error, ipc_calls: calls.length, checks: passed ? ["complete paging", "late zoom", "Other tile", "stale confirmation", "ID-only deletion", "revision refresh", "partial failure", "read-only"] : undefined });
+    output.textContent = JSON.stringify({ passed, error, ipc_calls: calls.length, checks: passed ? ["file label semantics", "complete paging", "late zoom", "Other tile", "stale confirmation", "ID-only deletion", "revision refresh", "partial failure", "read-only"] : undefined });
     document.body.append(output);
     void fetch("/report", { method: "POST", body: output.textContent });
   };
@@ -107,6 +107,7 @@
     document.querySelector("#btn-connect").click();
     await waitFor(() => rows().length === 129, "Initial page did not render 128 children");
     check(document.body.textContent.includes("128 entries on this page of 271"), "Missing full entry count");
+    check(!rows().find(item => item.textContent.includes("file-0")).querySelector("button:disabled"), "File label became an unavailable control");
     const firstNames = rows().map(item => item.textContent);
     button("Next").click();
     await waitFor(() => rows().some(item => item.textContent.includes("file-127")), "Next page missing");

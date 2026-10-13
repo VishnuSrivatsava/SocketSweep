@@ -352,18 +352,20 @@ function FileTreeNode({ node, scope, parentSize, depth, onNuke, onZoom, expanded
   const view = rootView ?? query;
   const page = view.page;
   const ratio = parentSize > 0 ? node.size / parentSize : 0;
-  return (
-    <div>
-      <div className="file-row flex items-center gap-2 px-3 py-1.5 rounded-md group select-none"
-        style={{ paddingLeft: `${12 + depth * 16}px` }}>
-        <button className="flex items-center gap-2 min-w-0 flex-1 text-left" disabled={!isDir || busy}
-          aria-expanded={isDir ? open : undefined} onClick={() => toggle(node.id)}>
+  const label = <>
           <span className="w-4 flex-shrink-0 flex items-center justify-center">
             {isDir ? <IconChevron open={open} className="text-zinc-500" /> : <span className="w-3" />}
           </span>
           <span className={isDir ? "text-accent-400" : "text-zinc-500"}>{isDir ? <IconFolder /> : <IconFile />}</span>
           <span className={`truncate text-sm ${isDir ? "text-zinc-200 font-medium" : "text-zinc-400"}`}>{node.name}</span>
-        </button>
+  </>;
+  return (
+    <div>
+      <div className="file-row flex items-center gap-2 px-3 py-1.5 rounded-md group select-none"
+        style={{ paddingLeft: `${12 + depth * 16}px` }}>
+        {isDir ? <button className="flex items-center gap-2 min-w-0 flex-1 text-left" disabled={busy}
+          aria-expanded={open} onClick={() => toggle(node.id)}>{label}</button>
+          : <span className="flex items-center gap-2 min-w-0 flex-1 text-left">{label}</span>}
         {isDir && <button disabled={busy} onClick={() => onZoom(node.id)}
           className="opacity-0 group-hover:opacity-100 focus:opacity-100 mr-2 px-2 py-1 rounded text-[10px] uppercase font-bold bg-accent-500/10 text-accent-400 border border-accent-500/20">Zoom</button>}
         <SizeBar ratio={ratio} />
