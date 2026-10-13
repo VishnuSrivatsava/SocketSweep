@@ -193,6 +193,10 @@ jobs:
       - name: Test Rust bridge
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
 
+      - name: Test built scan UI with mocked IPC
+        if: runner.os == 'Linux'
+        run: python3 tests/check_scan_ui.py
+
       # ── Fix AppImage: guarantee root icon + .DirIcon + sane modes ─────────
       # Required for AppImage catalog validation. tauri-bundler 2.11.1 emits a
       # .DirIcon whose target is an ABSOLUTE path into the build machine

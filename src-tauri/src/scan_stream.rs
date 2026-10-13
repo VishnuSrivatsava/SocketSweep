@@ -1,19 +1,21 @@
-//! Bounded stream-v1 decoder. Compact records exist only for construction of
-//! the current UI response; persistent ownership/query APIs belong to #29.
-use serde::{
-    ser::{SerializeSeq, SerializeStruct},
-    Deserialize, Serialize,
-};
-use std::io::{Read, Write};
+//! Bounded stream-v1 decoder. Verified records transfer to the host scan store.
+#[cfg(test)]
+use serde::ser::{SerializeSeq, SerializeStruct};
+use serde::{Deserialize, Serialize};
+use std::io::Read;
+#[cfg(test)]
+use std::io::Write;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub const MAX_FRAME_BYTES: usize = 128 * 1024;
 const MAX_BATCH_ENTRIES: usize = 128;
 const MAX_NODES: usize = 2_000_000;
 const MAX_TREE_BYTES: usize = 128 * 1024 * 1024;
+#[cfg(test)]
 const MAX_RESULT_BYTES: usize = 256 * 1024 * 1024;
 const MAX_SAFE_INTEGER: u64 = (1u64 << 53) - 1;
-const NONE: u32 = u32::MAX;
+pub(crate) const NONE: u32 = u32::MAX;
 
 #[derive(Deserialize)]
 #[serde(
@@ -59,36 +61,41 @@ struct Entry {
 }
 #[derive(Deserialize, PartialEq, Copy, Clone)]
 #[serde(rename_all = "snake_case")]
-enum Kind {
+pub(crate) enum Kind {
     File,
     Directory,
     Other,
 }
-struct Node {
-    name: String,
-    size: u64,
-    parent: u32,
+pub(crate) struct Node {
+    pub name: Arc<str>,
+    pub size: u64,
+    pub parent: u32,
     first_child: u32,
     next_sibling: u32,
     path_bytes: u32,
     depth: u8,
-    kind: Kind,
-    counted: bool,
+    pub kind: Kind,
+    pub counted: bool,
+    pub files: u64,
+    pub directories: u64,
+    pub deleted: bool,
 }
 // Serialize directly from compact records. Full paths and recursive child
 // objects are never materialized in a second host tree.
+#[cfg(test)]
 struct NodeView<'a> {
     nodes: &'a [Node],
     index: u32,
     path: &'a str,
 }
+#[cfg(test)]
 impl Serialize for NodeView<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let node = &self.nodes[self.index as usize];
         let directory = node.kind == Kind::Directory;
         let fields = 4 + usize::from(directory) + usize::from(!node.counted);
         let mut result = serializer.serialize_struct("Node", fields)?;
-        result.serialize_field("name", &node.name)?;
+        result.serialize_field("name", node.name.as_ref())?;
         result.serialize_field("path", &self.path)?;
         result.serialize_field("type", if directory { "directory" } else { "file" })?;
         result.serialize_field("size", &node.size)?;
@@ -110,11 +117,13 @@ impl Serialize for NodeView<'_> {
         result.end()
     }
 }
+#[cfg(test)]
 struct ChildrenView<'a> {
     nodes: &'a [Node],
     first: u32,
     path: &'a str,
 }
+#[cfg(test)]
 impl Serialize for ChildrenView<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut sequence = serializer.serialize_seq(None)?;
@@ -147,21 +156,21 @@ pub struct Progress {
 #[derive(Serialize)]
 pub struct Response {
     #[serde(skip)]
-    nodes: Vec<Node>,
+    pub(crate) nodes: Vec<Node>,
     #[serde(skip)]
-    root: String,
+    pub(crate) root: String,
     status: &'static str,
-    total_files: u64,
-    total_dirs: u64,
-    total_size: u64,
+    pub(crate) total_files: u64,
+    pub(crate) total_dirs: u64,
+    pub(crate) total_size: u64,
     errors: u64,
     skipped: u64,
-    read_only: bool,
+    pub(crate) read_only: bool,
     scan_time_ms: u64,
     scan_threads: u32,
     streamed: bool,
     traverse_ms: u64,
-    sort_ms: u64,
+    pub(crate) sort_ms: u64,
     serialize_ms: u64,
     send_ms: u64,
     bytes_sent: u64,
@@ -170,6 +179,7 @@ impl Response {
     pub fn root(&self) -> &str {
         &self.root
     }
+    #[cfg(test)]
     pub fn json(&self) -> Result<String, String> {
         struct Limited(Vec<u8>);
         impl Write for Limited {
@@ -359,8 +369,8 @@ pub fn read(
                     if path_bytes > 16 * 1024 || depth > 64 {
                         return Err("Scan path/depth limit exceeded".into());
                     }
-                    // Conservative budget also accounts for the final path
-                    // representation, not just the smaller compact records.
+                    // Conservative budget covers records, shared names, directory
+                    // indexes, and decoder staging; full paths stay transient.
                     tree_bytes = tree_bytes
                         .checked_add(path_bytes + entry.name.len() + 256)
                         .ok_or("Scan memory limit exceeded")?;
@@ -379,7 +389,7 @@ pub fn read(
                         nodes[parent].first_child = entry.id as u32;
                     }
                     nodes.push(Node {
-                        name: entry.name,
+                        name: entry.name.into(),
                         size: entry.size,
                         parent: entry.parent.map_or(NONE, |id| id as u32),
                         first_child: NONE,
@@ -388,6 +398,9 @@ pub fn read(
                         depth: depth as u8,
                         kind: entry.kind,
                         counted: entry.counted,
+                        files: u64::from(entry.counted && entry.kind == Kind::File),
+                        directories: u64::from(entry.counted && entry.kind == Kind::Directory),
+                        deleted: false,
                     });
                 }
                 if (!first_results_sent && nodes.len() > 1)
@@ -398,7 +411,7 @@ pub fn read(
                         .skip(1)
                         .rev()
                         .take(5)
-                        .map(|node| node.name.clone())
+                        .map(|node| node.name.to_string())
                         .collect();
                     observed.recent_names.reverse();
                     progress(&observed)?;
@@ -452,6 +465,9 @@ pub fn read(
                 for index in (1..nodes.len()).rev() {
                     let parent = nodes[index].parent as usize;
                     nodes[parent].size = safe_add(nodes[parent].size, nodes[index].size)?;
+                    nodes[parent].files = safe_add(nodes[parent].files, nodes[index].files)?;
+                    nodes[parent].directories =
+                        safe_add(nodes[parent].directories, nodes[index].directories)?;
                 }
                 if nodes[0].size != total_size {
                     return Err("Scan tree does not match completion totals".into());
@@ -490,7 +506,7 @@ pub fn read(
                     .skip(1)
                     .rev()
                     .take(5)
-                    .map(|node| node.name.clone())
+                    .map(|node| node.name.to_string())
                     .collect();
                 observed.recent_names.reverse();
                 progress(&observed)?;
