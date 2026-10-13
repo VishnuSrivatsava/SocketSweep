@@ -8,6 +8,7 @@
   let delayedZoom = true;
   let delayedDetail = true;
   let failDelete = false;
+  let stopOutcome = "acknowledged";
   let callbacks = 0;
   let rootChildren;
   let folderChildren;
@@ -62,7 +63,15 @@
       if (command === "check_adb") return "Mock ADB";
       if (command === "init_daemon") return "Mock daemon";
       if (command === "run_scan") { generation++; reset(); return JSON.stringify(summary()); }
-      if (command === "stop_daemon") { unavailable = true; return "Mock stopped"; }
+      if (command === "stop_daemon") {
+        await pause(150);
+        unavailable = true;
+        if (stopOutcome === "unreachable") throw "No Android device detected";
+        if (stopOutcome === "invalid") return "daemon already stopped";
+        if (stopOutcome === "wrong-ack") return JSON.stringify({ status: "ok", message: "pong" });
+        if (stopOutcome === "error-status") return JSON.stringify({ status: "error", message: "Authentication failed" });
+        return JSON.stringify({ status: "ok", message: "shutting down" });
+      }
       check(!unavailable, "Snapshot unavailable");
       check(args.generation === scope().generation && args.revision === revision, "Stale mock snapshot");
       if (command === "get_scan_view") {
@@ -98,7 +107,7 @@
   const report = (passed, error) => {
     const output = document.createElement("pre");
     output.id = "scan-test-report";
-    output.textContent = JSON.stringify({ passed, error, ipc_calls: calls.length, checks: passed ? ["file label semantics", "complete paging", "late zoom", "Other tile", "stale confirmation", "ID-only deletion", "revision refresh", "partial failure", "read-only"] : undefined });
+    output.textContent = JSON.stringify({ passed, error, ipc_calls: calls.length, checks: passed ? ["file label semantics", "complete paging", "late zoom", "Other tile", "stale confirmation", "ID-only deletion", "revision refresh", "partial failure", "read-only", "acknowledged shutdown", "unconfirmed shutdown", "reconnect", "stop action ordering"] : undefined });
     document.body.append(output);
     void fetch("/report", { method: "POST", body: output.textContent });
   };
@@ -168,6 +177,27 @@
     await waitFor(() => rows().length === 129, "Read-only page missing");
     check(document.body.textContent.includes("Deletion disabled"), "Read-only banner missing");
     check(!document.querySelector('[aria-label^="Delete "]'), "Read-only deletion enabled");
+    const previousAcknowledgements = () => (document.body.textContent.match(/Daemon acknowledged shutdown\./g) ?? []).length;
+    document.querySelector("#btn-disconnect").click();
+    await waitFor(() => document.querySelector("#btn-connect") && !document.querySelector("#btn-connect").disabled, "Acknowledged stop did not release the UI");
+    check(previousAcknowledgements() === 1, "Acknowledged stop was not reported accurately");
+    for (const outcome of ["unreachable", "invalid", "error-status", "wrong-ack"]) {
+      stopOutcome = outcome;
+      document.querySelector("#btn-connect").click();
+      await waitFor(() => rows().length === 129, "Reconnect after stop failed");
+      const warnings = (document.body.textContent.match(/daemon shutdown could not be confirmed:/g) ?? []).length;
+      const priorStops = calls.filter(item => item.command === "stop_daemon").length;
+      const disconnect = document.querySelector("#btn-disconnect");
+      disconnect.click();
+      disconnect.click();
+      await waitFor(() => disconnect.disabled && document.querySelector("#btn-rescan").disabled, "Stop allowed overlapping actions");
+      await waitFor(() => document.querySelector("#btn-connect") && !document.querySelector("#btn-connect").disabled, "Unconfirmed stop did not release the UI");
+      check(previousAcknowledgements() === 1, "Unconfirmed stop was reported as acknowledged");
+      check((document.body.textContent.match(/daemon shutdown could not be confirmed:/g) ?? []).length === warnings + 1, "Missing unconfirmed-stop warning");
+      check(calls.filter(item => item.command === "stop_daemon").length === priorStops + 1, "Duplicate stop request");
+      check(rows().length === 0, "Unconfirmed stop retained scan results");
+    }
+    check(!document.body.textContent.includes("Daemon successfully shut down.") && !document.body.textContent.includes("Daemon was already stopped."), "Unsupported shutdown claim survived");
     report(true);
   })().catch(error => report(false, error.stack));
 })();

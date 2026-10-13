@@ -606,7 +606,7 @@ function App() {
   const [scanData, setScanData] = useState<ScanResponse | null>(null);
   const snapshot = useRef<ScanResponse | null>(null);
   const [busy, setBusy] = useState(false);
-  const deleting = useRef(false);
+  const actionPending = useRef(false);
   const confirmationRequest = useRef(0);
   const [confirmDelete, setConfirmDelete] = useState<NodeDetail | null>(null);
   const [scanProgress, setScanProgress] = useState<ScanProgress | null>(null);
@@ -723,7 +723,7 @@ function App() {
 
   // ── Rescan ──────────────────────────────────────────────────────────────
   const handleRescan = useCallback(async () => {
-    if (!scanData) return;
+    if (!scanData || actionPending.current) return;
     const scanPath = scanData.root_path;
     setPhase("scanning");
     setStatusText(`Re-scanning ${scanPath} …`);
@@ -750,30 +750,44 @@ function App() {
 
   // ── Disconnect ──────────────────────────────────────────────────────────
   const handleDisconnect = useCallback(async () => {
+    if (actionPending.current) return;
+    actionPending.current = true;
+    setBusy(true);
     snapshot.current = null;
     confirmationRequest.current += 1;
     setConfirmDelete(null);
     addLog("[SOCKET] Disconnecting daemon...");
     try {
-      await invoke<string>("stop_daemon");
-      pushToast("Daemon stopped", "info");
-      addLog("[SOCKET] Daemon successfully shut down.");
-    } catch {
-      addLog("[SOCKET] Daemon was already stopped.");
+      const raw = await invoke<string>("stop_daemon");
+      let response;
+      try { response = JSON.parse(raw); }
+      catch { throw new Error("Daemon did not acknowledge shutdown"); }
+      if (response?.status !== "ok" || response?.message !== "shutting down") {
+        throw new Error("Daemon did not acknowledge shutdown");
+      }
+      pushToast("Daemon shutdown acknowledged", "info");
+      addLog("[SOCKET] Daemon acknowledged shutdown. App disconnected.");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      pushToast("App disconnected; daemon shutdown could not be confirmed", "info");
+      addLog(`[SOCKET] App disconnected; daemon shutdown could not be confirmed: ${message}`);
+    } finally {
+      setScanData(null);
+      setPhase("setup");
+      actionPending.current = false;
+      setBusy(false);
     }
-    setScanData(null);
-    setPhase("setup");
   }, [pushToast, addLog]);
 
   // Resolve confirmation details separately; destructive IPC accepts only IDs.
   const handleNuke = useCallback(async (nodeId: number) => {
     const scope = snapshot.current;
-    if (!scope || scope.read_only || deleting.current) return;
+    if (!scope || scope.read_only || actionPending.current) return;
     const request = ++confirmationRequest.current;
     try {
       const raw = await invoke<string>("get_scan_node", { generation: scope.generation, revision: scope.revision, nodeId });
       const detail: NodeDetail = JSON.parse(raw);
-      if (request === confirmationRequest.current && !deleting.current && sameScan(snapshot.current, scope) && sameScan(detail, scope) && detail.node.id === nodeId && detail.node.can_delete) {
+      if (request === confirmationRequest.current && !actionPending.current && sameScan(snapshot.current, scope) && sameScan(detail, scope) && detail.node.id === nodeId && detail.node.can_delete) {
         setConfirmDelete(detail);
       }
     } catch (err) {
@@ -785,8 +799,8 @@ function App() {
     const target = confirmDelete;
     confirmationRequest.current += 1;
     setConfirmDelete(null);
-    if (!target || deleting.current || !sameScan(snapshot.current, target)) return;
-    deleting.current = true;
+    if (!target || actionPending.current || !sameScan(snapshot.current, target)) return;
+    actionPending.current = true;
     setBusy(true);
     addLog(`[DELETE] Requesting deletion of ${target.path}...`);
     try {
@@ -816,7 +830,7 @@ function App() {
       try { await invoke("stop_daemon"); } catch { /* retain the deletion error */ }
       setPhase("setup");
     } finally {
-      deleting.current = false;
+      actionPending.current = false;
       setBusy(false);
     }
   }, [confirmDelete, pushToast, addLog]);

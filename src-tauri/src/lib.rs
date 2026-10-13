@@ -318,12 +318,11 @@ fn init_daemon(app: tauri::AppHandle, root_mode: Option<bool>) -> Result<String,
     invalidate_scan()?;
     let has_session = DEVICE_SERIAL.lock().map_err(|_| "Device state is unavailable")?.is_some();
     if has_session {
-        stop_daemon_inner(&app)?;
+        // An unreachable previous daemon is not proof it stopped. Local
+        // cleanup still releases its session; init performs fresh device setup.
+        let _ = stop_daemon_inner(&app);
     }
-    *SESSION_TOKEN.lock().map_err(|_| "Session state is unavailable")? = None;
-    *DEVICE_SERIAL.lock().map_err(|_| "Device state is unavailable")? = None;
-    *READ_ONLY.lock().map_err(|_| "Session state is unavailable")? = false;
-    *DEVICE_PRIVILEGE.lock().map_err(|_| "Device state is unavailable")? = Privilege::Shell;
+    clear_session()?;
     let result = init_daemon_inner(app.clone(), root_mode.unwrap_or(false));
     if result.is_err() {
         // A failed push/start/handshake must not leave a live daemon or a
@@ -618,23 +617,68 @@ fn stop_daemon(app: tauri::AppHandle) -> Result<String, String> {
     stop_daemon_inner(&app)
 }
 
+fn confirm_shutdown(response: &str) -> Result<(), String> {
+    let status = require_ok(response)?;
+    if status.message.as_deref() != Some("shutting down") {
+        return Err("Daemon did not acknowledge shutdown".into());
+    }
+    Ok(())
+}
+
+fn clear_session() -> Result<(), String> {
+    invalidate_scan()?;
+    *SESSION_TOKEN
+        .lock()
+        .map_err(|_| "Session state is unavailable")? = None;
+    *DEVICE_SERIAL
+        .lock()
+        .map_err(|_| "Device state is unavailable")? = None;
+    *DEVICE_PRIVILEGE
+        .lock()
+        .map_err(|_| "Device state is unavailable")? = Privilege::Shell;
+    *READ_ONLY
+        .lock()
+        .map_err(|_| "Session state is unavailable")? = false;
+    Ok(())
+}
+
+fn finish_stop(result: Result<String, String>) -> Result<String, String> {
+    // Even a missing ADB resource or lost phone connection must release local
+    // state. Preserve the remote outcome instead of inventing stopped status.
+    clear_session()?;
+    result
+}
+
 fn stop_daemon_inner(app: &tauri::AppHandle) -> Result<String, String> {
     invalidate_scan()?;
-    let adb_path = get_bundled_binary(app, "adb")?;
-    let response = daemon_command("SHUTDOWN");
-    let has_device = DEVICE_SERIAL.lock().map_err(|_| "Device state is unavailable")?.is_some();
-    if has_device {
-        if response.is_err() {
-            let _ = device_shell(&adb_path, "pkill -f '[s]ocketsweep_daemon' || true");
+    let result = (|| {
+        let adb_path = get_bundled_binary(app, "adb")?;
+        let response = daemon_command("SHUTDOWN").and_then(|response| {
+            confirm_shutdown(&response)?;
+            Ok(response)
+        });
+        let has_device = DEVICE_SERIAL
+            .lock()
+            .map_err(|_| "Device state is unavailable")?
+            .is_some();
+        if has_device {
+            if response.is_err() {
+                let _ = device_shell(&adb_path, "pkill -f '[s]ocketsweep_daemon' || true");
+            }
+            let _ = adb_s(
+                &adb_path,
+                &["forward", "--remove", &format!("tcp:{DAEMON_PORT}")],
+            );
+            let _ = adb_s(
+                &adb_path,
+                &["shell", "rm", "-f", DEVICE_BIN_PATH, DEVICE_TOKEN_PATH],
+            );
         }
-        let _ = adb_s(&adb_path, &["forward", "--remove", &format!("tcp:{DAEMON_PORT}")]);
-        let _ = adb_s(&adb_path, &["shell", "rm", "-f", DEVICE_BIN_PATH, DEVICE_TOKEN_PATH]);
-    }
-    *SESSION_TOKEN.lock().map_err(|_| "Session state is unavailable")? = None;
-    *DEVICE_SERIAL.lock().map_err(|_| "Device state is unavailable")? = None;
-    *DEVICE_PRIVILEGE.lock().map_err(|_| "Device state is unavailable")? = Privilege::Shell;
-    *READ_ONLY.lock().map_err(|_| "Session state is unavailable")? = false;
-    Ok(response.unwrap_or_else(|_| "daemon already stopped".into()))
+        // Cleanup is best effort. A successful pkill command (with || true)
+        // cannot substitute for a missing authenticated shutdown acknowledgement.
+        response
+    })();
+    finish_stop(result)
 }
 
 #[tauri::command(async)]
@@ -763,6 +807,15 @@ mod tests {
         assert_eq!(first.len(), 64);
         assert!(first.bytes().all(|b| b.is_ascii_hexdigit()));
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn shutdown_requires_the_actual_acknowledgement() {
+        assert!(confirm_shutdown(r#"{"status":"ok","message":"shutting down"}"#).is_ok());
+        for response in ["", "daemon already stopped", "{", "null", r#"{"status":"ok"}"#,
+            r#"{"status":"ok","message":"pong"}"#, r#"{"status":"error","message":"Authentication failed"}"#] {
+            assert!(confirm_shutdown(response).is_err(), "accepted {response}");
+        }
     }
 
     #[test]
