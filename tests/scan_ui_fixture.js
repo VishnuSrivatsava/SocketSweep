@@ -1,6 +1,8 @@
 // Real built frontend, mocked Tauri IPC. No native app, ADB or device calls.
 (() => {
   const calls = [];
+  const violations = [];
+  document.addEventListener("securitypolicyviolation", event => violations.push(event.blockedURI));
   let generation = 1;
   let revision = 0;
   let unavailable = false;
@@ -107,14 +109,33 @@
   const report = (passed, error) => {
     const output = document.createElement("pre");
     output.id = "scan-test-report";
-    output.textContent = JSON.stringify({ passed, error, ipc_calls: calls.length, checks: passed ? ["file label semantics", "complete paging", "late zoom", "Other tile", "stale confirmation", "ID-only deletion", "revision refresh", "partial failure", "read-only", "acknowledged shutdown", "unconfirmed shutdown", "reconnect", "stop action ordering"] : undefined });
+    output.textContent = JSON.stringify({ passed, error, ipc_calls: calls.length, checks: passed ? ["offline fonts under CSP", "setup alignment", "result fonts", "file label semantics", "complete paging", "late zoom", "Other tile", "stale confirmation", "ID-only deletion", "revision refresh", "partial failure", "read-only", "acknowledged shutdown", "unconfirmed shutdown", "reconnect", "stop action ordering"] : undefined });
     document.body.append(output);
     void fetch("/report", { method: "POST", body: output.textContent });
   };
   void (async () => {
     await waitFor(() => document.querySelector("#btn-connect"), "Setup did not render");
+    check(!document.querySelector('link[href^="http"]'), "External resource link remains");
+    // load() returns actual matching FontFace objects; check() alone can succeed
+    // through fallback even when no face exists. Exercise every shipped subset.
+    for (const family of ["Inter", "JetBrains Mono"]) {
+      const samples = family === "Inter" ? ["SocketSweep → —", "Łódź", "ắ", "Ω", "ἀ", "Я", "Ҁ"] : ["Scan 123 → —", "Łódź", "ắ", "Ω", "Я", "Ҁ"];
+      const weights = family === "Inter" ? [300, 400, 500, 600, 700, 800] : [400, 500];
+      for (const weight of weights) for (const sample of samples) {
+        const faces = await document.fonts.load(`${weight} 16px "${family}"`, sample);
+        check(faces.length > 0 && faces.every(face => face.status === "loaded"), `Font missing: ${family} ${weight} ${sample}`);
+      }
+    }
+    const connect = document.querySelector("#btn-connect");
+    check(getComputedStyle(connect).fontFamily.includes("Inter"), "Setup does not use Inter");
+    const bounds = connect.getBoundingClientRect();
+    check(Math.abs((bounds.left + bounds.right) / 2 - innerWidth / 2) < 2, "Connect button is not centered");
+    check(bounds.top >= 0 && bounds.bottom <= innerHeight, "Connect button is outside the viewport");
     document.querySelector("#btn-connect").click();
     await waitFor(() => rows().length === 129, "Initial page did not render 128 children");
+    const mono = document.querySelector(".font-mono");
+    check(mono && getComputedStyle(mono).fontFamily.includes("JetBrains Mono"), "Result does not use JetBrains Mono");
+    check(document.documentElement.scrollWidth <= innerWidth, "Results overflow horizontally");
     check(document.body.textContent.includes("128 entries on this page of 271"), "Missing full entry count");
     check(!rows().find(item => item.textContent.includes("file-0")).querySelector("button:disabled"), "File label became an unavailable control");
     const firstNames = rows().map(item => item.textContent);
@@ -198,6 +219,9 @@
       check(rows().length === 0, "Unconfirmed stop retained scan results");
     }
     check(!document.body.textContent.includes("Daemon successfully shut down.") && !document.body.textContent.includes("Daemon was already stopped."), "Unsupported shutdown claim survived");
+    check(violations.length === 0, `CSP blocked resources: ${violations.join(", ")}`);
+    const fonts = performance.getEntriesByType("resource").filter(entry => entry.name.includes(".woff2"));
+    check(fonts.length === 13 && fonts.every(entry => new URL(entry.name).origin === location.origin), "Fonts are missing or fetched off-site");
     report(true);
-  })().catch(error => report(false, error.stack));
+  })().catch(error => report(false, error.stack ?? String(error)));
 })();
