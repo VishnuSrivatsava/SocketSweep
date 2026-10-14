@@ -33,7 +33,9 @@ rows and broader navigation work.
   new summary and reloads visible pages; it does not clone a full tree.
 - Transport errors, malformed results and partial deletion failures quarantine
   the snapshot. The UI discards results and returns to setup after stopping the
-  session. An obsolete result cannot clear a newer generation.
+  session. An obsolete result cannot clear a newer generation. Disconnect
+  reports a phone-side shutdown only after its authenticated acknowledgement;
+  unreachable or invalid replies clear local state without claiming it stopped.
 - Connection/scan/delete operations share the existing operation lock. Queries
   take only the store lock, with no network I/O while holding it. Queries see a
   complete revision or fail as stale. Late UI responses cannot replace newer

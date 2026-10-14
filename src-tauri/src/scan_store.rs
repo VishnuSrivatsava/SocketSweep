@@ -955,6 +955,26 @@ mod tests {
         );
     }
     #[test]
+    fn stop_releases_local_authority_on_success_and_unconfirmed_failures() {
+        let _operation = crate::DAEMON_OPERATION.lock().unwrap();
+        for outcome in [Ok(r#"{"status":"ok","message":"shutting down"}"#.into()),
+            Err("Phone disconnected".into()), Err("Bundled ADB unavailable".into())] {
+            let expected = outcome.clone();
+            *crate::SCAN_STORE.lock().unwrap() = Some(Catalog::new(fixture(&wide(2), true), "generation-a".into()));
+            *crate::SESSION_TOKEN.lock().unwrap() = Some("fixture-secret".into());
+            *crate::DEVICE_SERIAL.lock().unwrap() = Some("fixture-device".into());
+            *crate::READ_ONLY.lock().unwrap() = true;
+            *crate::DEVICE_PRIVILEGE.lock().unwrap() = crate::Privilege::Su;
+            assert_eq!(crate::finish_stop(outcome), expected);
+            assert!(crate::SCAN_STORE.lock().unwrap().is_none());
+            assert!(crate::SESSION_TOKEN.lock().unwrap().is_none());
+            assert!(crate::DEVICE_SERIAL.lock().unwrap().is_none());
+            assert!(!*crate::READ_ONLY.lock().unwrap());
+            assert_eq!(*crate::DEVICE_PRIVILEGE.lock().unwrap(), crate::Privilege::Shell);
+            assert!(crate::get_scan_view("generation-a".into(), 0, 0, None).is_err());
+        }
+    }
+    #[test]
     fn response_writer_is_bounded_even_when_serialization_escapes_expand() {
         assert!(json(&"\u{0001}".repeat(MAX_QUERY_BYTES / 6 + 1)).is_err());
         let store = Catalog::new(fixture(&wide(1000), false), "generation-a".into());
