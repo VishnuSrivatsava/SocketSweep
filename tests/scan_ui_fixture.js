@@ -109,9 +109,11 @@
   const report = (passed, error) => {
     const output = document.createElement("pre");
     output.id = "scan-test-report";
-    output.textContent = JSON.stringify({ passed, error, ipc_calls: calls.length, checks: passed ? ["offline fonts under CSP", "setup alignment", "result fonts", "file label semantics", "complete paging", "late zoom", "Other tile", "stale confirmation", "ID-only deletion", "revision refresh", "partial failure", "read-only", "acknowledged shutdown", "unconfirmed shutdown", "reconnect", "stop action ordering"] : undefined });
+    output.textContent = JSON.stringify({ fixture: "scan-ui", passed, error, ipc_calls: calls.length, checks: passed ? ["offline fonts under CSP", "setup alignment", "result fonts", "file label semantics", "complete paging", "late zoom", "Other tile", "stale confirmation", "ID-only deletion", "revision refresh", "partial failure", "read-only", "acknowledged shutdown", "unconfirmed shutdown", "reconnect", "stop action ordering", "toast dismissal integration"] : undefined });
     document.body.append(output);
-    void fetch("/report", { method: "POST", body: output.textContent });
+    void fetch("/report", { method: "POST", body: output.textContent }).then(() => {
+      if (passed) location.replace("/tests/toast_lifecycle_fixture.html");
+    });
   };
   void (async () => {
     await waitFor(() => document.querySelector("#btn-connect"), "Setup did not render");
@@ -219,6 +221,10 @@
       check(rows().length === 0, "Unconfirmed stop retained scan results");
     }
     check(!document.body.textContent.includes("Daemon successfully shut down.") && !document.body.textContent.includes("Daemon was already stopped."), "Unsupported shutdown claim survived");
+    const toast = document.querySelector("#toast-container > div:last-child");
+    check(toast, "No toast for dismissal integration");
+    toast.click();
+    await waitFor(() => !toast.isConnected, "App did not remove the dismissed toast");
     check(violations.length === 0, `CSP blocked resources: ${violations.join(", ")}`);
     const fonts = performance.getEntriesByType("resource").filter(entry => entry.name.includes(".woff2"));
     check(fonts.length === 13 && fonts.every(entry => new URL(entry.name).origin === location.origin), "Fonts are missing or fetched off-site");

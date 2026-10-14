@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check the built UI in headless Chromium with mocked IPC, never ADB/Tauri.
+"""Check the built UI and toast lifecycle in headless Chromium, never ADB/Tauri.
 
 Run npm run build first. Uses installed Chrome/Chromium, no added packages.
 """
@@ -58,6 +58,15 @@ with tempfile.TemporaryDirectory(prefix='socketsweep-ui-test-') as directory:
     index = work / 'site/index.html'
     html = index.read_text().replace('<head>', '<head><script src="/fixture.js"></script>')
     index.write_text(html)
+    # Compile the actual toast component with the installed Vite/React tooling.
+    # The isolated fixture stays in this temporary site, never the shipped dist.
+    subprocess.run(['node', '--input-type=module', '-e', '''
+        import { build } from 'vite';
+        await build({ logLevel: 'error', build: {
+            outDir: process.argv[1], emptyOutDir: false,
+            rollupOptions: { input: 'tests/toast_lifecycle_fixture.html' },
+        }});
+    ''', str(work / 'site')], cwd=REPO, check=True, timeout=60)
     server = ThreadingHTTPServer(('127.0.0.1', 0), partial(Handler, directory=str(work / 'site')))
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
@@ -71,10 +80,11 @@ with tempfile.TemporaryDirectory(prefix='socketsweep-ui-test-') as directory:
                 f'--user-data-dir={work / "profile"}', f'http://127.0.0.1:{server.server_port}'],
                 stdout=log, stderr=log, start_new_session=True)
             try:
-                value = reports.get(timeout=40)
-                print(json.dumps(value, indent=2))
-                if not value['passed']:
-                    sys.exit(1)
+                for expected in ('scan-ui', 'toast-lifecycle'):
+                    value = reports.get(timeout=40)
+                    print(json.dumps(value, indent=2))
+                    if value.get('fixture') != expected or not value['passed']:
+                        sys.exit(1)
             except Empty:
                 log.seek(0)
                 sys.exit('Headless browser timed out: ' + log.read()[-3000:])

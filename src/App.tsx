@@ -5,6 +5,8 @@ import { formatBytes } from "./formatBytes";
 import { sameScan } from "./scanView";
 import type { ScanNode, ScanResponse, NodeDetail, DeleteResult } from "./scanView";
 import { useScanView } from "./useScanView";
+import { ToastContainer } from "./ToastContainer";
+import type { Toast } from "./ToastContainer";
 import "./App.css";
 
 // ── Types ───────────────────────────────────────────────────────────────────
@@ -15,13 +17,6 @@ const scanPhaseLog = (r: ScanResponse): string | null => {
   const kb = r.bytes_sent !== undefined ? `, ${(r.bytes_sent / 1024).toFixed(0)} KB sent` : "";
   return `[SCAN] ${r.streamed ? "Stream timings (overlap): scan" : "Phases: traverse"} ${r.traverse_ms}ms · sort ${r.sort_ms}ms · serialize ${r.serialize_ms}ms · send ${r.send_ms}ms${kb}`;
 };
-
-interface Toast {
-  id: number;
-  message: string;
-  type: "error" | "success" | "info";
-  exiting?: boolean;
-}
 
 type AppPhase = "setup" | "connecting" | "scanning" | "result";
 
@@ -90,35 +85,6 @@ function Spinner({ size = 20, className = "" }: { size?: number; className?: str
 // ── Toast System ────────────────────────────────────────────────────────────
 
 let toastId = 0;
-
-function ToastContainer({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id: number) => void }) {
-  return (
-    <div className="fixed top-4 right-4 z-50 flex flex-col gap-2 max-w-sm" id="toast-container">
-      {toasts.map((t) => (
-        <div
-          key={t.id}
-          className={`
-            ${t.exiting ? "animate-toast-out" : "animate-toast-in"}
-            flex items-start gap-3 px-4 py-3 rounded-lg border shadow-xl cursor-pointer
-            ${t.type === "error"
-              ? "bg-red-950/80 border-red-800/50 text-red-200"
-              : t.type === "success"
-              ? "bg-emerald-950/80 border-emerald-800/50 text-emerald-200"
-              : "bg-zinc-800/80 border-zinc-700/50 text-zinc-200"
-            }
-            backdrop-blur-md
-          `}
-          onClick={() => onDismiss(t.id)}
-        >
-          <span className="mt-0.5 text-base">
-            {t.type === "error" ? "✕" : t.type === "success" ? "✓" : "ℹ"}
-          </span>
-          <p className="text-sm leading-relaxed flex-1">{t.message}</p>
-        </div>
-      ))}
-    </div>
-  );
-}
 
 // ── Terminal Log ────────────────────────────────────────────────────────────
 
@@ -615,7 +581,6 @@ function App() {
   const [statusText, setStatusText] = useState("Initializing…");
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
-  const timerRefs = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
 
   const addLog = useCallback((msg: string) => {
     setLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`]);
@@ -625,25 +590,16 @@ function App() {
   const pushToast = useCallback((message: string, type: Toast["type"] = "error") => {
     const id = ++toastId;
     setToasts((prev) => [...prev, { id, message, type }]);
-    const timer = setTimeout(() => {
-      setToasts((prev) =>
-        prev.map((t) => (t.id === id ? { ...t, exiting: true } : t))
-      );
-      setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 300);
-    }, 5000);
-    timerRefs.current.set(id, timer);
   }, []);
 
   const dismissToast = useCallback((id: number) => {
-    const timer = timerRefs.current.get(id);
-    if (timer) {
-      clearTimeout(timer);
-      timerRefs.current.delete(id);
-    }
     setToasts((prev) =>
-      prev.map((t) => (t.id === id ? { ...t, exiting: true } : t))
+      prev.map((t) => (t.id === id && !t.exiting ? { ...t, exiting: true } : t))
     );
-    setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 300);
+  }, []);
+
+  const removeToast = useCallback((id: number) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
   const requestScan = useCallback(async (path: string): Promise<ScanResponse> => {
@@ -835,14 +791,9 @@ function App() {
     }
   }, [confirmDelete, pushToast, addLog]);
 
-  useEffect(() => {
-    const timers = timerRefs.current;
-    return () => { timers.forEach((t) => clearTimeout(t)); };
-  }, []);
-
   return (
     <div className="h-screen flex flex-col bg-surface-0 overflow-hidden">
-      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} onRemove={removeToast} />
 
       <div className="flex-1 flex flex-col min-h-0">
         {(phase === "setup" || phase === "connecting") && (
