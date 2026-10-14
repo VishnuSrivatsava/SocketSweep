@@ -7,6 +7,8 @@ import type { ScanNode, ScanResponse, NodeDetail, DeleteResult } from "./scanVie
 import { useScanView } from "./useScanView";
 import { ToastContainer } from "./ToastContainer";
 import type { Toast } from "./ToastContainer";
+import { TerminalLog } from "./TerminalLog";
+import { appendLog, emptyLogHistory } from "./logHistory";
 import "./App.css";
 
 // ── Types ───────────────────────────────────────────────────────────────────
@@ -85,30 +87,6 @@ function Spinner({ size = 20, className = "" }: { size?: number; className?: str
 // ── Toast System ────────────────────────────────────────────────────────────
 
 let toastId = 0;
-
-// ── Terminal Log ────────────────────────────────────────────────────────────
-
-function TerminalLog({ logs }: { logs: string[] }) {
-  const endRef = useRef<HTMLDivElement>(null);
-  
-  useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [logs]);
-
-  if (logs.length === 0) return null;
-
-  return (
-    <div className="h-32 border-t border-zinc-800 bg-zinc-950 px-4 py-2 font-mono text-[11px] text-zinc-400 overflow-y-auto">
-      {logs.map((log, i) => (
-        <div key={i} className="mb-0.5 break-all">
-          <span className="text-accent-500 mr-2">❯</span>
-          {log}
-        </div>
-      ))}
-      <div ref={endRef} />
-    </div>
-  );
-}
 
 // ── Setup Screen ────────────────────────────────────────────────────────────
 
@@ -580,10 +558,11 @@ function App() {
   const activeScan = useRef<string | null>(null);
   const [statusText, setStatusText] = useState("Initializing…");
   const [toasts, setToasts] = useState<Toast[]>([]);
-  const [logs, setLogs] = useState<string[]>([]);
+  const [logs, setLogs] = useState(emptyLogHistory);
 
   const addLog = useCallback((msg: string) => {
-    setLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`]);
+    const entry = `[${new Date().toLocaleTimeString()}] ${msg}`;
+    setLogs((prev) => appendLog(prev, entry));
   }, []);
 
   // ── Toast helpers ───────────────────────────────────────────────────────
@@ -819,7 +798,7 @@ function App() {
         )}
       </div>
 
-      <TerminalLog logs={logs} />
+      <TerminalLog history={logs} />
 
       {/* Custom Confirm Modal */}
       {confirmDelete && (

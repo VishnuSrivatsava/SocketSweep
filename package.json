@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "test": "node --test tests/format_bytes.test.mjs tests/scan_view.test.mjs",
+    "test": "node --test tests/format_bytes.test.mjs tests/scan_view.test.mjs tests/log_history.test.mjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },
