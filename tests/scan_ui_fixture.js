@@ -62,7 +62,7 @@
     unregisterCallback: () => {},
     invoke: async (command, args = {}) => {
       calls.push({ command, args });
-      if (command === "check_adb") return "Mock ADB";
+      if (command === "check_adb") return "Mock ADB " + "x".repeat(20000);
       if (command === "init_daemon") return "Mock daemon";
       if (command === "run_scan") { generation++; reset(); return JSON.stringify(summary()); }
       if (command === "stop_daemon") {
@@ -109,7 +109,7 @@
   const report = (passed, error) => {
     const output = document.createElement("pre");
     output.id = "scan-test-report";
-    output.textContent = JSON.stringify({ fixture: "scan-ui", passed, error, ipc_calls: calls.length, checks: passed ? ["offline fonts under CSP", "setup alignment", "result fonts", "file label semantics", "complete paging", "late zoom", "Other tile", "stale confirmation", "ID-only deletion", "revision refresh", "partial failure", "read-only", "acknowledged shutdown", "unconfirmed shutdown", "reconnect", "stop action ordering", "toast dismissal integration"] : undefined });
+    output.textContent = JSON.stringify({ fixture: "scan-ui", passed, error, ipc_calls: calls.length, checks: passed ? ["offline fonts under CSP", "setup alignment", "result fonts", "file label semantics", "complete paging", "late zoom", "Other tile", "stale confirmation", "ID-only deletion", "revision refresh", "partial failure", "read-only", "acknowledged shutdown", "unconfirmed shutdown", "reconnect", "stop action ordering", "toast dismissal integration", "bounded diagnostic integration"] : undefined });
     document.body.append(output);
     void fetch("/report", { method: "POST", body: output.textContent }).then(() => {
       if (passed) location.replace("/tests/toast_lifecycle_fixture.html");
@@ -135,6 +135,9 @@
     check(bounds.top >= 0 && bounds.bottom <= innerHeight, "Connect button is outside the viewport");
     document.querySelector("#btn-connect").click();
     await waitFor(() => rows().length === 129, "Initial page did not render 128 children");
+    const logRows = [...document.querySelectorAll("#terminal-log .log-entry")];
+    check(logRows.some(row => row.textContent.includes("[ADB] Found:") && row.textContent.includes("… [truncated]")), "App did not bound oversized diagnostics");
+    check(logRows.every(row => row.textContent.length < 4200), "App retained oversized log text");
     const mono = document.querySelector(".font-mono");
     check(mono && getComputedStyle(mono).fontFamily.includes("JetBrains Mono"), "Result does not use JetBrains Mono");
     check(document.documentElement.scrollWidth <= innerWidth, "Results overflow horizontally");

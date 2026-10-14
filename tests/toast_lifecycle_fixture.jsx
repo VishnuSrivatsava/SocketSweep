@@ -62,6 +62,7 @@ const report = async (passed, error) => {
   window.clearTimeout = nativeClear;
   await fetch("/report", { method: "POST", body: JSON.stringify({ fixture: "toast-lifecycle", passed, error,
     checks: passed ? ["natural expiry", "stable lifetime across rerenders", "early dismissal", "repeated dismissal", "dismissal during exit", "independent toasts", "unmount before expiry", "unmount during exit", "repeated notifications release timers"] : undefined }) });
+  if (passed) location.replace("/tests/log_history_fixture.html");
 };
 
 void (async () => {
