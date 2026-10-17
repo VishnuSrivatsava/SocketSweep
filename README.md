@@ -286,6 +286,9 @@ For the optional, manually run ADB/MTP copy experiment, see
 [the file-transfer baseline and export plan](docs/file-transfer.md). Regression
 tests use offline fixtures and mocked ADB calls; they do not contact a phone.
 
+CI also preserves [matching daemon crash symbols](docs/daemon-symbols.md)
+separately from the stripped binary bundled with the app.
+
 The line-based protocol preserves spaces in filenames. Paths containing a
 newline, carriage return, or null byte are rejected before sending, so they
 cannot cause a different file to be deleted. Scan responses containing invalid
