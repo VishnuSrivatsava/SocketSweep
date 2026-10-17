@@ -282,6 +282,10 @@ npm run build
 cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
 ```
 
+For the optional, manually run ADB/MTP copy experiment, see
+[the file-transfer baseline and export plan](docs/file-transfer.md). Regression
+tests use offline fixtures and mocked ADB calls; they do not contact a phone.
+
 The line-based protocol preserves spaces in filenames. Paths containing a
 newline, carriage return, or null byte are rejected before sending, so they
 cannot cause a different file to be deleted. Scan responses containing invalid
