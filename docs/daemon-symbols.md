@@ -8,18 +8,19 @@ This addresses [#15](https://github.com/VishnuSrivatsava/SocketSweep/issues/15).
 Each macOS/Linux/Windows job uploads a separate workflow artifact:
 
 ```text
-daemon-symbols-<platform>-aarch64-<full-workflow-commit-SHA>
+daemon-symbols-<platform>-aarch64-<full-workflow-commit-SHA>-attempt-<N>
   socketsweep_daemon
   metadata.json
 ```
 
 `socketsweep_daemon` is the unstripped executable, named like the on-device
 process. `metadata.json` records the workflow commit, host platform, Android
-target, shared ELF build ID, SHA-256 and size of both executables, and a real
+target, workflow run/attempt, shared ELF build ID, SHA-256 and size of both executables, and a real
 symbol-lookup smoke check. Host jobs may use different NDK versions; their
 symbols are not interchangeable just because their source commit matches.
 For pull requests, the workflow commit can be GitHub's test merge commit rather
 than the branch head. Use the actual run and manifest.
+Reruns keep separate attempt artifacts rather than overwriting earlier symbols.
 
 Artifacts are uploaded immediately after compilation and verification, before
 desktop packaging. They are retained for 90 days, subject to repository policy

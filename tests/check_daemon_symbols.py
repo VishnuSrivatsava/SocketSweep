@@ -45,6 +45,8 @@ def check(tools, binary, symbols, commit, platform):
     require("main" in location.splitlines() and re.search(r"daemon\.cpp:[1-9][0-9]*:", location),
             "Symbol lookup did not resolve main to daemon.cpp")
     metadata = {"commit": commit, "platform": platform, "target": "aarch64-linux-android31",
+                "workflow_run_id": os.environ.get("GITHUB_RUN_ID"),
+                "workflow_run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
                 "build_id": ids[0], "stripped_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
                 "symbols_sha256": hashlib.sha256(symbols.read_bytes()).hexdigest(),
                 "stripped_bytes": binary.stat().st_size, "symbols_bytes": symbols.stat().st_size,
