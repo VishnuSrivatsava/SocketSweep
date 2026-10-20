@@ -57,11 +57,11 @@ Run the host-only release benchmark with:
 python3 tests/benchmark_largest_files.py
 ```
 
-On an Apple M2 (arm64 macOS), a synthetic scan of **250,000 files** produced a
-**17,439-byte** top-100 response. Across three processes, each with 31 queries,
-process medians were **4.73–4.94 ms**, and p95 values were **6.08–6.80 ms**.
-Process peak RSS was **49.22–50.25 MB** for loading the catalog alone and
-**49.61–49.69 MB** for loading plus repeated queries (decimal MB). These RSS
+On an Apple M2 (arm64 macOS), a synthetic scan of **250,000 files across 32 folders** produced an
+**18,510-byte** top-100 response. Across three processes, each with 31 queries,
+process medians were **4.81–4.91 ms**, and p95 values were **6.65–7.28 ms**.
+Process peak RSS was **48.37–48.40 MB** for loading the catalog alone and
+**48.78–48.82 MB** for loading plus repeated queries (decimal MB). These RSS
 measurements include decoder/catalog construction and allocator noise; they do
 not isolate query allocations or demonstrate a memory reduction. The hard
 100-key selection bound follows from the production heap algorithm.

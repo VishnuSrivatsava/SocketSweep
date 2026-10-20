@@ -15,6 +15,7 @@ import tomllib
 
 REPO = Path(__file__).resolve().parents[1]
 FILES = 250_000
+DIRS = 32
 if sys.platform not in ("darwin", "linux"):
     sys.exit("RSS measurement requires macOS or Linux")
 
@@ -73,20 +74,22 @@ fn main() {
     stream = work / "fixture.stream"
     with stream.open("wb") as output:
         frame(output, "started", {"stream_version": 1, "root": "/fixture", "read_only": False})
-        frame(output, "entries", {"entries": [{"id": 0, "parent": None, "name": "fixture", "kind": "directory", "size": 0, "counted": True}]})
+        directories = [{"id": 0, "parent": None, "name": "fixture", "kind": "directory", "size": 0, "counted": True}]
+        directories += [{"id": i + 1, "parent": 0, "name": f"folder-{i:02}", "kind": "directory", "size": 0, "counted": True} for i in range(DIRS)]
+        frame(output, "entries", {"entries": directories})
         total = 0
         for offset in range(0, FILES, 128):
             batch = []
             for i in range(offset, min(offset + 128, FILES)):
                 size = (i * 7919) % 10_000_000
                 total += size
-                batch.append({"id": i + 1, "parent": 0, "name": f"file-{i:06}.dat", "kind": "file", "size": size, "counted": True})
+                batch.append({"id": i + DIRS + 1, "parent": i % DIRS + 1, "name": f"file-{i:06}.dat", "kind": "file", "size": size, "counted": True})
             frame(output, "entries", {"entries": batch})
-        frame(output, "done", {"total_files": FILES, "total_dirs": 1, "total_size": total,
+        frame(output, "done", {"total_files": FILES, "total_dirs": DIRS + 1, "total_size": total,
               "errors": 0, "skipped": 0, "scan_time_ms": 1, "scan_threads": 4,
               "serialize_ms": 0, "send_ms": 0, "bytes_sent": output.tell()})
     subprocess.run(["cargo", "build", "--offline", "--release", "--quiet"], cwd=work, check=True, stderr=subprocess.PIPE)
-    results = {"files": FILES, "limit": 100, "samples_per_query_process": 31, "runs": {}}
+    results = {"files": FILES, "directories": DIRS + 1, "limit": 100, "samples_per_query_process": 31, "runs": {}}
     for mode in ("load_only", "query"):
         samples = []
         for _ in range(3):
