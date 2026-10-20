@@ -99,6 +99,12 @@ Go to **Settings → About Phone → tap "Build Number" 7 times** to unlock Deve
 
 That's it. No apps to install on your phone, no Wi-Fi setup, no root required.
 
+In a source build, choose the device in setup before connecting when multiple
+devices are ready. Refresh after plugging in or authorizing a phone. A selected
+device that disappears stays selected and blocks connection; another phone is
+never substituted automatically. See [device selection](docs/device-selection.md)
+for behavior and manual checks.
+
 ### Optional: scan with root access
 
 This option is included in source builds and the next release; v1.1.1 does not
@@ -162,7 +168,7 @@ flowchart TB
     end
 
     subgraph Transport["ADB Protocol"]
-        Tunnel["ADB Port Forwarding<br>TCP:5050 -> TCP:5050"]
+        Tunnel["Targeted ADB Port Forwarding<br>Allocated loopback ports"]
     end
 
     subgraph Device["Android Device"]
@@ -186,16 +192,19 @@ sequenceDiagram
     participant D as C++ Daemon (Android)
     
     %% Connect Phase
-    U->>R: invoke("init_daemon")
-    R->>A: pkill daemon (Cleanup)
-    R->>A: push daemon /data/local/tmp
-    R->>A: appops set MANAGE_EXTERNAL_STORAGE allow
-    R->>A: Write private startup secret, launch daemon
-    R->>A: adb forward tcp:5050 tcp:5050
+    U->>R: invoke("list_devices")
+    R->>A: adb devices -l
+    R-->>U: Serials, models and states
+    U->>R: invoke("init_daemon", { serial, rootMode })
+    R->>A: Release only this app's previous session
+    R->>A: Revalidate the chosen serial with adb devices -l
+    R->>A: -s serial: private directory, binary and startup secret
+    R->>A: -s serial: shell -T launch, allocate device port
+    R->>A: -s serial: forward --no-rebind tcp:0 tcp:device-port
     R->>D: AUTH session secret (on every connection)
-    R->>D: Ping-Retry Loop (150ms)
-    D-->>R: ACK Connection
-    R-->>U: Connected!
+    R->>D: PING with a bounded deadline
+    D-->>R: Protocol, UID and read-only handshake
+    R-->>U: Connected to selected serial
     
     %% Scan Phase
     U->>R: invoke("run_scan", { path, scanId, onProgress })
@@ -206,14 +215,15 @@ sequenceDiagram
         R-->>U: Partial counts and recent entries
     end
     D-->>R: Completion totals, then EOF
-    R-->>U: Validate and render finished tree
+    R-->>U: Validated scan summary and bounded directory pages
     
     %% Delete Phase
-    U->>R: invoke("delete_item", { path })
+    U->>R: invoke("delete_item", { generation, revision, nodeId })
+    Note over R: Resolve the allowed path from the current host scan
     R->>D: TCP Send: `DELETE /sdcard/... \n`
     Note over D: Descriptor-relative traversal and unlinkat<br/>Child symlinks are never followed
     D-->>R: {"status":"ok"}
-    R-->>U: Update UI / Rescan
+    R-->>U: Update summary/revision and refresh affected pages
 ```
 
 ---

@@ -11,6 +11,15 @@
   let delayedDetail = true;
   let failDelete = false;
   let stopOutcome = "acknowledged";
+  const readyDevices = [
+    { serial: "phone-one", state: "device", model: "Pixel <One>" },
+    { serial: "phone-two", state: "device", model: "Tablet Two" },
+    { serial: "offline-phone", state: "offline", model: null },
+    { serial: "locked-phone", state: "unauthorized", model: null },
+  ];
+  let listedDevices = readyDevices;
+  let discoveryError = false;
+  let activeDevice = null;
   let callbacks = 0;
   let rootChildren;
   let folderChildren;
@@ -62,8 +71,17 @@
     unregisterCallback: () => {},
     invoke: async (command, args = {}) => {
       calls.push({ command, args });
+      if (command === "list_devices") {
+        await pause(50);
+        if (discoveryError) throw "Mock discovery failed";
+        return listedDevices;
+      }
       if (command === "check_adb") return "Mock ADB " + "x".repeat(20000);
-      if (command === "init_daemon") return "Mock daemon";
+      if (command === "init_daemon") {
+        check(listedDevices.some(device => device.serial === args.serial && device.state === "device"), "Selected device disconnected before startup");
+        activeDevice = args.serial;
+        return "Mock daemon";
+      }
       if (command === "run_scan") { generation++; reset(); return JSON.stringify(summary()); }
       if (command === "stop_daemon") {
         await pause(150);
@@ -129,12 +147,57 @@
       }
     }
     const connect = document.querySelector("#btn-connect");
+    await waitFor(() => !document.querySelector("#btn-refresh-devices").disabled, "Device discovery did not finish");
+    const picker = () => document.querySelector("#android-device");
+    const selectDevice = serial => {
+      picker().value = serial;
+      picker().dispatchEvent(new Event("change", { bubbles: true }));
+    };
+    const refreshDevices = async () => {
+      document.querySelector("#btn-refresh-devices").click();
+      await waitFor(() => document.querySelector("#btn-refresh-devices").disabled && picker().disabled && document.querySelector("#btn-connect").disabled, "Refresh did not block connection/selection");
+      await waitFor(() => !document.querySelector("#btn-refresh-devices").disabled, "Refresh did not finish");
+    };
+    check(picker().value === "" && connect.disabled, "Multiple ready devices were selected implicitly");
+    check(document.querySelector('label[for="android-device"]'), "Picker lacks an accessible label");
+    for (const serial of ["offline-phone", "locked-phone"]) {
+      check([...picker().options].find(option => option.value === serial).disabled, "Unavailable device is selectable");
+    }
+    check([...picker().options].some(option => option.textContent.includes("Pixel <One>")) && !document.querySelector("One"), "Model label was treated as markup");
+    selectDevice("phone-two");
+    await waitFor(() => !connect.disabled, "Selected ready device did not enable Connect");
+    listedDevices = readyDevices.filter(device => device.serial !== "phone-two");
+    await refreshDevices();
+    check(picker().value === "phone-two" && connect.disabled && document.querySelector("#device-status").textContent.includes("disconnected"), "Unplugging switched devices");
+    for (const state of ["unauthorized", "offline"]) {
+      listedDevices = [readyDevices[0], { ...readyDevices[1], state }];
+      await refreshDevices();
+      check(picker().value === "phone-two" && connect.disabled, "Unavailable selection fell back to another phone");
+    }
+    discoveryError = true;
+    await refreshDevices();
+    check(picker().value === "phone-two" && connect.disabled && document.querySelector("#device-status").textContent.includes("Mock discovery failed"), "Discovery failure did not block stale devices");
+    discoveryError = false;
+    listedDevices = [...readyDevices].reverse();
+    await refreshDevices();
+    check(picker().value === "phone-two" && !connect.disabled, "Reordered/reconnected devices lost selection");
+    // The display is only a snapshot. Native startup must reject a selected
+    // device that vanished after this refresh, without choosing the first one.
+    listedDevices = [readyDevices[0]];
+    connect.click();
+    connect.click();
+    await waitFor(() => document.querySelector("#btn-connect") && !document.querySelector("#btn-refresh-devices").disabled && document.querySelector("#device-status").textContent.includes("disconnected"), "Stale selected device did not return to setup");
+    check(calls.filter(call => call.command === "init_daemon").length === 1 && !calls.some(call => call.command === "run_scan"), "Failed/duplicate connect started a scan or silently chose another device");
+    check(picker().value === "phone-two" && document.querySelector("#btn-connect").disabled, "Failed startup replaced selected serial");
+    listedDevices = readyDevices;
+    await refreshDevices();
     check(getComputedStyle(connect).fontFamily.includes("Inter"), "Setup does not use Inter");
     const bounds = connect.getBoundingClientRect();
-    check(Math.abs((bounds.left + bounds.right) / 2 - innerWidth / 2) < 2, "Connect button is not centered");
+    check(Math.abs((bounds.left + bounds.right) / 2 - innerWidth / 2) < 2, `Connect button is not centered: ${bounds.left}..${bounds.right}, viewport ${innerWidth}`);
     check(bounds.top >= 0 && bounds.bottom <= innerHeight, "Connect button is outside the viewport");
     document.querySelector("#btn-connect").click();
     await waitFor(() => rows().length === 129, "Initial page did not render 128 children");
+    check(activeDevice === "phone-two" && document.querySelector("#connected-device").textContent.includes("phone-two"), "Results do not identify the selected device");
     const logRows = [...document.querySelectorAll("#terminal-log .log-entry")];
     check(logRows.some(row => row.textContent.includes("[ADB] Found:") && row.textContent.includes("… [truncated]")), "App did not bound oversized diagnostics");
     check(logRows.every(row => row.textContent.length < 4200), "App retained oversized log text");
@@ -195,7 +258,9 @@
     button("NUKE IT").click();
     await waitFor(() => document.querySelector("#btn-connect") && !document.querySelector("#btn-connect").disabled, "Partial failure did not clear results");
     check(rows().length === 0, "Invalid snapshot remained visible");
-    check(calls.at(-1).command === "stop_daemon", "Partial failure did not stop session");
+    // Setup refreshes discovery after stopping; it must not replace the stop
+    // as the final operation with device-side/session authority.
+    check(calls.filter(call => call.command !== "list_devices").at(-1).command === "stop_daemon", "Partial failure did not stop session");
 
     failDelete = false;
     readOnly = true;
@@ -224,6 +289,28 @@
       check(rows().length === 0, "Unconfirmed stop retained scan results");
     }
     check(!document.body.textContent.includes("Daemon successfully shut down.") && !document.body.textContent.includes("Daemon was already stopped."), "Unsupported shutdown claim survived");
+    await waitFor(() => !document.querySelector("#btn-refresh-devices").disabled, "Post-stop device refresh did not finish");
+    check(picker().value === "phone-two", "Stop forgot the selected phone");
+    const previousGeneration = scope().generation;
+    readOnly = false;
+    stopOutcome = "acknowledged";
+    selectDevice("phone-one");
+    await pause(20);
+    document.querySelector("#btn-connect").click();
+    await waitFor(() => rows().length === 129, "Explicit device switch did not scan");
+    check(activeDevice === "phone-one" && scope().generation !== previousGeneration && document.querySelector("#connected-device").textContent.includes("phone-one"), "Device switch reused old results/identity");
+    check(!button("NUKE IT"), "Device switch retained a destructive confirmation");
+    const deleteCallsBeforeSwitch = calls.filter(call => call.command === "delete_item").length;
+    document.querySelector('[aria-label="Delete  file-0 "]').click();
+    await waitFor(() => button("NUKE IT"), "Cross-device confirmation fixture did not open");
+    document.querySelector("#btn-disconnect").click();
+    await waitFor(() => document.querySelector("#btn-connect") && !document.querySelector("#btn-connect").disabled, "Stop with a pending confirmation did not finish");
+    check(!button("NUKE IT") && picker().value === "phone-one", "Stop retained confirmation or forgot selection");
+    selectDevice("phone-two");
+    await pause(20);
+    document.querySelector("#btn-connect").click();
+    await waitFor(() => rows().length === 129, "Switch back to the second phone failed");
+    check(activeDevice === "phone-two" && !button("NUKE IT") && calls.filter(call => call.command === "delete_item").length === deleteCallsBeforeSwitch, "An old confirmation crossed device sessions");
     const toast = document.querySelector("#toast-container > div:last-child");
     check(toast, "No toast for dismissal integration");
     toast.click();

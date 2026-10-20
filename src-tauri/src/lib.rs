@@ -2,8 +2,8 @@
 // lib.rs — SocketSweep Tauri Bridge (Phase 2)
 // ============================================================================
 // Orchestrates the C++ Android daemon via ADB and communicates with it
-// over a TCP tunnel.  All commands return Result<String, String> so the
-// React frontend can display meaningful error messages.
+// over a TCP tunnel. Commands return typed data or protocol JSON, with errors
+// the React frontend can display meaningfully.
 //
 // Wire protocol (matches Phase 1 daemon):
 // Each connection starts with "AUTH <session token>\n", then one command.
@@ -20,6 +20,7 @@ use tauri::ipc::Channel;
 mod scan_stream;
 mod scan_store;
 mod session;
+mod devices;
 use std::process::Command;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -287,7 +288,12 @@ fn check_adb(app: tauri::AppHandle) -> Result<String, String> {
 }
 
 #[tauri::command(async)]
-fn init_daemon(app: tauri::AppHandle, root_mode: Option<bool>) -> Result<String, String> {
+fn list_devices(app: tauri::AppHandle) -> Result<Vec<devices::Device>, String> {
+    devices::list(&get_bundled_binary(&app, "adb")?)
+}
+
+#[tauri::command(async)]
+fn init_daemon(app: tauri::AppHandle, serial: String, root_mode: Option<bool>) -> Result<String, String> {
     let _operation = DAEMON_OPERATION.lock().map_err(|_| "Daemon state is unavailable")?;
     // Reconnect can release only this app's previous session. An unconfirmed
     // remote stop still clears local authority before a fresh session starts.
@@ -295,12 +301,7 @@ fn init_daemon(app: tauri::AppHandle, root_mode: Option<bool>) -> Result<String,
     let adb_path = get_bundled_binary(&app, "adb")?;
     let daemon = get_bundled_binary(&app, "daemon")?;
     adb(&adb_path, &["version"])?;
-    let devices = adb(&adb_path, &["devices"])?;
-    let serial = devices.lines().find(|line| line.ends_with("\tdevice") && !line.starts_with("List"))
-        .and_then(|line| line.split('\t').next()).map(str::to_string)
-        .ok_or_else(|| if devices.lines().any(|line| line.contains("unauthorized")) {
-            "USB Debugging not authorised. Check the confirmation dialog on your phone.".to_string()
-        } else { "No Android device detected. Connect your phone via USB and enable USB Debugging.".to_string() })?;
+    devices::require_selected(&adb_path, &serial)?;
     let (session, response) = session::Session::start(adb_path, &daemon, serial, root_mode.unwrap_or(false))?;
     *SESSION.lock().map_err(|_| "Session state is unavailable")? = Some(session);
     Ok(response)
@@ -559,6 +560,7 @@ pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             check_adb,
+            list_devices,
             init_daemon,
             run_scan,
             cancel_scan,

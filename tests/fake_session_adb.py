@@ -16,8 +16,9 @@ import time
 
 config = json.loads(Path(sys.argv[1]).read_text())
 args = sys.argv[2:]
-assert args[:2] == ["-s", config["serial"]], args
-args = args[2:]
+if args != ["devices", "-l"]:
+    assert args[:2] == ["-s", config["serial"]], args
+    args = args[2:]
 base = Path(config["base"])
 with (base / "calls.jsonl").open("a") as stream:
     stream.write(json.dumps(args) + "\n")  # the token is stdin, never logged
@@ -34,7 +35,11 @@ def mapped(command):
     return command.replace("/data/local/tmp/", str(Path(config["phone"])) + "/")
 
 
-if args == ["features"]:
+if args == ["devices", "-l"]:
+    discovery = base / "devices.txt"
+    print(discovery.read_text() if discovery.exists() else
+          f'List of devices attached\n{config["serial"]}\tdevice model:Fixture\n')
+elif args == ["features"]:
     print("shell_v2" if failure != "features" else "other_feature")
 elif args[0] == "push":
     fail("push")
