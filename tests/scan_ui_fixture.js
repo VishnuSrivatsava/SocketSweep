@@ -9,6 +9,8 @@
   let readOnly = false;
   let delayedZoom = true;
   let delayedDetail = true;
+  let delayedLargest = true;
+  let failLargest = false;
   let failDelete = false;
   let stopOutcome = "acknowledged";
   const readyDevices = [
@@ -94,6 +96,16 @@
       }
       check(!unavailable, "Snapshot unavailable");
       check(args.generation === scope().generation && args.revision === revision, "Stale mock snapshot");
+      if (command === "get_largest_files") {
+        check(Number.isInteger(args.limit) && args.limit > 0 && args.limit <= 100, "Unbounded largest-files query");
+        if (failLargest) { failLargest = false; throw "Mock largest-files failure"; }
+        const files = [...rootChildren, ...folderChildren].filter(item => item.type === "file")
+          .sort((a, b) => b.size - a.size || (a.name < b.name ? -1 : a.name > b.name ? 1 : a.id - b.id));
+        const response = JSON.stringify({ ...scope(), limit: args.limit, total_files: files.length,
+          files: files.slice(0, args.limit).map(item => detail(item.id)) });
+        if (delayedLargest) { delayedLargest = false; await pause(300); }
+        return response;
+      }
       if (command === "get_scan_view") {
         const response = JSON.stringify(view(args));
         if (args.nodeId === 1 && delayedZoom) { delayedZoom = false; await pause(300); }
@@ -127,7 +139,7 @@
   const report = (passed, error) => {
     const output = document.createElement("pre");
     output.id = "scan-test-report";
-    output.textContent = JSON.stringify({ fixture: "scan-ui", passed, error, ipc_calls: calls.length, checks: passed ? ["offline fonts under CSP", "setup alignment", "result fonts", "file label semantics", "complete paging", "late zoom", "Other tile", "stale confirmation", "ID-only deletion", "revision refresh", "partial failure", "read-only", "acknowledged shutdown", "unconfirmed shutdown", "reconnect", "stop action ordering", "toast dismissal integration", "bounded diagnostic integration"] : undefined });
+    output.textContent = JSON.stringify({ fixture: "scan-ui", passed, error, ipc_calls: calls.length, checks: passed ? ["offline fonts under CSP", "setup alignment", "result fonts", "file label semantics", "complete paging", "bounded largest files", "late largest response", "largest query retry", "largest ID-only deletion", "largest read-only guards", "largest folder navigation without rescanning", "late zoom", "Other tile", "stale confirmation", "ID-only deletion", "revision refresh", "partial failure", "read-only", "acknowledged shutdown", "unconfirmed shutdown", "reconnect", "stop action ordering", "toast dismissal integration", "bounded diagnostic integration"] : undefined });
     document.body.append(output);
     void fetch("/report", { method: "POST", body: output.textContent }).then(() => {
       if (passed) location.replace("/tests/toast_lifecycle_fixture.html");
@@ -206,6 +218,33 @@
     check(document.documentElement.scrollWidth <= innerWidth, "Results overflow horizontally");
     check(document.body.textContent.includes("128 entries on this page of 271"), "Missing full entry count");
     check(!rows().find(item => item.textContent.includes("file-0")).querySelector("button:disabled"), "File label became an unavailable control");
+    const scanCount = calls.filter(item => item.command === "run_scan").length;
+    const largestRows = () => [...document.querySelectorAll(".largest-file-row")];
+    button("Largest files").click();
+    await waitFor(() => document.querySelector("#largest-limit"), "Largest-files controls missing");
+    const chooseLimit = count => {
+      const select = document.querySelector("#largest-limit");
+      select.value = String(count);
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    };
+    // The first response is delayed; switching limits must win permanently.
+    chooseLimit(10);
+    await waitFor(() => largestRows().length === 10, "Largest-files limit not applied");
+    await pause(350);
+    check(largestRows().length === 10, "Late largest-files response replaced the current limit");
+    check(largestRows()[0].textContent.includes("/fixture/ file-0 "), "Exact largest-file path missing");
+    check(!largestRows().some(row => row.textContent.includes("large-folder")), "Directory ranked as a file");
+    check(document.documentElement.scrollWidth <= innerWidth, "Largest files overflow horizontally");
+    failLargest = true;
+    chooseLimit(50);
+    await waitFor(() => button("Retry"), "Largest-files failure not shown");
+    button("Retry").click();
+    await waitFor(() => largestRows().length === 50, "Largest-files retry failed");
+    chooseLimit(100);
+    await waitFor(() => largestRows().length === 100, "Maximum largest-files page missing");
+    button("Show folder").click();
+    await waitFor(() => rows().length === 129, "Show folder did not restore map");
+    check(calls.filter(item => item.command === "run_scan").length === scanCount, "Largest-files browsing rescanned the phone");
     const firstNames = rows().map(item => item.textContent);
     button("Next").click();
     await waitFor(() => rows().some(item => item.textContent.includes("file-127")), "Next page missing");
@@ -239,13 +278,24 @@
     await waitFor(() => rows().length === 129, "Rescan did not reload");
     await pause(350);
     check(!button("NUKE IT"), "Old confirmation survived rescan");
+    button("Largest files").click();
+    await waitFor(() => largestRows().length === 25, "Largest files missing before delete");
     document.querySelector('[aria-label="Delete  file-0 "]').click();
     await waitFor(() => button("NUKE IT"), "Confirmation missing");
     check(document.body.textContent.includes("/fixture/ file-0 "), "Exact confirmation path missing");
     button("NUKE IT").click();
-    await waitFor(() => rows().length === 129 && !document.querySelector('[aria-label="Delete  file-0 "]'), "Deleted row survived revision refresh");
+    await waitFor(() => largestRows().length === 25 && !document.querySelector('[aria-label="Delete  file-0 "]'), "Deleted largest row survived revision refresh");
+    button("Storage map").click();
+    await waitFor(() => rows().length === 129 && !document.querySelector('[aria-label="Delete  file-0 "]'), "Deleted map row survived revision refresh");
     check(calls.some(item => item.command === "delete_item" && item.args.nodeId === 2 && !("path" in item.args)), "ID-only delete was not invoked");
 
+    button("Largest files").click();
+    await waitFor(() => largestRows().length === 25, "Largest files did not refresh after deletion");
+    check(!largestRows().some(row => row.textContent.includes("/fixture/ file-0 ")), "Deleted largest file survived revision");
+    const nested = largestRows().find(row => row.textContent.includes("/large-folder/"));
+    if (nested) nested.querySelector("button").click(); else button("Storage map").click();
+    await waitFor(() => rows().length > 0, "Map missing after largest-files navigation");
+    if (button("← Back to Root")) { button("← Back to Root").click(); await waitFor(() => rows()[0]?.textContent.includes("fixture"), "Root missing"); }
     zoomFolder();
     await waitFor(() => rows().some(item => item.textContent.includes("nested-0")), "Nested directory missing");
     button("Next").click();
@@ -268,6 +318,11 @@
     await waitFor(() => rows().length === 129, "Read-only page missing");
     check(document.body.textContent.includes("Deletion disabled"), "Read-only banner missing");
     check(!document.querySelector('[aria-label^="Delete "]'), "Read-only deletion enabled");
+    button("Largest files").click();
+    await waitFor(() => largestRows().length === 25, "Read-only largest files missing");
+    check([...document.querySelectorAll('.largest-file-row button[aria-label^="Delete "]')].every(item => item.disabled), "Read-only largest deletion enabled");
+    button("Storage map").click();
+    await waitFor(() => rows().length === 129, "Read-only map missing");
     const previousAcknowledgements = () => (document.body.textContent.match(/Daemon acknowledged shutdown\./g) ?? []).length;
     document.querySelector("#btn-disconnect").click();
     await waitFor(() => document.querySelector("#btn-connect") && !document.querySelector("#btn-connect").disabled, "Acknowledged stop did not release the UI");

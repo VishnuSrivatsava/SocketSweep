@@ -6,6 +6,7 @@ import { formatBytes } from "./formatBytes";
 import { sameScan } from "./scanView";
 import type { ScanNode, ScanResponse, NodeDetail, DeleteResult } from "./scanView";
 import { useScanView } from "./useScanView";
+import { LargestFiles } from "./LargestFiles";
 import { ToastContainer } from "./ToastContainer";
 import type { Toast } from "./ToastContainer";
 import { TerminalLog } from "./TerminalLog";
@@ -429,11 +430,13 @@ function ResultScreen({
 }) {
   const [zoomId, setZoomId] = useState(data.root.id);
   const [expanded, setExpanded] = useState(() => new Set([data.root.id]));
-  const view = useScanView(data, zoomId, true);
+  const [mode, setMode] = useState<"map" | "largest">("map");
+  const view = useScanView(data, zoomId, mode === "map");
   const page = view.page;
   const onZoom = (id: number) => {
     setExpanded(previous => new Set(previous).add(id));
     setZoomId(id);
+    setMode("map");
   };
   const toggle = (id: number) => setExpanded(previous => {
     const next = new Set(previous);
@@ -518,6 +521,13 @@ function ResultScreen({
         <StatCard label="Scan Time" value={`${data.scan_time_ms}ms`} />
       </div>
 
+      <div className="flex gap-2 px-6 pb-3 shrink-0" role="group" aria-label="Scan view">
+        <button aria-pressed={mode === "map"} disabled={busy} onClick={() => setMode("map")}
+          className={`px-3 py-2 rounded-lg text-xs ${mode === "map" ? "bg-zinc-700 text-white" : "bg-zinc-900 text-zinc-400"}`}>Storage map</button>
+        <button aria-pressed={mode === "largest"} disabled={busy} onClick={() => setMode("largest")}
+          className={`px-3 py-2 rounded-lg text-xs ${mode === "largest" ? "bg-zinc-700 text-white" : "bg-zinc-900 text-zinc-400"}`}>Largest files</button>
+      </div>
+      {mode === "largest" ? <LargestFiles scope={data} busy={busy} onZoom={onZoom} onNuke={onNuke} /> : <>
       {/* Treemap */}
       <div className="px-6 mb-4 shrink-0 h-48">
         <div className="glass-card rounded-xl p-2 w-full h-full relative group">
@@ -567,6 +577,7 @@ function ResultScreen({
           onNuke={onNuke} onZoom={onZoom} expanded={expanded} toggle={toggle} busy={busy} rootView={view} />}
 
       </div>
+      </>}
     </div>
   );
 }
