@@ -9,6 +9,7 @@ export function useScanView(scope: ScanScope, nodeId: number, enabled: boolean) 
   const [position, setPosition] = useState<{ base: string; cursor: PageCursor | null }>({ base, cursor: null });
   // Reset synchronously on deletion/rescan/zoom, before the query effect runs.
   const cursor = position.base === base ? position.cursor : null;
+  const { direction: cursorDirection, node_id: cursorNodeId } = cursor ?? {};
   const key = viewKey(scope, nodeId, cursor);
   const [state, dispatch] = useReducer(viewReducer, { request: 0, key: "" });
   const request = useRef(0);
@@ -18,8 +19,10 @@ export function useScanView(scope: ScanScope, nodeId: number, enabled: boolean) 
     const id = ++request.current;
     let current = true;
     dispatch({ type: "start", request: id, key });
+    const queryCursor = cursorDirection !== undefined && cursorNodeId !== undefined
+      ? { direction: cursorDirection, node_id: cursorNodeId } : null;
     void invoke<string>("get_scan_view", {
-      generation, revision, nodeId, cursor,
+      generation, revision, nodeId, cursor: queryCursor,
     }).then(raw => {
       const page: ScanView = JSON.parse(raw);
       if (!sameScan(page, { generation, revision }) || page.node.id !== nodeId) throw new Error("Scan query returned an unexpected view");
@@ -28,9 +31,9 @@ export function useScanView(scope: ScanScope, nodeId: number, enabled: boolean) 
       if (current) dispatch({ type: "error", request: id, error: String(error) });
     });
     return () => { current = false; };
-    // key includes scope, node and cursor; scope primitives avoid depending on
-    // the caller's object identity while every queried value remains explicit.
-  }, [key, enabled, retry, generation, revision, nodeId, cursor]);
+    // key includes scope, node and cursor; primitive dependencies keep requests
+    // stable across equivalent scope/cursor objects while listing every input.
+  }, [key, enabled, retry, generation, revision, nodeId, cursorDirection, cursorNodeId]);
   return {
     page: enabled && state.key === key ? state.page : undefined,
     error: enabled && state.key === key ? state.error : undefined,
