@@ -40,7 +40,8 @@ if args == ["devices", "-l"]:
     print(discovery.read_text() if discovery.exists() else
           f'List of devices attached\n{config["serial"]}\tdevice model:Fixture\n')
 elif args == ["features"]:
-    print("shell_v2" if failure != "features" else "other_feature")
+    # The CLI prints one feature per line, not the comma-delimited wire set.
+    print("cmd\nshell_v2\nstat_v2" if failure != "features" else "cmd\nstat_v2")
 elif args[0] == "push":
     fail("push")
     shutil.copyfile(args[1], mapped(args[2]))
