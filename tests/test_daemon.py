@@ -3,6 +3,7 @@
 Run: python3 -m unittest discover -s tests -v
 """
 
+import errno
 import json
 import os
 from pathlib import Path
@@ -78,7 +79,13 @@ class DaemonHarness(unittest.TestCase):
     def raw_request(self, payload):
         with socket.create_connection(("127.0.0.1", self.port), timeout=2) as client:
             client.sendall(payload)
-            client.shutdown(socket.SHUT_WR)
+            try:
+                client.shutdown(socket.SHUT_WR)
+            except OSError as error:
+                # Rejections can close the peer before our half-close on macOS.
+                # Still read and validate its response; other errors must fail.
+                if error.errno != errno.ENOTCONN:
+                    raise
             data = b""
             while not data.endswith(b"\n"):
                 chunk = client.recv(65536)
