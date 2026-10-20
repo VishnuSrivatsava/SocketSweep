@@ -7,7 +7,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "test": "node --test tests/format_bytes.test.mjs tests/scan_view.test.mjs tests/log_history.test.mjs",
+    "lint": "eslint src tests vite.config.ts eslint.config.js --max-warnings 0",
+    "test": "node --test tests/format_bytes.test.mjs tests/scan_view.test.mjs tests/log_history.test.mjs tests/lint_gate.test.mjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },
@@ -20,11 +21,16 @@
     "tailwindcss": "^4.3.0"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@tauri-apps/cli": "^2",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",
+    "eslint": "^10.13.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.13.0",
     "typescript": "~5.8.3",
+    "typescript-eslint": "^8.72.0",
     "vite": "^7.0.4"
   }
 }

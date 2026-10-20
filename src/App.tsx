@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { Treemap, ResponsiveContainer, Tooltip as RechartsTooltip } from "recharts";
+import type { TreemapNode } from "recharts";
 import { formatBytes } from "./formatBytes";
 import { sameScan } from "./scanView";
 import type { ScanNode, ScanResponse, NodeDetail, DeleteResult } from "./scanView";
@@ -351,7 +352,7 @@ function StatCard({ label, value, accent = false }: { label: string; value: stri
 
 // ── Custom Treemap Content ──────────────────────────────────────────────────
 
-const TreemapContent = (props: any) => {
+const TreemapContent = (props: TreemapNode & { bgColors: string[] }) => {
   const { x, y, width, height, index, name, value, bgColors } = props;
   if (width < 30 || height < 30) return null;
   const bgColor = bgColors ? bgColors[index % bgColors.length] : "#0f172a";
@@ -497,9 +498,9 @@ function ResultScreen({
               dataKey="size"
               aspectRatio={4 / 3}
               stroke="#fff"
-              content={<TreemapContent bgColors={bgColors} />}
+              content={node => <TreemapContent {...node} bgColors={bgColors} />}
               isAnimationActive={false}
-              onClick={(e: any) => {
+              onClick={(e) => {
                 if (!busy && typeof e?.nodeId === "number") onZoom(e.nodeId);
               }}
             >
