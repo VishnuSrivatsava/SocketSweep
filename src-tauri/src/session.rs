@@ -446,6 +446,45 @@ mod tests {
         }
 
         #[test]
+        fn discovery_checks_the_exact_selected_serial_without_falling_back() {
+            let device = Device::new();
+            let adb = device.client("selected-second", "second");
+            let list = adb.parent().unwrap().join("devices.txt");
+            fs::write(
+                &list,
+                "List of devices attached\nfirst device model:One\nsecond device model:Two\n",
+            )
+            .unwrap();
+            crate::devices::require_selected(&adb, "second").unwrap();
+            let (mut selected, _) =
+                Session::start(adb.clone(), daemon(), "second".into(), false).unwrap();
+            assert!(ping(&selected).contains("\"status\":\"ok\""));
+            assert!(selected.cleanup().is_empty());
+            for state in ["offline", "unauthorized", "no permissions", "recovery"] {
+                fs::write(
+                    &list,
+                    format!("List of devices attached\nfirst device\nsecond {state}\n"),
+                )
+                .unwrap();
+                assert!(
+                    crate::devices::require_selected(&adb, "second").is_err(),
+                    "accepted {state}"
+                );
+            }
+            fs::write(&list, "List of devices attached\nfirst device\n").unwrap();
+            for serial in ["second", "", " first", "first\n", "first\0"] {
+                assert!(
+                    crate::devices::require_selected(&adb, serial).is_err(),
+                    "accepted {serial:?}"
+                );
+            }
+            assert_eq!(device.directories(), 0);
+            assert_eq!(device.rows().len(), 1);
+            let calls = fs::read_to_string(adb.parent().unwrap().join("calls.jsonl")).unwrap();
+            assert!(calls.contains("[\"devices\", \"-l\"]"));
+        }
+
+        #[test]
         fn two_sessions_on_same_or_different_devices_remain_independent() {
             for serials in [("same", "same"), ("first", "second")] {
                 let device = Device::new();

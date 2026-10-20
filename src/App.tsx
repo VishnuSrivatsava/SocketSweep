@@ -10,6 +10,8 @@ import { ToastContainer } from "./ToastContainer";
 import type { Toast } from "./ToastContainer";
 import { TerminalLog } from "./TerminalLog";
 import { appendLog, emptyLogHistory } from "./logHistory";
+import { useDevices } from "./useDevices";
+import { deviceSelectionHint, deviceStateLabel } from "./devices";
 import "./App.css";
 
 // ── Types ───────────────────────────────────────────────────────────────────
@@ -91,16 +93,18 @@ let toastId = 0;
 
 // ── Setup Screen ────────────────────────────────────────────────────────────
 
-function SetupScreen({ onConnect, loading, rootMode, onRootModeChange, rootPath, onRootPathChange }: {
+function SetupScreen({ onConnect, loading, rootMode, onRootModeChange, rootPath, onRootPathChange, deviceSelection }: {
   onConnect: () => void;
   loading: boolean;
   rootMode: boolean;
   onRootModeChange: (enabled: boolean) => void;
   rootPath: string;
   onRootPathChange: (path: string) => void;
+  deviceSelection: ReturnType<typeof useDevices>;
 }) {
+  const { devices, serial, select, loading: refreshing, error, refresh, ready } = deviceSelection;
   return (
-    <div className="flex-1 min-h-0 overflow-y-auto px-6 py-8">
+    <div className="flex-1 min-h-0 overflow-y-auto px-6 py-8" style={{ scrollbarGutter: "stable both-edges" }}>
       <div className="min-h-full flex flex-col items-center justify-center gap-8 animate-fade-in-up">
         {/* Hero */}
         <div className="flex flex-col items-center gap-6">
@@ -127,6 +131,28 @@ function SetupScreen({ onConnect, loading, rootMode, onRootModeChange, rootPath,
         </div>
 
         <div className="w-full max-w-xs flex flex-col items-center gap-5 text-sm">
+          <div className="w-full space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <label htmlFor="android-device" className="text-xs text-zinc-400">Android device</label>
+              <button type="button" id="btn-refresh-devices" disabled={loading || refreshing}
+                onClick={() => void refresh()} className="text-xs text-accent-400 disabled:text-zinc-600">
+                {refreshing ? "Refreshing…" : "Refresh"}
+              </button>
+            </div>
+            <select id="android-device" aria-describedby="device-status" value={serial}
+              disabled={loading || refreshing} onChange={event => select(event.target.value)}
+              className="w-full min-w-0 truncate rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-zinc-200 disabled:opacity-60">
+              <option value="" disabled>Choose a device</option>
+              {serial && !devices.some(device => device.serial === serial) &&
+                <option value={serial} disabled>{serial} · {refreshing ? "Checking…" : error ? "Status unavailable" : "Disconnected"}</option>}
+              {devices.map(device => <option key={device.serial} value={device.serial} disabled={device.state !== "device"}>
+                {device.model ? `${device.model} · ` : ""}{device.serial} · {deviceStateLabel(device.state)}
+              </option>)}
+            </select>
+            <p id="device-status" role={error ? "alert" : "status"} className="text-xs leading-relaxed text-zinc-400">
+              {refreshing ? "Checking connected devices…" : error ?? deviceSelectionHint(devices, serial)}
+            </p>
+          </div>
           <label className="flex items-center justify-center gap-2.5 text-zinc-300 cursor-pointer">
             <input
               id="scan-as-root"
@@ -163,11 +189,11 @@ function SetupScreen({ onConnect, loading, rootMode, onRootModeChange, rootPath,
           <button
             id="btn-connect"
             onClick={onConnect}
-            disabled={loading}
+            disabled={loading || !ready}
             className={`
               group relative w-full flex justify-center px-8 py-3 rounded-xl font-semibold text-sm
               transition-all duration-300 cursor-pointer
-              ${loading
+              ${loading || !ready
                 ? "bg-zinc-800 text-zinc-500 cursor-wait"
                 : "bg-gradient-to-r from-accent-600 to-accent-500 text-white hover:from-accent-500 hover:to-accent-400 hover:shadow-lg hover:shadow-accent-500/20 hover:-translate-y-0.5"
               }
@@ -392,12 +418,14 @@ function ResultScreen({
   onDisconnect,
   onNuke,
   busy,
+  deviceSerial,
 }: {
   data: ScanResponse;
   onRescan: () => void;
   onDisconnect: () => void;
   onNuke: (nodeId: number) => void;
   busy: boolean;
+  deviceSerial: string;
 }) {
   const [zoomId, setZoomId] = useState(data.root.id);
   const [expanded, setExpanded] = useState(() => new Set([data.root.id]));
@@ -475,6 +503,7 @@ function ResultScreen({
         </div>
       </header>
 
+      <p id="connected-device" className="px-6 pt-3 text-xs text-zinc-500 break-all">Device: <span className="font-mono">{deviceSerial}</span></p>
       {data.read_only && (
         <div className="px-6 pt-3 text-xs text-accent-300">
           Root access · Read-only · Deletion disabled
@@ -546,6 +575,8 @@ function ResultScreen({
 
 function App() {
   const [phase, setPhase] = useState<AppPhase>("setup");
+  const deviceSelection = useDevices(phase === "setup");
+  const { serial: selectedSerial, ready: deviceReady } = deviceSelection;
   const [rootMode, setRootMode] = useState(false);
   const [rootPath, setRootPath] = useState("/data");
   const [scanData, setScanData] = useState<ScanResponse | null>(null);
@@ -618,6 +649,8 @@ function App() {
 
   // ── Connect flow ────────────────────────────────────────────────────────
   const handleConnect = useCallback(async () => {
+    if (actionPending.current || !deviceReady || !selectedSerial) return;
+    actionPending.current = true;
     setPhase("connecting");
     const scanPath = rootMode ? rootPath : "/sdcard";
     let initialized = false;
@@ -628,8 +661,8 @@ function App() {
       addLog(`[ADB] Found: ${adbVersion}`);
 
       setStatusText(rootMode ? "Requesting root access…" : "Pushing daemon to device…");
-      addLog("[ADB] Killing old daemon, pushing new binary...");
-      await invoke<string>("init_daemon", { rootMode });
+      addLog(`[ADB] Starting an owned daemon session on ${selectedSerial}...`);
+      await invoke<string>("init_daemon", { serial: selectedSerial, rootMode });
       initialized = true;
       addLog("[SOCKET] Daemon started and connected via TCP tunnel!");
 
@@ -654,8 +687,10 @@ function App() {
       pushToast(message, message === "Scan cancelled" ? "info" : "error");
       addLog(`${message === "Scan cancelled" ? "[SCAN]" : "[ERROR]"} ${message}`);
       setPhase("setup");
+    } finally {
+      actionPending.current = false;
     }
-  }, [pushToast, addLog, rootMode, rootPath, requestScan]);
+  }, [pushToast, addLog, rootMode, rootPath, requestScan, selectedSerial, deviceReady]);
 
   // ── Rescan ──────────────────────────────────────────────────────────────
   const handleRescan = useCallback(async () => {
@@ -784,6 +819,7 @@ function App() {
             onRootModeChange={setRootMode}
             rootPath={rootPath}
             onRootPathChange={setRootPath}
+            deviceSelection={deviceSelection}
           />
         )}
         {phase === "scanning" && <ScanningScreen statusText={statusText} progress={scanProgress} onCancel={handleCancelScan} cancelling={cancelling} />}
@@ -791,6 +827,7 @@ function App() {
           <ResultScreen
             key={scanData.generation}
             data={scanData}
+            deviceSerial={selectedSerial}
             busy={busy}
             onRescan={handleRescan}
             onDisconnect={handleDisconnect}

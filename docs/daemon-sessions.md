@@ -24,8 +24,9 @@ port. It atomically publishes a complete 0600 `ready` record containing its port
 and PID, without replacing an existing file or symlink. The host then asks ADB
 for `forward --no-rebind tcp:0 tcp:<device-port>` and records the returned host
 port. All subsequent device commands use the selected `-s <serial>` explicitly.
-Device selection still follows the existing first-authorized-device behavior;
-the selection UI remains [#4](https://github.com/VishnuSrivatsava/SocketSweep/issues/4).
+Setup offers [explicit device selection](device-selection.md). Startup checks
+that the chosen serial is still ready before creating new session resources;
+it never falls back to another serial.
 
 The foreground daemon is launched through **`adb shell -T`**, with an owned stdin
 pipe held open by the Rust session. `--session-ready` also enables its lifetime
