@@ -13,8 +13,9 @@ daemon-symbols-<platform>-aarch64-<full-workflow-commit-SHA>-attempt-<N>
   metadata.json
 ```
 
-`socketsweep_daemon` is the unstripped executable, named like the on-device
-process. `metadata.json` records the workflow commit, host platform, Android
+`socketsweep_daemon` is the unstripped archive filename. Owned sessions execute
+a private copy named `daemon`; the explicit `--obj` lookup below works with
+either on-device name. `metadata.json` records the workflow commit, host platform, Android
 target, workflow run/attempt, shared ELF build ID, SHA-256 and size of both executables, and a real
 symbol-lookup smoke check. Host jobs may use different NDK versions; their
 symbols are not interchangeable just because their source commit matches.

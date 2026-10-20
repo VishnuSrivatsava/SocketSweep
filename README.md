@@ -255,6 +255,9 @@ binaries without the streaming capability are refused. See
 [the stream contract](docs/scan-stream-v1.md) for bounds, completion rules,
 cancellation, timing semantics and the remaining full-tree frontend limitation.
 
+Current startup also requires the rebuilt daemon for
+[owned session files, allocated ports, and lifetime cleanup](docs/daemon-sessions.md).
+
 
 ### 2. Install Frontend Dependencies
 ```bash
