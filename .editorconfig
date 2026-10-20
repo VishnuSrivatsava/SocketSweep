@@ -1,0 +1,14 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+
+[*.{js,jsx,mjs,ts,tsx,json,css,html,yml,yaml}]
+indent_style = space
+indent_size = 2
+
+[*.{rs,cpp,h,py}]
+indent_style = space
+indent_size = 4

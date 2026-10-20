@@ -73,6 +73,9 @@ jobs:
       - name: Test frontend helpers
         run: npm test
 
+      - name: Lint frontend and fixtures
+        run: npm run lint
+
       - name: Test transfer benchmark offline on Windows
         if: runner.os == 'Windows'
         run: python -m unittest discover -s tests -p test_transfer_benchmark.py -v

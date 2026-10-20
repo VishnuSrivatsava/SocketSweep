@@ -221,7 +221,7 @@ sequenceDiagram
 ## 🔧 Development Setup (Building from Source)
 
 ### Prerequisites
-1. **Node.js** (v18+)
+1. **Node.js** (`^20.19.0`, `^22.13.0`, or `>=24`, including frontend lint tooling)
 2. **Rust** (v1.70+ with Cargo)
 3. **Android NDK** (v26d or newer)
 4. **Android SDK / ADB** installed and added to your system `$PATH`.
@@ -280,10 +280,21 @@ python3 -m unittest discover -s tests -v
 # Frontend helper tests; no app or connected device required
 npm test
 
+# Frontend, browser fixtures, Node helpers, and Vite/ESLint configuration
+npm run lint
+
 # Build the frontend first when testing from a clean checkout
 npm run build
 cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
 ```
+
+Lint uses the recommended ESLint/TypeScript rules and React's hook-order and
+effect-dependency rules. Warnings fail the gate. It does not reformat files;
+keep mechanical formatting separate from behavior changes. Frontend helper
+tests and lint run on every desktop CI platform; the Linux job also checks the
+built UI with mocked IPC at normal size, 1024×768, and 2× scale.
+EditorConfig supplies UTF-8/LF files with a final newline and the existing
+two-space frontend/config and four-space Rust/C++/Python indentation defaults.
 
 For the optional, manually run ADB/MTP copy experiment, see
 [the file-transfer baseline and export plan](docs/file-transfer.md). Regression
