@@ -176,7 +176,7 @@
     }
     discoveryError = true;
     await refreshDevices();
-    check(picker().value === "phone-two" && connect.disabled && document.querySelector("#device-status").textContent.includes("Mock discovery failed"), "Discovery failure did not block stale devices");
+    check(picker().value === "phone-two" && connect.disabled && picker().selectedOptions[0].textContent.includes("Status unavailable") && document.querySelector("#device-status").textContent.includes("Mock discovery failed"), "Discovery failure did not preserve an unknown, blocked selection");
     discoveryError = false;
     listedDevices = [...readyDevices].reverse();
     await refreshDevices();

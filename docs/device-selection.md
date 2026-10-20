@@ -12,6 +12,8 @@ disappears, becomes unavailable, or the list order changes. A disconnected
 selection stays visible and blocks Connect; choosing another phone is an
 explicit action. Selection survives refreshes, connection errors, and stopping
 within the running app. It is not saved across app restarts.
+If discovery fails, the selected device's status is unavailable rather than
+claimed disconnected; Connect stays blocked until discovery succeeds.
 
 Discovery runs on entering setup and on Refresh, without background polling.
 Its result is a snapshot. Connect checks the selected serial against a fresh

@@ -144,7 +144,7 @@ function SetupScreen({ onConnect, loading, rootMode, onRootModeChange, rootPath,
               className="w-full min-w-0 truncate rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-zinc-200 disabled:opacity-60">
               <option value="" disabled>Choose a device</option>
               {serial && !devices.some(device => device.serial === serial) &&
-                <option value={serial} disabled>{serial} · Disconnected</option>}
+                <option value={serial} disabled>{serial} · {refreshing ? "Checking…" : error ? "Status unavailable" : "Disconnected"}</option>}
               {devices.map(device => <option key={device.serial} value={device.serial} disabled={device.state !== "device"}>
                 {device.model ? `${device.model} · ` : ""}{device.serial} · {deviceStateLabel(device.state)}
               </option>)}
