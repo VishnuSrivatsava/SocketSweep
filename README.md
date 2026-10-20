@@ -293,6 +293,8 @@ effect-dependency rules. Warnings fail the gate. It does not reformat files;
 keep mechanical formatting separate from behavior changes. Frontend helper
 tests and lint run on every desktop CI platform; the Linux job also checks the
 built UI with mocked IPC at normal size, 1024×768, and 2× scale.
+EditorConfig supplies UTF-8/LF files with a final newline and the existing
+two-space frontend/config and four-space Rust/C++/Python indentation defaults.
 
 For the optional, manually run ADB/MTP copy experiment, see
 [the file-transfer baseline and export plan](docs/file-transfer.md). Regression
