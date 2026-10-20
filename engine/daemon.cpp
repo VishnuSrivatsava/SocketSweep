@@ -32,6 +32,8 @@
 #include <poll.h>
 #include <atomic>
 #include <mutex>
+#include <pthread.h>
+#include <fcntl.h>
 
 // ── Configuration ───────────────────────────────────────────────────────────
 namespace cfg {
@@ -52,6 +54,18 @@ static safe_delete::Root g_scan_root; // pins the successful scan root for delet
 static std::string g_session_token;
 static bool g_read_only = false;
 static int g_scan_threads = cfg::DEFAULT_SCAN_THREADS;
+
+// A session owns this process through a non-PTY ADB stdin channel. EOF exits
+// only this process, including during a blocked command; no PID/name lookup
+// can race with another session. Legacy diagnostic launches do not opt in.
+static void* watch_session_owner(void*) {
+    char buffer[128];
+    for (;;) {
+        const ssize_t n = ::read(STDIN_FILENO, buffer, sizeof(buffer));
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) ::_exit(0);
+    }
+}
 
 // Per-phase scan timing (see SCAN in handle_client). Counters reset per scan.
 static int64_t g_sort_ns    = 0;  // cumulative time sorting directory children
@@ -541,6 +555,7 @@ int main(int argc, char* argv[]) {
     // arguments. Consume and unlink it before accepting any connections.
     bool read_only_requested = false;
     bool threads_requested = false;
+    const char* ready_path = nullptr;
     bool valid_args = argc >= 3;
     for (int i = 3; valid_args && i < argc; ++i) {
         if (std::strcmp(argv[i], "--read-only") == 0 && !read_only_requested) {
@@ -551,12 +566,14 @@ int main(int argc, char* argv[]) {
             valid_args = value.size() == 1 && value[0] >= '1' &&
                          value[0] <= '0' + parallel_scan::MAX_WORKERS;
             if (valid_args) g_scan_threads = value[0] - '0';
+        } else if (std::strcmp(argv[i], "--session-ready") == 0 && !ready_path && i + 1 < argc) {
+            ready_path = argv[++i];
         } else {
             valid_args = false;
         }
     }
     if (!valid_args) {
-        std::fprintf(stderr, "[engine] Usage: daemon PORT TOKEN_FILE [--read-only] [--threads 1..8]\n");
+        std::fprintf(stderr, "[engine] Usage: daemon PORT TOKEN_FILE [--read-only] [--threads 1..8] [--session-ready FILE]\n");
         return 1;
     }
     // Even an already-root ADB shell using the default launch cannot delete.
@@ -573,6 +590,15 @@ int main(int argc, char* argv[]) {
     ::signal(SIGINT,  on_signal);
     ::signal(SIGTERM, on_signal);
     ::signal(SIGPIPE, SIG_IGN);
+
+    if (ready_path) {
+        pthread_t owner;
+        if (::pthread_create(&owner, nullptr, watch_session_owner, nullptr) != 0) {
+            std::fprintf(stderr, "[engine] Cannot watch session owner\n");
+            return 1;
+        }
+        ::pthread_detach(owner);
+    }
 
     int srv = ::socket(AF_INET, SOCK_STREAM, 0);
     if (srv < 0) { std::perror("[engine] socket"); return 1; }
@@ -594,6 +620,26 @@ int main(int argc, char* argv[]) {
         std::perror("[engine] listen");
         ::close(srv);
         return 1;
+    }
+
+    socklen_t addr_len = sizeof(addr);
+    if (::getsockname(srv, reinterpret_cast<sockaddr*>(&addr), &addr_len) != 0) {
+        ::close(srv);
+        return 1;
+    }
+    port = ntohs(addr.sin_port);
+    if (ready_path) {
+        const std::string temporary = std::string(ready_path) + ".tmp";
+        const int ready = ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+        const std::string message = "{\"port\":" + std::to_string(port) +
+            ",\"pid\":" + std::to_string(::getpid()) + "}\n";
+        if (ready < 0) { ::close(srv); return 1; }
+        const bool written = ::write(ready, message.data(), message.size()) == static_cast<ssize_t>(message.size());
+        const bool closed = ::close(ready) == 0;
+        // Publish a complete record without replacing an existing file/link.
+        const bool published = written && closed && ::link(temporary.c_str(), ready_path) == 0;
+        ::unlink(temporary.c_str());
+        if (!published) { ::close(srv); return 1; }
     }
 
     std::fprintf(stderr, "[engine] Listening on %s:%u  (pid %d)\n",

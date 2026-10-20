@@ -83,7 +83,9 @@ jobs:
 
       - name: Test root scans in a disposable Linux filesystem
         if: runner.os == 'Linux'
-        run: sudo -n env CXX=g++ python3 -m unittest discover -s tests -p test_root_scan.py -v
+        run: |
+          sudo -n env CXX=g++ python3 -m unittest discover -s tests -p test_root_scan.py -v
+          sudo -n env CXX=g++ python3 -m unittest discover -s tests -p test_owned_session.py -v
 
       # ── Cross-compile C++ daemon for Android aarch64 ──────────────────────
       # The daemon always targets Android ARM64, regardless of host OS.

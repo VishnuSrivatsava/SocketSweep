@@ -19,16 +19,13 @@ use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use tauri::ipc::Channel;
 mod scan_stream;
 mod scan_store;
+mod session;
 use std::process::Command;
 use std::sync::Mutex;
 use std::time::Duration;
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
-const DAEMON_PORT: u16 = 5050;
-const DAEMON_ADDR: &str = "127.0.0.1:5050";
-const DEVICE_BIN_PATH: &str = "/data/local/tmp/socketsweep_daemon";
-const DEVICE_TOKEN_PATH: &str = "/data/local/tmp/socketsweep_token";
 const TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_COMMAND_BYTES: usize = 16 * 1024;
 const MAX_COMMAND_RESPONSE_BYTES: usize = 128 * 1024;
@@ -42,11 +39,8 @@ fn invalidate_scan() -> Result<(), String> {
     Ok(())
 }
 
-/// Tracks the serial of the connected device so all ADB calls target the right device.
-static DEVICE_SERIAL: Mutex<Option<String>> = Mutex::new(None);
-static SESSION_TOKEN: Mutex<Option<String>> = Mutex::new(None);
-static READ_ONLY: Mutex<bool> = Mutex::new(false);
-static DEVICE_PRIVILEGE: Mutex<Privilege> = Mutex::new(Privilege::Shell);
+/// A published session owns all connection state and cleanup authority.
+static SESSION: Mutex<Option<session::Session>> = Mutex::new(None);
 // Keep connection changes, scans, and deletes in order across async commands.
 static DAEMON_OPERATION: Mutex<()> = Mutex::new(());
 
@@ -77,11 +71,6 @@ fn device_shell_command(privilege: Privilege, command: &str) -> String {
         Privilege::Shell => command.to_string(),
         Privilege::Su => format!("su -c '{}'", command.replace('\'', "'\\''")),
     }
-}
-
-fn device_shell(adb_path: &std::path::Path, command: &str) -> Result<String, String> {
-    let privilege = *DEVICE_PRIVILEGE.lock().map_err(|_| "Device state is unavailable")?;
-    adb_s(adb_path, &["shell", &device_shell_command(privilege, command)])
 }
 
 // ── Resource Resolution ─────────────────────────────────────────────────────
@@ -119,103 +108,78 @@ fn adb(adb_path: &std::path::Path, args: &[&str]) -> Result<String, String> {
 }
 
 fn adb_with_input(adb_path: &std::path::Path, args: &[&str], input: Option<&[u8]>) -> Result<String, String> {
-    use std::io::Read;
-    use std::time::{Duration, Instant};
-
-    let mut child = Command::new(adb_path)
-        .args(args)
-        .stdin(if input.is_some() { std::process::Stdio::piped() } else { std::process::Stdio::null() })
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("Failed to execute adb binary at {:?}: {}", adb_path, e))?;
-
-    let mut stdout_pipe = child.stdout.take().unwrap();
-    let mut stderr_pipe = child.stderr.take().unwrap();
-
-    let stdout_thread = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = stdout_pipe.read_to_end(&mut buf);
-        buf
-    });
-
-    let stderr_thread = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = stderr_pipe.read_to_end(&mut buf);
-        buf
-    });
-
-    if let Some(bytes) = input {
-        let result = child.stdin.take().unwrap().write_all(bytes);
-        if let Err(e) = result {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(format!("Failed to provide ADB input: {e}"));
-        }
-    }
-
-    let timeout_secs = 15;
-    let timeout = Duration::from_secs(timeout_secs);
-    let start = Instant::now();
-    let status;
-
-    loop {
-        if let Some(s) = child.try_wait().map_err(|e| format!("Failed to wait on adb process: {}", e))? {
-            status = s;
-            break;
-        }
-        if start.elapsed() > timeout {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(format!("ADB command timed out after {} seconds. Please reconnect your device and try again.", timeout_secs));
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-
-    let stdout_bytes = stdout_thread.join().unwrap_or_default();
-    let stderr_bytes = stderr_thread.join().unwrap_or_default();
-
-    let stdout = String::from_utf8_lossy(&stdout_bytes).to_string();
-    let stderr = String::from_utf8_lossy(&stderr_bytes).to_string();
-
-    if !status.success() {
-        let combined = format!("{stdout} {stderr}").to_lowercase();
-        if combined.contains("no devices") || combined.contains("device not found") {
-            return Err("No Android device detected. Connect your phone via USB and enable USB Debugging.".into());
-        }
-        if combined.contains("unauthorized") {
-            return Err("USB Debugging not authorised. Check the confirmation dialog on your phone.".into());
-        }
-        return Err(format!(
-            "adb {} failed (exit {}):\n{stderr}",
-            args.join(" "),
-            status.code().unwrap_or(-1)
-        ));
-    }
-
-    Ok(stdout)
+    adb_with_input_timeout(adb_path, args, input, Duration::from_secs(15))
 }
 
-/// Run an ADB command targeting the stored device serial (if any).
-/// Prepends `-s <serial>` when a device serial is known.
-fn adb_s(adb_path: &std::path::Path, args: &[&str]) -> Result<String, String> {
-    if let Ok(guard) = DEVICE_SERIAL.lock() {
-        if let Some(ref serial) = *guard {
-            let mut full_args = vec!["-s", serial.as_str()];
-            full_args.extend_from_slice(args);
-            return adb(adb_path, &full_args);
-        }
+fn adb_with_input_timeout(adb_path: &std::path::Path, args: &[&str], input: Option<&[u8]>, timeout: Duration) -> Result<String, String> {
+    use std::sync::mpsc::{sync_channel, Receiver};
+    use std::time::Instant;
+    const LIMIT: usize = 256 * 1024;
+    // The only input is a 65-byte startup token. Keep writes smaller than an
+    // empty pipe's capacity; a blocked child cannot stall a large stdin write.
+    if input.is_some_and(|bytes| bytes.len() > 128) { return Err("ADB input exceeds limit".into()); }
+    if timeout.is_zero() { return Err("ADB command timed out".into()); }
+    let deadline = Instant::now() + timeout;
+    let mut child = Command::new(adb_path).args(args)
+        .stdin(if input.is_some() { std::process::Stdio::piped() } else { std::process::Stdio::null() })
+        .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
+        .spawn().map_err(|e| format!("Failed to execute adb binary at {:?}: {e}", adb_path))?;
+    fn read_pipe(pipe: impl Read + Send + 'static) -> Receiver<Result<Vec<u8>, String>> {
+        let (send, receive) = sync_channel(1);
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let result = pipe.take((LIMIT + 1) as u64).read_to_end(&mut bytes)
+                .map_err(|e| format!("Cannot read ADB output: {e}"))
+                .and_then(|_| if bytes.len() > LIMIT { Err("ADB output exceeds limit".into()) } else { Ok(bytes) });
+            let _ = send.send(result);
+        });
+        receive
     }
-    adb(adb_path, args)
+    let stdout = read_pipe(child.stdout.take().unwrap());
+    let stderr = read_pipe(child.stderr.take().unwrap());
+    let result = (|| {
+        if let Some(input) = input {
+            child.stdin.take().unwrap().write_all(input).map_err(|e| format!("Cannot provide ADB input: {e}"))?;
+        }
+        let status = loop {
+            if let Some(status) = child.try_wait().map_err(|e| format!("Cannot wait for ADB: {e}"))? { break status; }
+            if Instant::now() >= deadline { return Err("ADB command timed out. Reconnect your device and retry.".into()); }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let receive = |pipe: Receiver<Result<Vec<u8>, String>>| {
+            pipe.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .map_err(|_| "ADB output timed out".to_string())?
+        };
+        let stdout = String::from_utf8_lossy(&receive(stdout)?).into_owned();
+        let stderr = String::from_utf8_lossy(&receive(stderr)?).into_owned();
+        if !status.success() {
+            let combined = format!("{stdout} {stderr}").to_lowercase();
+            if combined.contains("no devices") || combined.contains("device not found") {
+                return Err("No Android device detected. Connect your phone via USB and enable USB Debugging.".into());
+            }
+            if combined.contains("unauthorized") {
+                return Err("USB Debugging not authorised. Check the confirmation dialog on your phone.".into());
+            }
+            return Err(format!("adb {} failed (exit {}):\n{stderr}", args.join(" "), status.code().unwrap_or(-1)));
+        }
+        Ok(stdout)
+    })();
+    if result.is_err() { let _ = child.kill(); let _ = child.wait(); }
+    result
 }
 
 // ── TCP helper ──────────────────────────────────────────────────────────────
 
 /// Send a one-line command to the daemon and read the full response.
+fn active_connection() -> Result<session::Connection, String> {
+    SESSION.lock().map_err(|_| "Session state is unavailable")?
+        .as_ref().map(session::Session::connection)
+        .ok_or_else(|| "No active daemon session. Connect your device first.".into())
+}
+
 fn daemon_command(cmd: &str) -> Result<String, String> {
-    let token = SESSION_TOKEN.lock().map_err(|_| "Session state is unavailable")?
-        .clone().ok_or("No active daemon session. Connect your device first.")?;
-    daemon_command_with_token(cmd, &token)
+    let connection = active_connection()?;
+    daemon_command_at(connection.address, cmd, &connection.token, TCP_READ_TIMEOUT)
 }
 
 fn command_payload(cmd: &str, token: &str) -> Result<String, String> {
@@ -225,30 +189,40 @@ fn command_payload(cmd: &str, token: &str) -> Result<String, String> {
     Ok(format!("AUTH {token}\n{cmd}\n"))
 }
 
-fn daemon_command_with_token(cmd: &str, token: &str) -> Result<String, String> {
+fn daemon_command_at(address: std::net::SocketAddr, cmd: &str, token: &str, timeout: Duration) -> Result<String, String> {
     let payload = command_payload(cmd, token)?;
-    let mut stream = TcpStream::connect_timeout(
-        &DAEMON_ADDR.parse().unwrap(),
-        TCP_CONNECT_TIMEOUT,
-    )
-    .map_err(|e| format!("Cannot connect to daemon at {DAEMON_ADDR}: {e}"))?;
-
-    stream
-        .set_read_timeout(Some(TCP_READ_TIMEOUT))
-        .map_err(|e| format!("Failed to set read timeout: {e}"))?;
-    stream.set_write_timeout(Some(TCP_CONNECT_TIMEOUT))
-        .map_err(|e| format!("Failed to set write timeout: {e}"))?;
-    stream
-        .write_all(payload.as_bytes())
-        .map_err(|e| format!("Failed to send command to daemon: {e}"))?;
-
-    let mut response_bytes = Vec::with_capacity(1024);
-    stream
-        .take((MAX_COMMAND_RESPONSE_BYTES + 1) as u64)
-        .read_to_end(&mut response_bytes)
-        .map_err(|e| format!("Failed to read daemon response: {e}"))?;
-
-    decode_daemon_response(response_bytes)
+    let deadline = std::time::Instant::now() + timeout;
+    let left = || {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() { Err("Daemon command timed out".to_string()) } else { Ok(left) }
+    };
+    let mut stream = TcpStream::connect_timeout(&address, TCP_CONNECT_TIMEOUT.min(left()?))
+        .map_err(|e| format!("Cannot connect to daemon at {address}: {e}"))?;
+    let mut sent = 0;
+    while sent < payload.len() {
+        stream.set_write_timeout(Some(TCP_CONNECT_TIMEOUT.min(left()?))).map_err(|e| e.to_string())?;
+        match stream.write(&payload.as_bytes()[sent..]) {
+            Ok(0) => return Err("Daemon command connection closed".into()),
+            Ok(n) => sent += n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(format!("Failed to send command to daemon: {e}")),
+        }
+    }
+    let mut response = Vec::with_capacity(1024);
+    let mut buffer = [0; 4096];
+    loop {
+        stream.set_read_timeout(Some(left()?)).map_err(|e| e.to_string())?;
+        match stream.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(n) => {
+                if n > MAX_COMMAND_RESPONSE_BYTES.saturating_sub(response.len()) { return Err("Daemon command response exceeds limit".into()); }
+                response.extend_from_slice(&buffer[..n]);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(format!("Failed to read daemon response: {e}")),
+        }
+    }
+    decode_daemon_response(response)
 }
 
 fn decode_daemon_response(bytes: Vec<u8>) -> Result<String, String> {
@@ -315,126 +289,21 @@ fn check_adb(app: tauri::AppHandle) -> Result<String, String> {
 #[tauri::command(async)]
 fn init_daemon(app: tauri::AppHandle, root_mode: Option<bool>) -> Result<String, String> {
     let _operation = DAEMON_OPERATION.lock().map_err(|_| "Daemon state is unavailable")?;
-    invalidate_scan()?;
-    let has_session = DEVICE_SERIAL.lock().map_err(|_| "Device state is unavailable")?.is_some();
-    if has_session {
-        // An unreachable previous daemon is not proof it stopped. Local
-        // cleanup still releases its session; init performs fresh device setup.
-        let _ = stop_daemon_inner(&app);
-    }
-    clear_session()?;
-    let result = init_daemon_inner(app.clone(), root_mode.unwrap_or(false));
-    if result.is_err() {
-        // A failed push/start/handshake must not leave a live daemon or a
-        // startup secret behind. Only target the device selected by this init.
-        let has_device = DEVICE_SERIAL.lock().map_err(|_| "Device state is unavailable")?.is_some();
-        if has_device {
-            if let Ok(adb_path) = get_bundled_binary(&app, "adb") {
-                let _ = device_shell(&adb_path, "pkill -f '[s]ocketsweep_daemon' || true");
-                let _ = adb_s(&adb_path, &["forward", "--remove", &format!("tcp:{DAEMON_PORT}")]);
-                let _ = adb_s(&adb_path, &["shell", "rm", "-f", DEVICE_TOKEN_PATH]);
-            }
-        }
-        *DEVICE_SERIAL.lock().map_err(|_| "Device state is unavailable")? = None;
-        *DEVICE_PRIVILEGE.lock().map_err(|_| "Device state is unavailable")? = Privilege::Shell;
-    }
-    result
-}
-
-fn init_daemon_inner(app: tauri::AppHandle, root_mode: bool) -> Result<String, String> {
+    // Reconnect can release only this app's previous session. An unconfirmed
+    // remote stop still clears local authority before a fresh session starts.
+    let _ = stop_daemon_inner();
     let adb_path = get_bundled_binary(&app, "adb")?;
-    let daemon_src = get_bundled_binary(&app, "daemon")?;
-
-    // 1 — Verify ADB is reachable and a device is connected.
+    let daemon = get_bundled_binary(&app, "daemon")?;
     adb(&adb_path, &["version"])?;
     let devices = adb(&adb_path, &["devices"])?;
-    let device_line = devices
-        .lines()
-        .find(|l| l.ends_with("\tdevice") && !l.starts_with("List"));
-
-    let serial = match device_line {
-        Some(line) => line.split('\t').next().unwrap_or("").trim().to_string(),
-        None => {
-            // Check for unauthorized devices to give a better error.
-            if devices.lines().any(|l| l.contains("unauthorized")) {
-                return Err("USB Debugging not authorised. Check the confirmation dialog on your phone.".into());
-            }
-            return Err(
-                "No Android device detected. Connect your phone via USB and enable USB Debugging.".into(),
-            );
-        }
-    };
-
-    // Store the serial so all subsequent ADB calls (including stop_daemon) target this device.
-    if let Ok(mut guard) = DEVICE_SERIAL.lock() {
-        *guard = Some(serial);
-    }
-
-    let privilege = select_privilege(root_mode, |args| adb_s(&adb_path, args))?;
-    *DEVICE_PRIVILEGE.lock().map_err(|_| "Device state is unavailable")? = privilege;
-
-    // 2 — Kill any zombie daemon before we push/start.
-    device_shell(&adb_path, "pkill -f '[s]ocketsweep_daemon' || true")?;
-    std::thread::sleep(Duration::from_millis(300));
-
-    // Transfer the fresh secret over stdin into a shell-owned file. Neither
-    // the startup arguments nor the frontend response contain the secret.
-    let token = new_random_id()?;
-    let serial = DEVICE_SERIAL.lock().map_err(|_| "Device state is unavailable")?
-        .clone().ok_or("No connected device")?;
-    let token_cmd = format!("rm -f {DEVICE_TOKEN_PATH} && umask 077 && cat > {DEVICE_TOKEN_PATH}");
-    adb_with_input(&adb_path, &["-s", &serial, "shell", &token_cmd], Some(format!("{token}\n").as_bytes()))?;
-
-    // 2.5 — Automate MANAGE_EXTERNAL_STORAGE permission for the shell user.
-    let _ = adb_s(&adb_path, &["shell", "appops set com.android.shell MANAGE_EXTERNAL_STORAGE allow"]);
-
-    // 4 — Push binary to device.
-    adb_s(&adb_path, &["push", &daemon_src.to_string_lossy(), DEVICE_BIN_PATH])?;
-
-    // 5 — Make it executable.
-    adb_s(&adb_path, &["shell", "chmod", "+x", DEVICE_BIN_PATH])?;
-
-    // 6 — Start the daemon in the background on the device.
-    let mode_arg = if root_mode { " --read-only" } else { "" };
-    let start_cmd = format!("nohup {DEVICE_BIN_PATH} {DAEMON_PORT} {DEVICE_TOKEN_PATH}{mode_arg} > /dev/null 2>&1 & echo $!; exit");
-    let pid_output = device_shell(&adb_path, &start_cmd)?;
-    let pid: u32 = pid_output.trim().parse().map_err(|_| "Daemon launch did not return a process ID")?;
-
-    // 7 — Set up the USB TCP tunnel.
-    adb_s(&adb_path, &["forward", &format!("tcp:{DAEMON_PORT}"), &format!("tcp:{DAEMON_PORT}")])?;
-
-    // 8 — Ping-Retry loop.
-    let mut pong = String::new();
-    let mut connected_daemon = false;
-    let mut handshake_error = String::new();
-    for _ in 0..15 {
-        std::thread::sleep(Duration::from_millis(150));
-        match daemon_command_with_token("PING", &token).and_then(|res| {
-            require_handshake(&res, root_mode)?;
-            Ok(res)
-        }) {
-            Ok(res) => {
-                pong = res;
-                connected_daemon = true;
-                break;
-            }
-            Err(error) => {
-                handshake_error = error;
-                continue;
-            }
-        }
-    }
-
-    if !connected_daemon {
-        return Err(format!("Daemon did not complete the authenticated handshake: {handshake_error}"));
-    }
-
-    *SESSION_TOKEN.lock().map_err(|_| "Session state is unavailable")? = Some(token);
-    *READ_ONLY.lock().map_err(|_| "Session state is unavailable")? = require_handshake(&pong, root_mode)?.read_only.unwrap();
-
-    Ok(format!(
-        "{{\"daemon_pid\":\"{pid}\",\"ping_response\":{pong}}}"
-    ))
+    let serial = devices.lines().find(|line| line.ends_with("\tdevice") && !line.starts_with("List"))
+        .and_then(|line| line.split('\t').next()).map(str::to_string)
+        .ok_or_else(|| if devices.lines().any(|line| line.contains("unauthorized")) {
+            "USB Debugging not authorised. Check the confirmation dialog on your phone.".to_string()
+        } else { "No Android device detected. Connect your phone via USB and enable USB Debugging.".to_string() })?;
+    let (session, response) = session::Session::start(adb_path, &daemon, serial, root_mode.unwrap_or(false))?;
+    *SESSION.lock().map_err(|_| "Session state is unavailable")? = Some(session);
+    Ok(response)
 }
 
 // Cancellation deliberately bypasses DAEMON_OPERATION: otherwise it would
@@ -514,15 +383,9 @@ fn run_scan(
     let effective_root = path
         .filter(|p| !p.is_empty())
         .unwrap_or_else(|| "/sdcard".into());
-    let token = SESSION_TOKEN
-        .lock()
-        .map_err(|_| "Session state is unavailable")?
-        .clone()
-        .ok_or("No active daemon session. Connect your device first.")?;
-    let payload = command_payload(&format!("SCAN_STREAM {effective_root}"), &token)?;
-    let read_only = *READ_ONLY
-        .lock()
-        .map_err(|_| "Session state is unavailable")?;
+    let connection = active_connection()?;
+    let payload = command_payload(&format!("SCAN_STREAM {effective_root}"), &connection.token)?;
+    let read_only = connection.read_only;
     let cancelled = Arc::new(AtomicBool::new(false));
     let progress_pending = Arc::new(AtomicBool::new(false));
     *ACTIVE_SCAN
@@ -536,8 +399,8 @@ fn run_scan(
     let _registration = ScanRegistration(scan_id.clone());
     let result = (|| {
         let mut stream =
-            TcpStream::connect_timeout(&DAEMON_ADDR.parse().unwrap(), TCP_CONNECT_TIMEOUT)
-                .map_err(|e| format!("Cannot connect to daemon at {DAEMON_ADDR}: {e}"))?;
+            TcpStream::connect_timeout(&connection.address, TCP_CONNECT_TIMEOUT)
+                .map_err(|e| format!("Cannot connect to daemon at {}: {e}", connection.address))?;
         stream
             .set_read_timeout(Some(TCP_READ_TIMEOUT))
             .map_err(|e| e.to_string())?;
@@ -612,9 +475,9 @@ fn ping_daemon() -> Result<String, String> {
 }
 
 #[tauri::command(async)]
-fn stop_daemon(app: tauri::AppHandle) -> Result<String, String> {
+fn stop_daemon() -> Result<String, String> {
     let _operation = DAEMON_OPERATION.lock().map_err(|_| "Daemon state is unavailable")?;
-    stop_daemon_inner(&app)
+    stop_daemon_inner()
 }
 
 fn confirm_shutdown(response: &str) -> Result<(), String> {
@@ -627,59 +490,26 @@ fn confirm_shutdown(response: &str) -> Result<(), String> {
 
 fn clear_session() -> Result<(), String> {
     invalidate_scan()?;
-    *SESSION_TOKEN
-        .lock()
-        .map_err(|_| "Session state is unavailable")? = None;
-    *DEVICE_SERIAL
-        .lock()
-        .map_err(|_| "Device state is unavailable")? = None;
-    *DEVICE_PRIVILEGE
-        .lock()
-        .map_err(|_| "Device state is unavailable")? = Privilege::Shell;
-    *READ_ONLY
-        .lock()
-        .map_err(|_| "Session state is unavailable")? = false;
+    let session = SESSION.lock().map_err(|_| "Session state is unavailable")?.take();
+    drop(session); // release the lock before bounded remote cleanup
     Ok(())
 }
 
 fn finish_stop(result: Result<String, String>) -> Result<String, String> {
-    // Even a missing ADB resource or lost phone connection must release local
-    // state. Preserve the remote outcome instead of inventing stopped status.
     clear_session()?;
     result
 }
 
-fn stop_daemon_inner(app: &tauri::AppHandle) -> Result<String, String> {
+fn stop_daemon_inner() -> Result<String, String> {
     invalidate_scan()?;
-    let result = (|| {
-        let adb_path = get_bundled_binary(app, "adb")?;
-        let response = daemon_command("SHUTDOWN");
-        let has_device = DEVICE_SERIAL
-            .lock()
-            .map_err(|_| "Device state is unavailable")?
-            .is_some();
-        if has_device {
-            if response.is_err() {
-                let _ = device_shell(&adb_path, "pkill -f '[s]ocketsweep_daemon' || true");
-            }
-            let _ = adb_s(
-                &adb_path,
-                &["forward", "--remove", &format!("tcp:{DAEMON_PORT}")],
-            );
-            let _ = adb_s(
-                &adb_path,
-                &["shell", "rm", "-f", DEVICE_BIN_PATH, DEVICE_TOKEN_PATH],
-            );
-        }
-        // Preserve the existing transport-failure fallback. A rejected or
-        // unrelated reply must not introduce an extra process-kill attempt.
-        // Best-effort cleanup cannot substitute for an acknowledgement.
-        response.and_then(|response| {
-            confirm_shutdown(&response)?;
-            Ok(response)
-        })
-    })();
-    finish_stop(result)
+    let mut session = SESSION.lock().map_err(|_| "Session state is unavailable")?
+        .take().ok_or("No active daemon session")?;
+    let connection = session.connection();
+    let response = daemon_command_at(connection.address, "SHUTDOWN", &connection.token, Duration::from_secs(3));
+    // EOF also retires this exact process after an unreachable/rejected reply,
+    // but cleanup cannot substitute for the remote acknowledgement in the UI.
+    for error in session.cleanup() { eprintln!("Session cleanup incomplete: {error}"); }
+    finish_stop(response.and_then(|response| { confirm_shutdown(&response)?; Ok(response) }))
 }
 
 #[tauri::command(async)]
@@ -739,8 +569,19 @@ pub fn run() {
             get_scan_view,
             get_scan_node,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                if let Ok(active) = ACTIVE_SCAN.lock() {
+                    if let Some(scan) = active.as_ref() {
+                        scan.cancelled.store(true, Ordering::SeqCst);
+                        if let Some(socket) = &scan.socket { let _ = socket.shutdown(Shutdown::Both); }
+                    }
+                }
+                let _ = clear_session();
+            }
+        });
 }
 
 #[cfg(test)]
@@ -857,6 +698,25 @@ mod tests {
     fn small_command_responses_have_a_hard_byte_limit() {
         assert!(decode_daemon_response(vec![b'x'; MAX_COMMAND_RESPONSE_BYTES]).is_ok());
         assert!(decode_daemon_response(vec![b'x'; MAX_COMMAND_RESPONSE_BYTES + 1]).is_err());
+    }
+
+    #[test]
+    fn small_command_deadline_cannot_be_extended_by_dripping_bytes() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let peer = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket.set_write_timeout(Some(Duration::from_secs(1))).unwrap();
+            // Each byte arrives before the inactivity timeout would expire.
+            for _ in 0..40 {
+                if socket.write_all(b"x").is_err() { break; }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+        });
+        let start = std::time::Instant::now();
+        assert!(daemon_command_at(address, "PING", &"a".repeat(64), Duration::from_millis(150)).is_err());
+        assert!(start.elapsed() < Duration::from_millis(800));
+        peer.join().unwrap();
     }
 
     #[test]

@@ -961,16 +961,12 @@ mod tests {
             Err("Phone disconnected".into()), Err("Bundled ADB unavailable".into())] {
             let expected = outcome.clone();
             *crate::SCAN_STORE.lock().unwrap() = Some(Catalog::new(fixture(&wide(2), true), "generation-a".into()));
-            *crate::SESSION_TOKEN.lock().unwrap() = Some("fixture-secret".into());
-            *crate::DEVICE_SERIAL.lock().unwrap() = Some("fixture-device".into());
-            *crate::READ_ONLY.lock().unwrap() = true;
-            *crate::DEVICE_PRIVILEGE.lock().unwrap() = crate::Privilege::Su;
+            *crate::SESSION.lock().unwrap() = Some(crate::session::Session::test_session());
+            assert!(crate::active_connection().unwrap().read_only);
             assert_eq!(crate::finish_stop(outcome), expected);
             assert!(crate::SCAN_STORE.lock().unwrap().is_none());
-            assert!(crate::SESSION_TOKEN.lock().unwrap().is_none());
-            assert!(crate::DEVICE_SERIAL.lock().unwrap().is_none());
-            assert!(!*crate::READ_ONLY.lock().unwrap());
-            assert_eq!(*crate::DEVICE_PRIVILEGE.lock().unwrap(), crate::Privilege::Shell);
+            assert!(crate::SESSION.lock().unwrap().is_none());
+            assert!(crate::active_connection().is_err());
             assert!(crate::get_scan_view("generation-a".into(), 0, 0, None).is_err());
         }
     }
