@@ -3,13 +3,14 @@
 use crate::scan_stream::{Kind, Node, Response, NONE};
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, BinaryHeap};
 use std::io::Write;
 use std::ops::Bound::{Excluded, Unbounded};
 use std::sync::Arc;
 use std::time::Instant;
 
 pub const PAGE_SIZE: usize = 128;
+pub const MAX_LARGEST_FILES: usize = 100;
 const CHART_SIZE: usize = 64;
 const MAX_QUERY_BYTES: usize = 1024 * 1024;
 type Key = (Reverse<u64>, Arc<str>, u32);
@@ -311,6 +312,69 @@ impl Catalog {
             chart,
         })
     }
+    /// Rank only live, counted regular files. Walking reachable children also
+    /// excludes descendants of removed directories without another live index.
+    /// The worst retained key is at the heap root: O(N log K), O(K + depth).
+    pub fn largest_json(
+        &self,
+        generation: &str,
+        revision: u32,
+        limit: usize,
+    ) -> Result<String, String> {
+        self.scope(generation, revision)?;
+        if !(1..=MAX_LARGEST_FILES).contains(&limit) {
+            return Err(format!(
+                "Largest-files limit must be between 1 and {MAX_LARGEST_FILES}"
+            ));
+        }
+        let mut best = BinaryHeap::<Key>::with_capacity(limit);
+        let mut pending = vec![self.children[0].iter()];
+        while let Some(children) = pending.last_mut() {
+            if let Some(key) = children.next() {
+                let node = &self.response.nodes[key.2 as usize];
+                if node.kind == Kind::Directory {
+                    pending.push(self.children[key.2 as usize].iter());
+                } else if node.kind == Kind::File && node.counted {
+                    if best.len() < limit {
+                        best.push(key.clone());
+                    } else if key < best.peek().unwrap() {
+                        *best.peek_mut().unwrap() = key.clone();
+                    }
+                }
+            } else {
+                pending.pop();
+            }
+        }
+        #[derive(Serialize)]
+        struct File<'a> {
+            node: NodeSummary<'a>,
+            path: String,
+        }
+        #[derive(Serialize)]
+        struct Largest<'a> {
+            generation: &'a str,
+            revision: u32,
+            limit: usize,
+            total_files: u64,
+            files: Vec<File<'a>>,
+        }
+        let files = best
+            .into_sorted_vec()
+            .into_iter()
+            .map(|key| File {
+                node: self.summary_node(key.2),
+                path: self.path(key.2),
+            })
+            .collect();
+        json(&Largest {
+            generation: &self.generation,
+            revision: self.revision,
+            limit,
+            total_files: self.response.total_files,
+            files,
+        })
+        .map_err(|error| format!("{error}. Try a smaller file limit."))
+    }
     pub fn detail_json(&self, generation: &str, revision: u32, id: u32) -> Result<String, String> {
         self.scope(generation, revision)?;
         self.node(id)?;
@@ -518,6 +582,136 @@ mod tests {
     }
     fn success() -> Result<String, String> {
         Ok(r#"{"status":"ok","message":"Deleted fixture entry"}"#.into())
+    }
+
+    #[test]
+    fn largest_matches_exhaustive_sort_for_every_limit() {
+        let mut entries = wide(1037);
+        entries.push(entry(1038, Some(0), "nested", "directory", 0, true));
+        // Same name and size in different directories exercises the ID tie.
+        entries.push(entry(1039, Some(1038), "file-00001", "file", 0, true));
+        entries.push(entry(1040, Some(1038), "not-counted", "file", 0, false));
+        entries.push(entry(1041, Some(1038), "special", "other", 0, false));
+        entries.push(entry(1042, Some(0), "aaa", "file", 6, true));
+        entries.push(entry(1043, Some(1038), "aaa", "file", 6, true));
+        let store = Catalog::new(fixture(&entries, false), "generation-a".into());
+        let mut expected: Vec<_> = entries
+            .iter()
+            .filter(|e| e["kind"] == "file" && e["counted"] == true)
+            .collect();
+        expected.sort_by_key(|e| {
+            (
+                Reverse(e["size"].as_u64().unwrap()),
+                e["name"].as_str().unwrap(),
+                e["id"].as_u64().unwrap(),
+            )
+        });
+        for limit in 1..=MAX_LARGEST_FILES {
+            let result = value(store.largest_json("generation-a", 0, limit));
+            let ids: Vec<_> = result["files"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|file| file["node"]["id"].clone())
+                .collect();
+            assert_eq!(
+                ids,
+                expected
+                    .iter()
+                    .take(limit)
+                    .map(|e| e["id"].clone())
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(result["total_files"], expected.len());
+        }
+        for limit in [0, MAX_LARGEST_FILES + 1, usize::MAX] {
+            assert!(store.largest_json("generation-a", 0, limit).is_err());
+        }
+        assert!(store.largest_json("old", 0, 10).is_err());
+        assert!(store.largest_json("generation-a", 1, 10).is_err());
+    }
+
+    #[test]
+    fn largest_empty_zero_byte_exact_paths_and_read_only() {
+        let empty = Catalog::new(fixture(&[root()], false), "generation-a".into());
+        assert_eq!(
+            value(empty.largest_json("generation-a", 0, 10))["files"],
+            json!([])
+        );
+        let entries = vec![
+            root(),
+            entry(1, Some(0), " folder ", "directory", 0, true),
+            entry(2, Some(1), " ü <>&\r\n ", "file", 0, true),
+            entry(3, Some(0), "zero", "file", 0, true),
+        ];
+        for read_only in [false, true] {
+            let store = Catalog::new(fixture(&entries, read_only), "generation-a".into());
+            let files = value(store.largest_json("generation-a", 0, 100))["files"].clone();
+            assert_eq!(files.as_array().unwrap().len(), 2);
+            assert_eq!(files[0]["path"], "/fixture/ folder / ü <>&\r\n ");
+            assert_eq!(files[0]["node"]["can_delete"], false);
+            assert_eq!(files[1]["node"]["can_delete"], !read_only);
+        }
+    }
+
+    #[test]
+    fn largest_preserves_the_response_byte_limit_for_deep_paths() {
+        let mut entries = vec![root()];
+        for id in 1..=60 {
+            entries.push(entry(
+                id,
+                Some(id - 1),
+                &"d".repeat(250),
+                "directory",
+                0,
+                true,
+            ));
+        }
+        for id in 61..=160 {
+            entries.push(entry(id, Some(60), &format!("file-{id}"), "file", 1, true));
+        }
+        let store = Catalog::new(fixture(&entries, false), "generation-a".into());
+        assert!(store
+            .largest_json("generation-a", 0, 100)
+            .unwrap_err()
+            .contains("Try a smaller file limit"));
+        let small = store.largest_json("generation-a", 0, 10).unwrap();
+        assert!(small.len() < MAX_QUERY_BYTES);
+        assert_eq!(value(Ok(small))["files"].as_array().unwrap().len(), 10);
+    }
+
+    #[test]
+    fn largest_tracks_deleted_subtrees_and_quarantines_missing_files() {
+        let entries = vec![
+            root(),
+            entry(1, Some(0), "folder", "directory", 0, true),
+            entry(2, Some(1), "large", "file", 99, true),
+            entry(3, Some(0), "small", "file", 1, true),
+        ];
+        let mut store = Some(Catalog::new(
+            fixture(&entries, false),
+            "generation-a".into(),
+        ));
+        let plan = store
+            .as_ref()
+            .unwrap()
+            .prepare_delete("generation-a", 0, 1)
+            .unwrap();
+        finish_delete(&mut store, &plan, success()).unwrap();
+        let current = store.as_ref().unwrap();
+        assert!(current.largest_json("generation-a", 0, 10).is_err());
+        let result = value(current.largest_json("generation-a", 1, 10));
+        assert_eq!(result["total_files"], 1);
+        assert_eq!(result["files"].as_array().unwrap().len(), 1);
+        assert_eq!(result["files"][0]["node"]["id"], 3);
+        let plan = current.prepare_delete("generation-a", 1, 3).unwrap();
+        assert!(finish_delete(
+            &mut store,
+            &plan,
+            Ok(r#"{"status":"error","message":"File no longer exists"}"#.into())
+        )
+        .is_err());
+        assert!(store.is_none());
     }
 
     #[test]

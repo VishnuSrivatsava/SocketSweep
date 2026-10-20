@@ -528,6 +528,15 @@ fn get_scan_view(
 }
 
 #[tauri::command(async)]
+fn get_largest_files(generation: String, revision: u32, limit: usize) -> Result<String, String> {
+    let store = SCAN_STORE.lock().map_err(|_| "Scan state is unavailable")?;
+    store
+        .as_ref()
+        .ok_or("Scan is unavailable; rescan required")?
+        .largest_json(&generation, revision, limit)
+}
+
+#[tauri::command(async)]
 fn get_scan_node(generation: String, revision: u32, node_id: u32) -> Result<String, String> {
     let store = SCAN_STORE.lock().map_err(|_| "Scan state is unavailable")?;
     store
@@ -570,6 +579,7 @@ pub fn run() {
             delete_item,
             get_scan_view,
             get_scan_node,
+            get_largest_files,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
