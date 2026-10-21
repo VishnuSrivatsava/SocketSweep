@@ -21,6 +21,7 @@
   ];
   let listedDevices = readyDevices;
   let discoveryError = false;
+  const discoveryDump = "adb devices -l failed (exit 1):\n* daemon not running; starting now at tcp:5037\nADB server didn't ACK\nFull server startup log: /tmp/adb.fixture.log\ncould not install *smartsocket* listener: Address already in use\n<img src=invalid onerror=alert(1)>\n" + "startup diagnostics\n".repeat(2000);
   let activeDevice = null;
   let callbacks = 0;
   let rootChildren;
@@ -75,7 +76,7 @@
       calls.push({ command, args });
       if (command === "list_devices") {
         await pause(50);
-        if (discoveryError) throw "Mock discovery failed";
+        if (discoveryError) throw discoveryDump;
         return listedDevices;
       }
       if (command === "check_adb") return "Mock ADB " + "x".repeat(20000);
@@ -139,7 +140,7 @@
   const report = (passed, error) => {
     const output = document.createElement("pre");
     output.id = "scan-test-report";
-    output.textContent = JSON.stringify({ fixture: "scan-ui", passed, error, ipc_calls: calls.length, checks: passed ? ["offline fonts under CSP", "setup alignment", "result fonts", "file label semantics", "complete paging", "bounded largest files", "late largest response", "largest query retry", "largest ID-only deletion", "largest read-only guards", "largest folder navigation without rescanning", "late zoom", "Other tile", "stale confirmation", "ID-only deletion", "revision refresh", "partial failure", "read-only", "acknowledged shutdown", "unconfirmed shutdown", "reconnect", "stop action ordering", "toast dismissal integration", "bounded diagnostic integration"] : undefined });
+    output.textContent = JSON.stringify({ fixture: "scan-ui", passed, error, ipc_calls: calls.length, checks: passed ? ["offline fonts under CSP", "bounded collapsed discovery diagnostics", "discovery retry recovery", "setup alignment", "result fonts", "file label semantics", "complete paging", "bounded largest files", "late largest response", "largest query retry", "largest ID-only deletion", "largest read-only guards", "largest folder navigation without rescanning", "late zoom", "Other tile", "stale confirmation", "ID-only deletion", "revision refresh", "partial failure", "read-only", "acknowledged shutdown", "unconfirmed shutdown", "reconnect", "stop action ordering", "toast dismissal integration", "bounded diagnostic integration"] : undefined });
     document.body.append(output);
     void fetch("/report", { method: "POST", body: output.textContent }).then(() => {
       if (passed) location.replace("/tests/toast_lifecycle_fixture.html");
@@ -188,7 +189,20 @@
     }
     discoveryError = true;
     await refreshDevices();
-    check(picker().value === "phone-two" && connect.disabled && picker().selectedOptions[0].textContent.includes("Status unavailable") && document.querySelector("#device-status").textContent.includes("Mock discovery failed"), "Discovery failure did not preserve an unknown, blocked selection");
+    const status = document.querySelector("#device-status");
+    check(picker().value === "phone-two" && connect.disabled && picker().selectedOptions[0].textContent.includes("Status unavailable"), "Discovery failure did not preserve an unknown, blocked selection");
+    check(status.textContent.includes("ADB could not start") && status.textContent.length < 120 && !status.textContent.includes("startup log"), "Raw diagnostics leaked into setup status");
+    const diagnostics = document.querySelector("#device-error-details");
+    check(diagnostics && !diagnostics.open, "Technical details were expanded by default");
+    const closedHeight = diagnostics.getBoundingClientRect().height;
+    diagnostics.querySelector("summary").click();
+    await waitFor(() => diagnostics.open, "Technical details did not expand");
+    const detailText = diagnostics.querySelector("pre");
+    check(detailText.textContent.includes("ADB server didn't ACK") && detailText.textContent.includes("… [truncated]") && detailText.textContent.length <= 4096, "Diagnostics were lost or unbounded");
+    check(!diagnostics.querySelector("img") && detailText.textContent.includes("<img"), "Diagnostic text became markup");
+    check(detailText.getBoundingClientRect().height <= 161 && document.documentElement.scrollWidth <= innerWidth, "Expanded diagnostics broke setup layout");
+    diagnostics.querySelector("summary").click();
+    check(!diagnostics.open && diagnostics.getBoundingClientRect().height <= closedHeight + 1, "Collapsed diagnostics still occupied the screen");
     discoveryError = false;
     listedDevices = [...readyDevices].reverse();
     await refreshDevices();

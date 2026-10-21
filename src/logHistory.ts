@@ -14,7 +14,7 @@ export function emptyLogHistory(): LogHistory {
   return { entries: [], textUnits: 0, discarded: 0 };
 }
 
-function boundedEntry(message: string): string {
+export function boundDiagnostic(message: string): string {
   if (message.length > MAX_LOG_ENTRY_UNITS) {
     let end = MAX_LOG_ENTRY_UNITS - TRUNCATION_MARKER.length;
     // Do not split an astral character at the truncation boundary.
@@ -28,7 +28,7 @@ function boundedEntry(message: string): string {
 }
 
 export function appendLog(history: LogHistory, message: string): LogHistory {
-  const entry = boundedEntry(message);
+  const entry = boundDiagnostic(message);
   let textUnits = history.textUnits + entry.length;
   let remove = 0;
   while (history.entries.length - remove + 1 > MAX_LOG_ENTRIES || textUnits > MAX_LOG_TEXT_UNITS) {

@@ -151,8 +151,12 @@ function SetupScreen({ onConnect, loading, rootMode, onRootModeChange, rootPath,
               </option>)}
             </select>
             <p id="device-status" role={error ? "alert" : "status"} className="text-xs leading-relaxed text-zinc-400">
-              {refreshing ? "Checking connected devices…" : error ?? deviceSelectionHint(devices, serial)}
+              {refreshing ? "Checking connected devices…" : error?.message ?? deviceSelectionHint(devices, serial)}
             </p>
+            {error && <details id="device-error-details" className="text-xs text-zinc-500">
+              <summary className="cursor-pointer hover:text-zinc-300">Technical details</summary>
+              <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-zinc-800 bg-zinc-900 p-3 font-mono">{error.details}</pre>
+            </details>}
           </div>
           <label className="flex items-center justify-center gap-2.5 text-zinc-300 cursor-pointer">
             <input
