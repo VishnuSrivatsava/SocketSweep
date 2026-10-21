@@ -1,7 +1,8 @@
 // Real tree/query components with controlled indicator timers and mocked IPC.
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { FileTreeNode } from "../src/App";
+import { FileTreeNode } from "../src/FileTree";
+import "../src/App.css";
 
 const nativeTimeout = window.setTimeout.bind(window);
 const nativeClear = window.clearTimeout.bind(window);
