@@ -17,6 +17,8 @@ use std::io::{Read, Write};
 use std::net::{Shutdown, TcpStream};
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use tauri::ipc::Channel;
+#[cfg(test)]
+mod scan_benchmark;
 mod scan_stream;
 mod scan_store;
 mod session;
