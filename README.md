@@ -239,13 +239,17 @@ sequenceDiagram
 ### 1. Compile the C++ Daemon
 Cross-compile the daemon for `aarch64-linux-android`:
 ```bash
-# Set your NDK path
-export NDK=/path/to/your/android-ndk-r26d
+# Optional: uncomment and replace to override a configured or auto-detected NDK
+# export NDK="/path/to/your/android-ndk-r26d"
 
 # Build the daemon
 cd engine
 bash ./build.sh
 ```
+The script prefers `NDK`, then `ANDROID_NDK_LATEST_HOME`, then `ANDROID_NDK_HOME`.
+If none is set, it searches the default Linux/macOS SDK directories. An invalid
+configured path fails explicitly rather than selecting a different toolchain.
+
 *This generates the stripped `daemon` binary in the `engine/` directory and
 copies it into `src-tauri/bin/daemon`, which Tauri bundles. Rebuild after changing
 the daemon so local development uses the current protocol (v3).*

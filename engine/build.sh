@@ -4,6 +4,9 @@
 # ============================================================================
 set -euo pipefail
 
+# Match Unix CI discovery while retaining an explicit NDK override.
+NDK="${NDK:-${ANDROID_NDK_LATEST_HOME:-${ANDROID_NDK_HOME:-}}}"
+
 if [ -z "${NDK:-}" ]; then
     for candidate in \
         "$HOME/Android/Sdk/ndk/"* \
@@ -16,7 +19,7 @@ if [ -z "${NDK:-}" ]; then
 fi
 
 if [ -z "${NDK:-}" ]; then
-    echo "ERROR: Android NDK not found. Set the NDK environment variable."
+    echo "ERROR: Android NDK not found. Set NDK, ANDROID_NDK_LATEST_HOME, or ANDROID_NDK_HOME."
     exit 1
 fi
 
