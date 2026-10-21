@@ -41,6 +41,12 @@ handles the shell-v2 close-stdin packet by shutting down input for a raw shell;
 PTY shells cannot provide that half-close behavior. This is why `-T` and the
 feature check are part of the contract.
 
+The targeted `adb features` CLI prints **one feature per line** (LF or CRLF),
+unlike the comma-separated feature set on the ADB wire. The host requires an
+exact `shell_v2` feature line. The fake-ADB fixture uses a multi-feature response
+to exercise this distinction; devices without that capability still fail before
+creating session files.
+
 ## Teardown and failures
 
 Stop first requests authenticated `SHUTDOWN` from the owned endpoint. Only the

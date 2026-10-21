@@ -48,6 +48,11 @@ fn remaining(deadline: Instant) -> Result<Duration, String> {
     }
 }
 
+fn supports_shell_v2(output: &str) -> bool {
+    // `adb features` prints one name per line; the ADB wire format uses commas.
+    output.lines().any(|feature| feature.trim() == "shell_v2")
+}
+
 impl Session {
     pub fn connection(&self) -> Connection {
         self.connection.clone()
@@ -130,12 +135,7 @@ impl Session {
 
     fn start_inner(&mut self, daemon: &Path, root_mode: bool) -> Result<String, String> {
         let deadline = Instant::now() + START_TIMEOUT;
-        if !self
-            .adb(&["features"], None, deadline)?
-            .trim()
-            .split(',')
-            .any(|feature| feature == "shell_v2")
-        {
+        if !supports_shell_v2(&self.adb(&["features"], None, deadline)?) {
             return Err("The connected device must support ADB shell v2 for owned sessions".into());
         }
         self.privilege = select_privilege(root_mode, |args| self.adb(args, None, deadline))?;
@@ -326,6 +326,30 @@ fn owned_forwards(list: &str, serial: &str, local: u16, remote: u16) -> Vec<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shell_v2_requires_an_exact_feature_line() {
+        for output in [
+            "shell_v2",
+            "shell_v2\ncmd\n",
+            "cmd\nshell_v2\nstat_v2\n",
+            "cmd\nstat_v2\nshell_v2\n",
+            "cmd\r\nshell_v2\r\nstat_v2\r\n",
+            "\n  shell_v2  \n",
+        ] {
+            assert!(supports_shell_v2(output), "rejected {output:?}");
+        }
+        for output in [
+            "",
+            "\r\n",
+            "cmd\nstat_v2\n",
+            "no_shell_v2\nshell_v20\nshell_v2_disabled\n",
+            "cmd,shell_v2,stat_v2",
+            "cmd shell_v2 stat_v2",
+        ] {
+            assert!(!supports_shell_v2(output), "accepted {output:?}");
+        }
+    }
 
     #[test]
     fn forward_cleanup_checks_device_local_and_remote_identity() {
