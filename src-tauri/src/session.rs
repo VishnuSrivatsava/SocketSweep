@@ -4,9 +4,11 @@ use crate::{
     adb_with_input_timeout, device_shell_command, new_random_id, require_handshake,
     select_privilege, Privilege,
 };
+use std::io::Read;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::mpsc::{sync_channel, Receiver};
 use std::time::{Duration, Instant};
 
 const START_TIMEOUT: Duration = Duration::from_secs(45);
@@ -51,6 +53,24 @@ fn remaining(deadline: Instant) -> Result<Duration, String> {
 fn supports_shell_v2(output: &str) -> bool {
     // `adb features` prints one name per line; the ADB wire format uses commas.
     output.lines().any(|feature| feature.trim() == "shell_v2")
+}
+
+fn startup_stderr(mut pipe: impl Read + Send + 'static) -> Receiver<String> {
+    let (send, receive) = sync_channel(1);
+    std::thread::spawn(move || {
+        const LIMIT: usize = 2048;
+        let mut prefix = Vec::new();
+        let _ = pipe.by_ref().take((LIMIT + 1) as u64).read_to_end(&mut prefix);
+        let truncated = prefix.len() > LIMIT;
+        prefix.truncate(LIMIT);
+        let mut text = String::from_utf8_lossy(&prefix).trim().to_string();
+        if truncated { text.push_str("\n[startup diagnostics truncated]"); }
+        let _ = send.send(text);
+        // Keep draining after the prefix so verbose children cannot block or
+        // receive SIGPIPE. The receiver never waits beyond its own deadline.
+        let _ = std::io::copy(&mut pipe, &mut std::io::sink());
+    });
+    receive
 }
 
 impl Session {
@@ -180,26 +200,31 @@ impl Session {
         );
         // Raw shell protocol forwards stdin EOF. No nohup, PTY, token argv,
         // inherited terminal input, or unbounded captured daemon diagnostics.
-        self.parent = Some(
-            Command::new(&self.adb)
-                .args(["-s", &self.serial, "shell", "-T", &launch])
-                .stdin(Stdio::piped())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .map_err(|e| format!("Cannot launch session daemon: {e}"))?,
-        );
+        let mut child = Command::new(&self.adb)
+            .args(["-s", &self.serial, "shell", "-T", &launch])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("Cannot launch session daemon: {e}"))?;
+        let diagnostics = startup_stderr(child.stderr.take().unwrap());
+        self.parent = Some(child);
         let ready = loop {
             remaining(deadline)?;
-            if self
+            if let Some(status) = self
                 .parent
                 .as_mut()
                 .unwrap()
                 .try_wait()
                 .map_err(|e| e.to_string())?
-                .is_some()
             {
-                return Err("Daemon exited before announcing its endpoint. Rebuild the bundled daemon and check root access.".into());
+                let details = diagnostics.recv_timeout(
+                    deadline.saturating_duration_since(Instant::now()).min(Duration::from_millis(250)),
+                ).unwrap_or_default();
+                return Err(format!(
+                    "Daemon exited before announcing its endpoint ({status}). See the log for startup details.\n{}",
+                    if details.is_empty() { "No startup diagnostics were received." } else { &details },
+                ));
             }
             let text = self.shell(
                 &format!("if [ -f '{ready_path}' ]; then cat '{ready_path}'; fi"),
@@ -581,16 +606,23 @@ mod tests {
                 "push",
                 "chmod",
                 "launch",
+                "launch-output",
                 "ready",
                 "bad-ready",
                 "handshake",
             ] {
                 let adb = device.client(stage, "same");
                 fail(&adb, stage);
-                assert!(
-                    Session::start(adb, daemon(), "same".into(), false).is_err(),
-                    "accepted {stage}"
-                );
+                let error = Session::start(adb, daemon(), "same".into(), false).err()
+                    .unwrap_or_else(|| panic!("accepted {stage}"));
+                if stage == "launch" {
+                    assert!(error.contains("Injected launch failure"), "{error}");
+                } else if stage == "launch-output" {
+                    assert!(error.contains("fixture startup failure:"), "{error}");
+                    assert!(error.contains("diagnostics truncated"), "{error}");
+                    assert!(error.contains("exit status: 9"), "{error}");
+                    assert!(error.len() < 2300, "Unbounded startup diagnostics");
+                }
                 assert_eq!(
                     device.rows().len(),
                     2,

@@ -54,6 +54,9 @@ elif args[0] == "shell":
         print("0" if elevated and failure != "root" else "2000")
     elif args[1] == "-T":
         fail("launch")
+        if failure == "launch-output":
+            sys.stderr.write("fixture startup failure: " + "x" * (256 * 1024))
+            sys.exit(9)
         command = shlex.split(mapped(command))
         assert command[0] == "exec"
         if failure == "handshake":

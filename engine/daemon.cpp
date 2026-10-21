@@ -14,6 +14,7 @@
 #include <set>
 #include <limits>
 #if defined(__linux__)
+#include <linux/fs.h>
 #include <linux/magic.h>
 #include <sys/vfs.h>
 #endif
@@ -54,6 +55,16 @@ static safe_delete::Root g_scan_root; // pins the successful scan root for delet
 static std::string g_session_token;
 static bool g_read_only = false;
 static int g_scan_threads = cfg::DEFAULT_SCAN_THREADS;
+
+static int publish_no_replace(const char* temporary, const char* destination) {
+    // Android shell policy permits rename, but does not grant hard links.
+    // Both platform operations atomically reject any existing destination.
+#if defined(__APPLE__)
+    return ::renamex_np(temporary, destination, RENAME_EXCL);
+#else
+    return ::renameat2(AT_FDCWD, temporary, AT_FDCWD, destination, RENAME_NOREPLACE);
+#endif
+}
 
 // A session owns this process through a non-PTY ADB stdin channel. EOF exits
 // only this process, including during a blocked command; no PID/name lookup
@@ -633,11 +644,17 @@ int main(int argc, char* argv[]) {
         const int ready = ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
         const std::string message = "{\"port\":" + std::to_string(port) +
             ",\"pid\":" + std::to_string(::getpid()) + "}\n";
-        if (ready < 0) { ::close(srv); return 1; }
+        if (ready < 0) {
+            std::perror("[engine] Cannot create session announcement");
+            ::close(srv); return 1;
+        }
         const bool written = ::write(ready, message.data(), message.size()) == static_cast<ssize_t>(message.size());
+        if (!written) std::fprintf(stderr, "[engine] Cannot write complete session announcement\n");
         const bool closed = ::close(ready) == 0;
+        if (!closed) std::perror("[engine] Cannot close session announcement");
         // Publish a complete record without replacing an existing file/link.
-        const bool published = written && closed && ::link(temporary.c_str(), ready_path) == 0;
+        const bool published = written && closed && publish_no_replace(temporary.c_str(), ready_path) == 0;
+        if (written && closed && !published) std::perror("[engine] Cannot publish session announcement");
         ::unlink(temporary.c_str());
         if (!published) { ::close(srv); return 1; }
     }
