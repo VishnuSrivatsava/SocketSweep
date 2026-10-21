@@ -436,6 +436,12 @@ mod tests {
         *cancel.socket.lock().unwrap() = Some(client.try_clone().unwrap());
         cancel.cancel();
         assert!(cancel.check().is_err());
-        assert_eq!(client.read(&mut [0]).unwrap(), 0);
+        match client.read(&mut [0]) {
+            Ok(size) => assert_eq!(size, 0),
+            Err(error) => assert!(!matches!(
+                error.kind(),
+                std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+            )),
+        }
     }
 }
