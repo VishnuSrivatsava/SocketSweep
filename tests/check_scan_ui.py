@@ -67,6 +67,15 @@ with tempfile.TemporaryDirectory(prefix='socketsweep-ui-test-') as directory:
             rollupOptions: { input: ['tests/toast_lifecycle_fixture.html', 'tests/log_history_fixture.html'] },
         }});
     ''', str(work / 'site')], cwd=REPO, check=True, timeout=60)
+    # A separate development-React bundle verifies StrictMode's double effect;
+    # the production UI and other fixtures retain their production bundles.
+    subprocess.run(['node', '--input-type=module', '-e', """
+        import { build } from 'vite';
+        await build({ logLevel: 'error', define: { 'process.env.NODE_ENV': '"development"' }, build: {
+            outDir: process.argv[1], emptyOutDir: false,
+            rollupOptions: { input: 'tests/device_discovery_fixture.html' },
+        }});
+    """, str(work / 'site')], cwd=REPO, check=True, timeout=60)
     server = ThreadingHTTPServer(('127.0.0.1', 0), partial(Handler, directory=str(work / 'site')))
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
@@ -77,10 +86,10 @@ with tempfile.TemporaryDirectory(prefix='socketsweep-ui-test-') as directory:
                 '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1',
                 f'--window-size={os.environ.get("UI_TEST_WINDOW", "1280,1000")}',
                 f'--force-device-scale-factor={os.environ.get("UI_TEST_SCALE", "1")}',
-                f'--user-data-dir={work / "profile"}', f'http://127.0.0.1:{server.server_port}'],
+                f'--user-data-dir={work / "profile"}', f'http://127.0.0.1:{server.server_port}/tests/device_discovery_fixture.html'],
                 stdout=log, stderr=log, start_new_session=True)
             try:
-                for expected in ('scan-ui', 'toast-lifecycle', 'log-history'):
+                for expected in ('device-discovery', 'scan-ui', 'toast-lifecycle', 'log-history'):
                     value = reports.get(timeout=40)
                     print(json.dumps(value, indent=2))
                     if value.get('fixture') != expected or not value['passed']:

@@ -32,3 +32,13 @@ export function deviceSelectionHint(devices: AndroidDevice[], serial: string): s
   if (!serial) return "Choose a ready device. Unlock and authorize phones marked unavailable, then refresh.";
   return "Only this device will be scanned.";
 }
+
+/** Diagnostic dumps belong in explicit details, never in the setup status. */
+export function deviceDiscoveryMessage(details: string): string {
+  const error = details.toLowerCase();
+  if (["adb server didn't ack", "failed to start daemon", "cannot connect to daemon", "smartsocket", "address already in use"].some(text => error.includes(text))) {
+    return "ADB could not start. Wait a moment and refresh. If it persists, close other Android tools and retry.";
+  }
+  if (error.includes("timed out")) return "Checking devices timed out. Reconnect the USB cable and refresh.";
+  return "Couldn't check connected devices. Refresh to try again.";
+}

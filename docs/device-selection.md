@@ -13,9 +13,16 @@ selection stays visible and blocks Connect; choosing another phone is an
 explicit action. Selection survives refreshes, connection errors, and stopping
 within the running app. It is not saved across app restarts.
 If discovery fails, the selected device's status is unavailable rather than
-claimed disconnected; Connect stays blocked until discovery succeeds.
+claimed disconnected; Connect stays blocked until discovery succeeds. Setup shows
+a short error with recovery guidance. Raw command diagnostics are escaped,
+limited to 4,096 UTF-16 code units using the shared diagnostic-text bound, and
+collapsed under **Technical details**. Expanded details scroll within a bounded
+panel instead of filling the setup screen.
 
 Discovery runs on entering setup and on Refresh, without background polling.
+Repeated requests from that setup hook share one pending `list_devices` call,
+including development StrictMode's effect replay. Once it settles, Refresh
+starts a new command; completed device lists are never reused as a cache.
 Its result is a snapshot. Connect checks the selected serial against a fresh
 list in Rust before pushing or launching the daemon. If it vanished after the
 displayed snapshot, startup fails; there is no first-device fallback. If it
@@ -59,11 +66,17 @@ session isolation, generation invalidation, authentication, deletion, and root
 tests remain enabled.
 
 Node tests cover initial selection, preservation, and status guidance. The
-built-UI mocked-IPC replay covers multiple ready devices, disabled unavailable
-options, model-text escaping, refresh locks/failure, unplugging, reordering,
+built-UI mocked-IPC replay covers an oversized ADB-server startup dump, bounded
+collapsed details, markup escaping, retry recovery, multiple ready devices,
+disabled unavailable options, model-text escaping, refresh locks/failure, unplugging, reordering,
 reconnection, a stale displayed device at startup, duplicate clicks, result
 identity, explicit switching, and confirmation invalidation. These fixtures do
 not prove real USB transport, physical hotplug timing, or root-manager behavior.
+A separate development-React fixture requires StrictMode's two effect setups,
+asserts that they launch one discovery command, and checks repeated refreshes,
+success/error retries and late responses after unmount. These requests are
+mocked; the fixture neither starts nor stops a real ADB server. Coalescing this
+app's discovery does not resolve an external process occupying ADB's port.
 
 No native app, real ADB, or phone test was run locally. For a manual check, build
 the app yourself using the README steps, then:
