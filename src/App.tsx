@@ -699,7 +699,7 @@ function App() {
         try { await invoke<string>("stop_daemon"); } catch { /* show the original connection error */ }
       }
       const message = err instanceof Error ? err.message : String(err);
-      pushToast(message, message === "Scan cancelled" ? "info" : "error");
+      pushToast(message.split("\n", 1)[0], message === "Scan cancelled" ? "info" : "error");
       addLog(`${message === "Scan cancelled" ? "[SCAN]" : "[ERROR]"} ${message}`);
       setPhase("setup");
     } finally {

@@ -81,7 +81,7 @@
       }
       if (command === "check_adb") return "Mock ADB " + "x".repeat(20000);
       if (command === "init_daemon") {
-        check(listedDevices.some(device => device.serial === args.serial && device.state === "device"), "Selected device disconnected before startup");
+        check(listedDevices.some(device => device.serial === args.serial && device.state === "device"), "Selected device disconnected before startup\nfixture startup details <stderr>");
         activeDevice = args.serial;
         return "Mock daemon";
       }
@@ -214,6 +214,8 @@
     connect.click();
     await waitFor(() => document.querySelector("#btn-connect") && !document.querySelector("#btn-refresh-devices").disabled && document.querySelector("#device-status").textContent.includes("disconnected"), "Stale selected device did not return to setup");
     check(calls.filter(call => call.command === "init_daemon").length === 1 && !calls.some(call => call.command === "run_scan"), "Failed/duplicate connect started a scan or silently chose another device");
+    check(!document.querySelector("#toast-container").textContent.includes("fixture startup details"), "Startup diagnostics filled the toast");
+    check(document.querySelector("#terminal-log").textContent.includes("fixture startup details <stderr>") && !document.querySelector("#terminal-log stderr"), "Startup diagnostics were lost or treated as markup");
     check(picker().value === "phone-two" && document.querySelector("#btn-connect").disabled, "Failed startup replaced selected serial");
     listedDevices = readyDevices;
     await refreshDevices();

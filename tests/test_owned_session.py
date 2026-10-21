@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import shutil
 import socket
 import stat
 import subprocess
@@ -30,7 +31,7 @@ class OwnedSessionTests(DaemonHarness):
                 child.wait()
             child.stderr.close()
 
-    def launch(self, name, read_only=False, prepare=None, closed_input=False):
+    def launch(self, name, read_only=False, prepare=None, closed_input=False, binary=None):
         directory = Path(self.files.name) / name
         directory.mkdir(mode=0o700)
         token = secrets.token_hex(32)
@@ -40,7 +41,7 @@ class OwnedSessionTests(DaemonHarness):
         ready = directory / "ready"
         if prepare:
             prepare(ready)
-        args = [self.binary, "0", str(token_file), "--session-ready", str(ready)]
+        args = [binary or self.binary, "0", str(token_file), "--session-ready", str(ready)]
         if read_only:
             args.append("--read-only")
         child = subprocess.Popen(args, stdin=subprocess.DEVNULL if closed_input else subprocess.PIPE,
@@ -115,6 +116,27 @@ class OwnedSessionTests(DaemonHarness):
                 self.assertEqual((ready.parent / "keep").read_text(), "keep")
                 path = Path(str(ready) + ".tmp") if kind.startswith("temporary") else ready
                 self.assertEqual(path.read_text(), "keep")
+
+    def test_readiness_does_not_require_hard_link_permission(self):
+        # Stock Android shell policy allows file creation/rename, not hard links.
+        # Override link in this host-only executable to reproduce that denial.
+        stub = Path(self.files.name) / "deny_link.cpp"
+        stub.write_text('#include <cerrno>\n#include <cstdio>\n'
+                        'extern "C" int link(const char*, const char*) {\n'
+                        '  std::fputs("[fixture] hard links denied\\n", stderr);\n'
+                        '  errno = EPERM; return -1;\n}\n')
+        binary = str(Path(self.files.name) / "daemon-no-hardlinks")
+        compiler = os.environ.get("CXX") or shutil.which("clang++") or "c++"
+        source = Path(__file__).resolve().parents[1] / "engine/daemon.cpp"
+        subprocess.run([compiler, "-std=c++17", "-O2", "-pthread", "-Wall", "-Wextra",
+                        "-Wpedantic", "-fno-exceptions", "-fno-rtti", str(source), str(stub),
+                        "-o", binary], check=True)
+        child, ready, token = self.launch("no-hardlinks", binary=binary)
+        port = self.wait_ready(child, ready)
+        self.assertEqual(self.command(port, token)["status"], "ok")
+        child.stdin.close()
+        child.stdin = None
+        self.assertEqual(child.wait(timeout=1), 0)
 
     def test_missing_owner_input_exits_without_a_detached_process(self):
         child, _, _ = self.launch("already-closed", closed_input=True)

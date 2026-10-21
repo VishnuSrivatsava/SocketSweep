@@ -21,7 +21,13 @@ nor a public scan generation is used as a device-path identifier.
 
 The daemon binds loopback port **0**, letting the device kernel allocate a free
 port. It atomically publishes a complete 0600 `ready` record containing its port
-and PID, without replacing an existing file or symlink. The host then asks ADB
+and PID, without replacing an existing file or symlink. Publication uses atomic
+no-overwrite rename (`renameat2` with `RENAME_NOREPLACE` on Android/Linux,
+`renamex_np` with `RENAME_EXCL` in macOS host tests). It does not require hard
+links: [Android shell policy](https://android.googlesource.com/platform/system/sepolicy/+/refs/heads/main/private/shell.te)
+grants creation and rename of shell data files, while the
+[creation permission set](https://android.googlesource.com/platform/system/sepolicy/+/refs/heads/main/public/global_macros)
+does not include hard linking. The host then asks ADB
 for `forward --no-rebind tcp:0 tcp:<device-port>` and records the returned host
 port. All subsequent device commands use the selected `-s <serial>` explicitly.
 Setup offers [explicit device selection](device-selection.md). Startup checks
@@ -71,6 +77,13 @@ deadline. Small command reads/writes use an absolute deadline and the existing
 128 KiB response limit. ADB stdout/stderr each have a 256 KiB limit and share
 their command deadline, including inherited pipes after child exit. Token stdin
 is bounded to 128 bytes (the actual token line is 65 bytes).
+
+Early daemon exit reports its exit status and a bounded 2 KiB prefix of startup
+stderr in the diagnostic log. Remaining stderr is drained without retaining it,
+so verbose output cannot block the lifetime child. Waiting for the prefix after
+exit uses at most 250 ms within the startup deadline. The connection toast uses
+only the first summary line; raw diagnostics do not fill it. Readiness creation,
+write, close and publication failures identify their stage on stderr.
 
 | Failure | Ownership-safe result |
 | --- | --- |
@@ -122,3 +135,9 @@ acknowledgement. On an already-root-capable device, also validate approved-su
 startup and read-only controls. Do not restart adbd or the shared ADB server as
 part of an isolation test. Record actual device results separately from the
 host fixtures.
+
+The host readiness regression also links a test executable whose `link()` always
+fails with `EPERM`. The former publication failed before readiness in that
+fixture; atomic rename succeeds, while existing-file/symlink rejection and
+owner-EOF tests remain enforced. This models the missing permission, not a full
+Android SELinux environment. Physical-device confirmation remains required.
