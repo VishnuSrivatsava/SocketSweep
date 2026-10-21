@@ -3,7 +3,7 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { Treemap, ResponsiveContainer, Tooltip as RechartsTooltip } from "recharts";
 import type { TreemapNode } from "recharts";
 import { formatBytes } from "./formatBytes";
-import { sameScan } from "./scanView";
+import { sameScan, viewKey } from "./scanView";
 import type { ScanNode, ScanResponse, NodeDetail, DeleteResult } from "./scanView";
 import { useScanView } from "./useScanView";
 import { LargestFiles } from "./LargestFiles";
@@ -310,7 +310,18 @@ function QueryError({ error, retry }: { error: string; retry: () => void }) {
   </div>;
 }
 
-function FileTreeNode({ node, scope, parentSize, depth, onNuke, onZoom, expanded, toggle, busy, rootView }: {
+function LoadingEntries() {
+  const [visible, setVisible] = useState(false);
+  // Delay only the status, never the query or its result. Each pending mount
+  // owns its timer; completion, collapse and scope changes cancel it.
+  useEffect(() => {
+    const timer = setTimeout(() => setVisible(true), 150);
+    return () => clearTimeout(timer);
+  }, []);
+  return visible ? <p role="status" className="px-4 py-2 text-xs text-zinc-500">Loading entries…</p> : null;
+}
+
+export function FileTreeNode({ node, scope, parentSize, depth, onNuke, onZoom, expanded, toggle, busy, rootView }: {
   node: ScanNode;
   scope: ScanResponse;
   parentSize: number;
@@ -327,6 +338,7 @@ function FileTreeNode({ node, scope, parentSize, depth, onNuke, onZoom, expanded
   const query = useScanView(scope, node.id, depth > 0 && isDir && open && node.child_count > 0);
   const view = rootView ?? query;
   const page = view.page;
+  const loading = open && node.child_count > 0 && !page && !view.error;
   const ratio = parentSize > 0 ? node.size / parentSize : 0;
   const label = <>
           <span className="w-4 flex-shrink-0 flex items-center justify-center">
@@ -340,7 +352,7 @@ function FileTreeNode({ node, scope, parentSize, depth, onNuke, onZoom, expanded
       <div className="file-row flex items-center gap-2 px-3 py-1.5 rounded-md group select-none"
         style={{ paddingLeft: `${12 + depth * 16}px` }}>
         {isDir ? <button className="flex items-center gap-2 min-w-0 flex-1 text-left" disabled={busy}
-          aria-expanded={open} onClick={() => toggle(node.id)}>{label}</button>
+          aria-expanded={open} aria-busy={loading} onClick={() => toggle(node.id)}>{label}</button>
           : <span className="flex items-center gap-2 min-w-0 flex-1 text-left">{label}</span>}
         {isDir && <button disabled={busy} onClick={() => onZoom(node.id)}
           className="opacity-0 group-hover:opacity-100 focus:opacity-100 mr-2 px-2 py-1 rounded text-[10px] uppercase font-bold bg-accent-500/10 text-accent-400 border border-accent-500/20">Zoom</button>}
@@ -353,7 +365,7 @@ function FileTreeNode({ node, scope, parentSize, depth, onNuke, onZoom, expanded
         </button>}
       </div>
       {isDir && open && node.child_count > 0 && <div>
-        {!page && !view.error && <p role="status" className="px-4 py-2 text-xs text-zinc-500">Loading entries…</p>}
+        {loading && <LoadingEntries key={viewKey(scope, node.id, null)} />}
         {view.error && <QueryError error={view.error} retry={view.retry} />}
         {page?.children.map(child => <FileTreeNode key={child.id} node={child} scope={scope} parentSize={node.size}
           depth={depth + 1} onNuke={onNuke} onZoom={onZoom} expanded={expanded} toggle={toggle} busy={busy} />)}
