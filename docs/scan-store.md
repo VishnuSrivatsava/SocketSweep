@@ -74,6 +74,11 @@ deletion, revision refresh, partial-error recovery and read-only controls. It
 never launches Tauri or contacts ADB. Linux CI runs it after the desktop build;
 all three desktop targets run Rust and Node tests.
 
+The UI harness logs its selected browser/version. Missing-report failures include
+the expected fixture, browser exit status, elapsed time, first/latest HTTP
+requests and a bounded browser-log tail. An exited browser fails promptly;
+the existing 40-second report deadline and fixture assertions remain in force.
+
 Rust fixtures compare ordering, paths, parents and totals against the previous
 recursive representation, including repeated file/directory deletions,
 placeholders, a 64-level path, stale references and concurrent reads. Host daemon
