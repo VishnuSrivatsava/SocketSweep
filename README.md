@@ -257,6 +257,10 @@ and does not keep directory descriptors open. Root and `--read-only` scans
 remain serial, retaining their exclusions and scan-wide inode deduplication.
 The authenticated protocol and deletion checks apply to every worker setting.
 
+For a controlled phone experiment across 1, 2, 4 and 8 workers, see
+[the verified scan benchmark](docs/scan-benchmark.md). It checks matching trees
+and reports scan/stream medians without changing the app's default.
+
 The app uses scan stream v1 (advertised alongside protocol v3): bounded JSON
 frames arrive during traversal, with partial counts/recent entries and a cancel
 button. Successful results require verified totals, a terminal completion frame

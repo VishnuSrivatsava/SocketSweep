@@ -16,7 +16,7 @@ import time
 
 config = json.loads(Path(sys.argv[1]).read_text())
 args = sys.argv[2:]
-if args != ["devices", "-l"]:
+if args not in (["devices", "-l"], ["version"]):
     assert args[:2] == ["-s", config["serial"]], args
     args = args[2:]
 base = Path(config["base"])
@@ -35,7 +35,9 @@ def mapped(command):
     return command.replace("/data/local/tmp/", str(Path(config["phone"])) + "/")
 
 
-if args == ["devices", "-l"]:
+if args == ["version"]:
+    print("Android Debug Bridge version 1.0.41\nVersion host-fixture")
+elif args == ["devices", "-l"]:
     discovery = base / "devices.txt"
     print(discovery.read_text() if discovery.exists() else
           f'List of devices attached\n{config["serial"]}\tdevice model:Fixture\n')
@@ -50,7 +52,11 @@ elif args[0] == "shell":
     elevated = command.startswith("su -c ")
     if elevated:
         command = shlex.split(command)[2]
-    if command == "id -u":
+    if command == "getprop ro.product.model":
+        print("Host fixture")
+    elif command == "getprop ro.build.version.sdk":
+        print("fixture")
+    elif command == "id -u":
         print("0" if elevated and failure != "root" else "2000")
     elif args[1] == "-T":
         fail("launch")

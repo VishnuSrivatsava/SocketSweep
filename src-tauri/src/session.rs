@@ -135,8 +135,31 @@ impl Session {
         serial: String,
         root_mode: bool,
     ) -> Result<(Self, String), String> {
+        Self::start_configured(adb, daemon, serial, root_mode, None)
+    }
+
+    #[cfg(test)]
+    pub fn start_benchmark(
+        adb: PathBuf,
+        daemon: &Path,
+        serial: String,
+        workers: u8,
+    ) -> Result<(Self, String), String> {
+        if !(1..=8).contains(&workers) {
+            return Err("Benchmark workers must be between 1 and 8".into());
+        }
+        Self::start_configured(adb, daemon, serial, false, Some(workers))
+    }
+
+    fn start_configured(
+        adb: PathBuf,
+        daemon: &Path,
+        serial: String,
+        root_mode: bool,
+        workers: Option<u8>,
+    ) -> Result<(Self, String), String> {
         let mut session = Self::new(adb, serial)?;
-        let result = session.start_inner(daemon, root_mode);
+        let result = session.start_inner(daemon, root_mode, workers);
         match result {
             Ok(response) => Ok((session, response)),
             Err(error) => {
@@ -153,7 +176,12 @@ impl Session {
         }
     }
 
-    fn start_inner(&mut self, daemon: &Path, root_mode: bool) -> Result<String, String> {
+    fn start_inner(
+        &mut self,
+        daemon: &Path,
+        root_mode: bool,
+        workers: Option<u8>,
+    ) -> Result<String, String> {
         let deadline = Instant::now() + START_TIMEOUT;
         if !supports_shell_v2(&self.adb(&["features"], None, deadline)?) {
             return Err("The connected device must support ADB shell v2 for owned sessions".into());
@@ -194,9 +222,12 @@ impl Session {
         )?;
         let ready_path = format!("{}/ready", self.directory);
         let mode = if root_mode { " --read-only" } else { "" };
+        let worker_args = workers
+            .map(|count| format!(" --threads {count}"))
+            .unwrap_or_default();
         let launch = device_shell_command(
             self.privilege,
-            &format!("exec '{executable}' 0 '{token_path}' --session-ready '{ready_path}'{mode}"),
+            &format!("exec '{executable}' 0 '{token_path}' --session-ready '{ready_path}'{mode}{worker_args}"),
         );
         // Raw shell protocol forwards stdin EOF. No nohup, PTY, token argv,
         // inherited terminal input, or unbounded captured daemon diagnostics.
@@ -351,6 +382,16 @@ fn owned_forwards(list: &str, serial: &str, local: u16, remote: u16) -> Vec<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn benchmark_rejects_invalid_worker_counts_before_launch() {
+        for workers in [0, 9, u8::MAX] {
+            let error = Session::start_benchmark(
+                PathBuf::from("missing-adb"), Path::new("missing-daemon"), "fixture".into(), workers,
+            ).err().unwrap();
+            assert!(error.contains("between 1 and 8"), "{error}");
+        }
+    }
 
     #[test]
     fn shell_v2_requires_an_exact_feature_line() {
@@ -531,6 +572,49 @@ mod tests {
             assert_eq!(device.rows().len(), 1);
             let calls = fs::read_to_string(adb.parent().unwrap().join("calls.jsonl")).unwrap();
             assert!(calls.contains("[\"devices\", \"-l\"]"));
+        }
+
+        #[test]
+        fn benchmark_uses_real_streams_requested_workers_and_owned_cleanup() {
+            // A UID-0 host deliberately forces the daemon into serial mode.
+            if Command::new("id").arg("-u").output().unwrap().stdout == b"0\n" {
+                return;
+            }
+            let device = Device::new();
+            let adb = device.client("benchmark", "benchmark-device");
+            let storage = device.root.join("storage");
+            fs::create_dir(&storage).unwrap();
+            fs::write(storage.join("exact ü name"), b"fixture").unwrap();
+            let output = device.root.join("results");
+            fs::create_dir(&output).unwrap();
+            let result = crate::scan_benchmark::run(
+                adb.clone(), daemon().into(), "benchmark-device".into(), storage.to_str().unwrap(),
+                &output, &crate::scan_benchmark::Cancellation::default(),
+            ).unwrap();
+            assert_eq!(result["verified"], true);
+            assert_eq!(result["runs"].as_array().unwrap().len(), 24);
+            for (index, workers) in [1, 2, 4, 8].into_iter().enumerate() {
+                assert_eq!(result["medians"][index]["workers"], workers);
+                assert_eq!(result["medians"][index]["samples"], 5);
+            }
+            let encoded = serde_json::to_string(&result).unwrap();
+            assert!(!encoded.contains("benchmark-device"));
+            assert!(!encoded.contains("exact ü name"));
+            assert_eq!(device.directories(), 0);
+            assert_eq!(device.rows().len(), 1); // only the unrelated mapping
+            assert_eq!(
+                fs::read_to_string(output.join("trials.jsonl")).unwrap().lines().count(), 24,
+            );
+            let failure_output = device.root.join("failed-results");
+            fs::create_dir(&failure_output).unwrap();
+            let missing = storage.join("missing");
+            assert!(crate::scan_benchmark::run(
+                adb, daemon().into(), "benchmark-device".into(), missing.to_str().unwrap(),
+                &failure_output, &crate::scan_benchmark::Cancellation::default(),
+            ).is_err());
+            assert_eq!(device.directories(), 0);
+            assert_eq!(device.rows().len(), 1);
+            assert!(!failure_output.join("measurements.json").exists());
         }
 
         #[test]
