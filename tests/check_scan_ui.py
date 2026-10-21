@@ -122,7 +122,7 @@ def main():
             import { build } from 'vite';
             await build({ logLevel: 'error', build: {
                 outDir: process.argv[1], emptyOutDir: false,
-                rollupOptions: { input: ['tests/toast_lifecycle_fixture.html', 'tests/log_history_fixture.html'] },
+                rollupOptions: { input: ['tests/toast_lifecycle_fixture.html', 'tests/log_history_fixture.html', 'tests/folder_expansion_fixture.html'] },
             }});
         ''', str(work / 'site')], cwd=REPO, check=True, timeout=60)
         # A separate development-React bundle verifies StrictMode's double effect;
@@ -148,7 +148,7 @@ def main():
                     f'--user-data-dir={work / "profile"}', f'http://127.0.0.1:{server.server_port}/tests/device_discovery_fixture.html'],
                     stdout=log, stderr=log, start_new_session=True)
                 try:
-                    for expected in ('device-discovery', 'scan-ui', 'toast-lifecycle', 'log-history'):
+                    for expected in ('device-discovery', 'folder-expansion', 'scan-ui', 'toast-lifecycle', 'log-history'):
                         value = wait_for_report(reports, process, expected)
                         print(json.dumps(value, indent=2), flush=True)
                         if value.get('fixture') != expected or not value['passed']:

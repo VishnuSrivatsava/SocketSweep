@@ -29,7 +29,7 @@ const root = createRoot(document.getElementById("root"));
 const report = async (passed, error) => {
   await fetch("/report", { method: "POST", body: JSON.stringify({ fixture: "device-discovery", passed, error, effects, calls,
     checks: passed ? ["development StrictMode replay", "coalesced pending discovery", "refresh after success/error", "unmount invalidation"] : undefined }) });
-  if (passed) location.replace("/");
+  if (passed) location.replace("/tests/folder_expansion_fixture.html");
 };
 void (async () => {
   root.render(<StrictMode><Probe /></StrictMode>);
