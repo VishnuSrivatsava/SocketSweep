@@ -15,6 +15,56 @@ const CHART_SIZE: usize = 64;
 const MAX_QUERY_BYTES: usize = 1024 * 1024;
 type Key = (Reverse<u64>, Arc<str>, u32);
 
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum FileType {
+    Images,
+    Videos,
+    Audio,
+    Documents,
+    Archives,
+    AndroidPackages,
+    NoExtension,
+    Other,
+}
+impl FileType {
+    const ALL: [Self; 8] = [
+        Self::Images,
+        Self::Videos,
+        Self::Audio,
+        Self::Documents,
+        Self::Archives,
+        Self::AndroidPackages,
+        Self::NoExtension,
+        Self::Other,
+    ];
+
+    // Filename metadata only: preserve whitespace, inspect the final suffix,
+    // and treat a single leading dot or trailing dot as no extension.
+    fn of(name: &str) -> Self {
+        let Some((stem, suffix)) = name.rsplit_once('.') else {
+            return Self::NoExtension;
+        };
+        if stem.is_empty() || suffix.is_empty() {
+            return Self::NoExtension;
+        }
+        match suffix.to_ascii_lowercase().as_str() {
+            "jpg" | "jpeg" | "png" | "gif" | "webp" | "heic" | "heif" | "avif" | "bmp" | "tif"
+            | "tiff" | "svg" | "ico" | "dng" => Self::Images,
+            "mp4" | "m4v" | "mkv" | "webm" | "avi" | "mov" | "3gp" | "3g2" | "mpeg" | "mpg"
+            | "wmv" | "flv" => Self::Videos,
+            "mp3" | "m4a" | "aac" | "flac" | "ogg" | "opus" | "wav" | "wma" | "amr" | "mid"
+            | "midi" | "aiff" | "ape" | "oga" => Self::Audio,
+            "pdf" | "txt" | "md" | "rtf" | "doc" | "docx" | "odt" | "xls" | "xlsx" | "ods"
+            | "csv" | "ppt" | "pptx" | "odp" | "epub" | "mobi" => Self::Documents,
+            "zip" | "7z" | "rar" | "tar" | "gz" | "bz2" | "xz" | "zst" | "tgz" | "tbz" | "tbz2"
+            | "txz" => Self::Archives,
+            "apk" | "apks" | "xapk" | "aab" => Self::AndroidPackages,
+            _ => Self::Other,
+        }
+    }
+}
+
 pub struct Catalog {
     generation: String,
     revision: u32,
@@ -328,23 +378,13 @@ impl Catalog {
             ));
         }
         let mut best = BinaryHeap::<Key>::with_capacity(limit);
-        let mut pending = vec![self.children[0].iter()];
-        while let Some(children) = pending.last_mut() {
-            if let Some(key) = children.next() {
-                let node = &self.response.nodes[key.2 as usize];
-                if node.kind == Kind::Directory {
-                    pending.push(self.children[key.2 as usize].iter());
-                } else if node.kind == Kind::File && node.counted {
-                    if best.len() < limit {
-                        best.push(key.clone());
-                    } else if key < best.peek().unwrap() {
-                        *best.peek_mut().unwrap() = key.clone();
-                    }
-                }
-            } else {
-                pending.pop();
+        self.visit_files(|key, _| {
+            if best.len() < limit {
+                best.push(key.clone());
+            } else if key < best.peek().unwrap() {
+                *best.peek_mut().unwrap() = key.clone();
             }
-        }
+        });
         #[derive(Serialize)]
         struct File<'a> {
             node: NodeSummary<'a>,
@@ -375,6 +415,64 @@ impl Catalog {
         })
         .map_err(|error| format!("{error}. Try a smaller file limit."))
     }
+    // Traverse the live index, so removed directories' descendants are absent.
+    // Both analyses use O(depth) traversal state rather than copying the tree.
+    fn visit_files(&self, mut visit: impl FnMut(&Key, &Node)) {
+        let mut pending = vec![self.children[0].iter()];
+        while let Some(children) = pending.last_mut() {
+            if let Some(key) = children.next() {
+                let node = &self.response.nodes[key.2 as usize];
+                if node.kind == Kind::Directory {
+                    pending.push(self.children[key.2 as usize].iter());
+                } else if node.kind == Kind::File && node.counted {
+                    visit(key, node);
+                }
+            } else {
+                pending.pop();
+            }
+        }
+    }
+
+    pub fn file_types_json(&self, generation: &str, revision: u32) -> Result<String, String> {
+        self.scope(generation, revision)?;
+        #[derive(Serialize)]
+        struct Category {
+            kind: FileType,
+            files: u64,
+            size: u64,
+        }
+        let mut categories = FileType::ALL.map(|kind| Category {
+            kind,
+            files: 0,
+            size: 0,
+        });
+        self.visit_files(|_, node| {
+            let category = &mut categories[FileType::of(&node.name) as usize];
+            category.files += 1;
+            category.size += node.size;
+        });
+        if categories.iter().map(|c| c.files).sum::<u64>() != self.response.total_files
+            || categories.iter().map(|c| c.size).sum::<u64>() != self.response.total_size
+        {
+            return Err("File-type totals do not match this scan; rescan required".into());
+        }
+        #[derive(Serialize)]
+        struct Breakdown<'a> {
+            generation: &'a str,
+            revision: u32,
+            total_files: u64,
+            total_size: u64,
+            categories: [Category; 8],
+        }
+        json(&Breakdown {
+            generation: &self.generation,
+            revision: self.revision,
+            total_files: self.response.total_files,
+            total_size: self.response.total_size,
+            categories,
+        })
+    }
+
     pub fn detail_json(&self, generation: &str, revision: u32, id: u32) -> Result<String, String> {
         self.scope(generation, revision)?;
         self.node(id)?;
@@ -582,6 +680,149 @@ mod tests {
     }
     fn success() -> Result<String, String> {
         Ok(r#"{"status":"ok","message":"Deleted fixture entry"}"#.into())
+    }
+
+    #[test]
+    fn file_type_rules_preserve_filename_boundaries() {
+        for (name, expected) in [
+            ("photo.JPG", "images"),
+            ("影像.heIC", "images"),
+            ("movie.MP4", "videos"),
+            ("song.FLAC", "audio"),
+            ("report.PdF", "documents"),
+            ("backup.tar.gz", "archives"),
+            ("app.XAPK", "android_packages"),
+            ("README", "no_extension"),
+            (".nomedia", "no_extension"),
+            (".apk", "no_extension"),
+            ("trailing.", "no_extension"),
+            (".config.JPG", "images"),
+            ("photo.jpg ", "other"),
+            ("name.İMG", "other"),
+            ("script.ts", "other"),
+            ("image.jpg.exe", "other"),
+        ] {
+            assert_eq!(
+                serde_json::to_value(FileType::of(name)).unwrap(),
+                expected,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn file_types_reconcile_counting_modes_zero_bytes_and_placeholders() {
+        let entries = vec![
+            root(),
+            entry(1, Some(0), "folder.pdf", "directory", 0, true),
+            entry(2, Some(1), "photo.JPG", "file", 5, true),
+            entry(3, Some(1), "song.FLAC", "file", 0, true),
+            entry(4, Some(0), ".nomedia", "file", 7, true),
+            entry(5, Some(0), "unknown.abc", "file", 0, true),
+            entry(6, Some(0), "uncounted.jpg", "file", 0, false),
+            entry(7, Some(0), "special.zip", "other", 0, false),
+            entry(8, Some(1), "movie.mp4", "file", 1, true),
+            entry(9, Some(1), "notes.pdf", "file", 2, true),
+            entry(10, Some(1), "backup.tar.gz", "file", 3, true),
+            entry(11, Some(1), "app.APK", "file", 4, true),
+        ];
+        for read_only in [false, true] {
+            let store = Catalog::new(fixture(&entries, read_only), "generation-a".into());
+            let result = value(store.file_types_json("generation-a", 0));
+            assert_eq!(result["total_files"], 8);
+            assert_eq!(result["total_size"], 22);
+            let categories = result["categories"].as_array().unwrap();
+            assert_eq!(categories.len(), 8);
+            for (kind, files, size) in [
+                ("images", 1, 5),
+                ("audio", 1, 0),
+                ("videos", 1, 1),
+                ("documents", 1, 2),
+                ("archives", 1, 3),
+                ("android_packages", 1, 4),
+                ("no_extension", 1, 7),
+                ("other", 1, 0),
+            ] {
+                let category = categories.iter().find(|c| c["kind"] == kind).unwrap();
+                assert_eq!(category["files"], files);
+                assert_eq!(category["size"], size);
+            }
+            assert_eq!(
+                categories
+                    .iter()
+                    .map(|c| c["files"].as_u64().unwrap())
+                    .sum::<u64>(),
+                8
+            );
+            assert_eq!(
+                categories
+                    .iter()
+                    .map(|c| c["size"].as_u64().unwrap())
+                    .sum::<u64>(),
+                22
+            );
+            assert!(!result.to_string().contains("photo.JPG"));
+        }
+        let empty = Catalog::new(fixture(&[root()], false), "generation-a".into());
+        let result = value(empty.file_types_json("generation-a", 0));
+        assert!(result["categories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c["files"] == 0 && c["size"] == 0));
+        let mut inconsistent = fixture(&entries, false);
+        inconsistent.total_size += 1;
+        assert!(Catalog::new(inconsistent, "generation-a".into())
+            .file_types_json("generation-a", 0)
+            .is_err());
+    }
+
+    #[test]
+    fn file_types_follow_deleted_subtrees_and_reject_stale_scopes() {
+        let entries = vec![
+            root(),
+            entry(1, Some(0), "folder", "directory", 0, true),
+            entry(2, Some(1), "large.jpg", "file", 99, true),
+            entry(3, Some(0), "small.apk", "file", 1, true),
+        ];
+        let mut store = Some(Catalog::new(
+            fixture(&entries, false),
+            "generation-a".into(),
+        ));
+        assert!(store.as_ref().unwrap().file_types_json("old", 0).is_err());
+        let plan = store
+            .as_ref()
+            .unwrap()
+            .prepare_delete("generation-a", 0, 1)
+            .unwrap();
+        finish_delete(&mut store, &plan, success()).unwrap();
+        let current = store.as_ref().unwrap();
+        assert!(current.file_types_json("generation-a", 0).is_err());
+        let result = value(current.file_types_json("generation-a", 1));
+        assert_eq!(result["total_files"], 1);
+        assert_eq!(result["total_size"], 1);
+        assert_eq!(result["categories"][0]["files"], 0);
+        assert_eq!(result["categories"][5]["files"], 1);
+        let plan = current.prepare_delete("generation-a", 1, 3).unwrap();
+        finish_delete(&mut store, &plan, success()).unwrap();
+        let result = value(store.as_ref().unwrap().file_types_json("generation-a", 2));
+        assert_eq!(result["total_files"], 0);
+        assert_eq!(result["total_size"], 0);
+    }
+
+    #[test]
+    fn file_types_response_is_bounded_independent_of_extension_cardinality() {
+        let mut entries = vec![root()];
+        for id in 1..=20_000 {
+            entries.push(entry(id, Some(0), &format!("file.{id}"), "file", 1, true));
+        }
+        let store = Catalog::new(fixture(&entries, false), "generation-a".into());
+        let output = store.file_types_json("generation-a", 0).unwrap();
+        assert!(output.len() < 1024);
+        let result = value(Ok(output));
+        assert_eq!(result["categories"].as_array().unwrap().len(), 8);
+        assert_eq!(result["categories"][7]["files"], 20_000);
+        assert_eq!(result["categories"][7]["size"], 20_000);
     }
 
     #[test]
@@ -1151,10 +1392,14 @@ mod tests {
     #[test]
     fn stop_releases_local_authority_on_success_and_unconfirmed_failures() {
         let _operation = crate::DAEMON_OPERATION.lock().unwrap();
-        for outcome in [Ok(r#"{"status":"ok","message":"shutting down"}"#.into()),
-            Err("Phone disconnected".into()), Err("Bundled ADB unavailable".into())] {
+        for outcome in [
+            Ok(r#"{"status":"ok","message":"shutting down"}"#.into()),
+            Err("Phone disconnected".into()),
+            Err("Bundled ADB unavailable".into()),
+        ] {
             let expected = outcome.clone();
-            *crate::SCAN_STORE.lock().unwrap() = Some(Catalog::new(fixture(&wide(2), true), "generation-a".into()));
+            *crate::SCAN_STORE.lock().unwrap() =
+                Some(Catalog::new(fixture(&wide(2), true), "generation-a".into()));
             *crate::SESSION.lock().unwrap() = Some(crate::session::Session::test_session());
             assert!(crate::active_connection().unwrap().read_only);
             assert_eq!(crate::finish_stop(outcome), expected);

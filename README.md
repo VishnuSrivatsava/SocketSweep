@@ -99,6 +99,9 @@ Go to **Settings → About Phone → tap "Build Number" 7 times** to unlock Deve
 
 That's it. No apps to install on your phone, no Wi-Fi setup, no root required.
 
+In development builds, **File types** shows counts and bytes by filename extension
+from the completed scan. See [classification rules and coverage](docs/file-types.md).
+
 In a source build, choose the device in setup before connecting when multiple
 devices are ready. Refresh after plugging in or authorizing a phone. A selected
 device that disappears stays selected and blocks connection; another phone is

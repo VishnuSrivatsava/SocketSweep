@@ -9,6 +9,7 @@ import { useScanView } from "./useScanView";
 import { FileTreeNode, QueryError } from "./FileTree";
 import { IconNuke } from "./Icons";
 import { LargestFiles } from "./LargestFiles";
+import { FileTypes } from "./FileTypes";
 import { ToastContainer } from "./ToastContainer";
 import type { Toast } from "./ToastContainer";
 import { TerminalLog } from "./TerminalLog";
@@ -318,7 +319,7 @@ function ResultScreen({
 }) {
   const [zoomId, setZoomId] = useState(data.root.id);
   const [expanded, setExpanded] = useState(() => new Set([data.root.id]));
-  const [mode, setMode] = useState<"map" | "largest">("map");
+  const [mode, setMode] = useState<"map" | "largest" | "types">("map");
   const view = useScanView(data, zoomId, mode === "map");
   const page = view.page;
   const onZoom = (id: number) => {
@@ -414,8 +415,10 @@ function ResultScreen({
           className={`px-3 py-2 rounded-lg text-xs ${mode === "map" ? "bg-zinc-700 text-white" : "bg-zinc-900 text-zinc-400"}`}>Storage map</button>
         <button aria-pressed={mode === "largest"} disabled={busy} onClick={() => setMode("largest")}
           className={`px-3 py-2 rounded-lg text-xs ${mode === "largest" ? "bg-zinc-700 text-white" : "bg-zinc-900 text-zinc-400"}`}>Largest files</button>
+        <button aria-pressed={mode === "types"} disabled={busy} onClick={() => setMode("types")}
+          className={`px-3 py-2 rounded-lg text-xs ${mode === "types" ? "bg-zinc-700 text-white" : "bg-zinc-900 text-zinc-400"}`}>File types</button>
       </div>
-      {mode === "largest" ? <LargestFiles scope={data} busy={busy} onZoom={onZoom} onNuke={onNuke} /> : <>
+      {mode === "types" ? <FileTypes scope={data} busy={busy} /> : mode === "largest" ? <LargestFiles scope={data} busy={busy} onZoom={onZoom} onNuke={onNuke} /> : <>
       {/* Treemap */}
       <div className="px-6 mb-4 shrink-0 h-48">
         <div className="glass-card rounded-xl p-2 w-full h-full relative group">
