@@ -11,6 +11,13 @@
   let delayedDetail = true;
   let delayedLargest = true;
   let failLargest = false;
+  let holdTypes = false;
+  let resolveTypes;
+  let failTypes = false;
+  let invalidTypes = false;
+  let emptyScan = false;
+  let coverageErrors = 0;
+  let coverageSkipped = 0;
   let failDelete = false;
   let stopOutcome = "acknowledged";
   const readyDevices = [
@@ -35,15 +42,16 @@
   const reset = () => {
     folderChildren = Array.from({ length: 200 }, (_, i) => node(i + 1001, 1, `nested-${i}`, 1));
     rootChildren = [node(1, 0, "large-folder", 200, true), ...Array.from({ length: 270 }, (_, i) => node(i + 2, 0, ` file-${i} `, 1))];
+    if (emptyScan) { rootChildren = []; folderChildren = []; }
     unavailable = false;
     revision = 0;
   };
   reset();
   const scope = () => ({ generation: `fixture-${generation}`, revision });
   const summary = () => ({
-    ...scope(), status: "ok", root_path: "/fixture", root: { ...node(0, null, "fixture", 470 - (271 - rootChildren.length), true), child_count: rootChildren.length },
-    total_files: rootChildren.length - 1 + folderChildren.length, total_dirs: 2,
-    total_size: 470 - (271 - rootChildren.length), errors: 0, skipped: 0, scan_time_ms: 1, read_only: readOnly,
+    ...scope(), status: "ok", root_path: "/fixture", root: { ...node(0, null, "fixture", rootChildren.reduce((sum, item) => sum + item.size, 0), true), child_count: rootChildren.length },
+    total_files: rootChildren.filter(item => item.type === "file").length + folderChildren.length, total_dirs: 1 + rootChildren.filter(item => item.type === "directory").length,
+    total_size: rootChildren.reduce((sum, item) => sum + item.size, 0), errors: coverageErrors, skipped: coverageSkipped, scan_time_ms: 1, read_only: readOnly,
   });
   const detail = id => {
     const target = id === 0 ? summary().root : [...rootChildren, ...folderChildren].find(item => item.id === id);
@@ -97,6 +105,16 @@
       }
       check(!unavailable, "Snapshot unavailable");
       check(args.generation === scope().generation && args.revision === revision, "Stale mock snapshot");
+      if (command === "get_file_types") {
+        if (failTypes) { failTypes = false; throw "Fixture file-type query failure"; }
+        const stats = summary();
+        const data = { ...scope(), total_files: stats.total_files, total_size: stats.total_size,
+          categories: ["images", "videos", "audio", "documents", "archives", "android_packages", "no_extension", "other"].map(kind => ({ kind, files: kind === "no_extension" ? stats.total_files : 0, size: kind === "no_extension" ? stats.total_size : 0 })) };
+        if (invalidTypes) { invalidTypes = false; data.categories[0].files = 1; }
+        const raw = JSON.stringify(data);
+        if (holdTypes) { holdTypes = false; return new Promise(resolve => { resolveTypes = () => resolve(raw); }); }
+        return raw;
+      }
       if (command === "get_largest_files") {
         check(Number.isInteger(args.limit) && args.limit > 0 && args.limit <= 100, "Unbounded largest-files query");
         if (failLargest) { failLargest = false; throw "Mock largest-files failure"; }
@@ -140,7 +158,7 @@
   const report = (passed, error) => {
     const output = document.createElement("pre");
     output.id = "scan-test-report";
-    output.textContent = JSON.stringify({ fixture: "scan-ui", passed, error, ipc_calls: calls.length, checks: passed ? ["offline fonts under CSP", "bounded collapsed discovery diagnostics", "discovery retry recovery", "setup alignment", "result fonts", "file label semantics", "complete paging", "bounded largest files", "late largest response", "largest query retry", "largest ID-only deletion", "largest read-only guards", "largest folder navigation without rescanning", "late zoom", "Other tile", "stale confirmation", "ID-only deletion", "revision refresh", "partial failure", "read-only", "acknowledged shutdown", "unconfirmed shutdown", "reconnect", "stop action ordering", "toast dismissal integration", "bounded diagnostic integration"] : undefined });
+    output.textContent = JSON.stringify({ fixture: "scan-ui", passed, error, ipc_calls: calls.length, checks: passed ? ["offline fonts under CSP", "bounded collapsed discovery diagnostics", "discovery retry recovery", "setup alignment", "result fonts", "file label semantics", "complete paging", "bounded file-type totals", "file-type retry and malformed response", "file-type generation and deletion revision", "file-type coverage and empty scan", "bounded largest files", "late largest response", "largest query retry", "largest ID-only deletion", "largest read-only guards", "largest folder navigation without rescanning", "late zoom", "Other tile", "stale confirmation", "ID-only deletion", "revision refresh", "partial failure", "read-only", "acknowledged shutdown", "unconfirmed shutdown", "reconnect", "stop action ordering", "toast dismissal integration", "bounded diagnostic integration"] : undefined });
     document.body.append(output);
     void fetch("/report", { method: "POST", body: output.textContent }).then(() => {
       if (passed) location.replace("/tests/toast_lifecycle_fixture.html");
@@ -235,6 +253,43 @@
     check(document.body.textContent.includes("128 entries on this page of 271"), "Missing full entry count");
     check(!rows().find(item => item.textContent.includes("file-0")).querySelector("button:disabled"), "File label became an unavailable control");
     const scanCount = calls.filter(item => item.command === "run_scan").length;
+    const typesPanel = () => document.querySelector('section[aria-label="File types"]');
+    const typesReady = () => typesPanel()?.querySelector('table[aria-busy="false"]') && !typesPanel().querySelector('[role="alert"]');
+    const checkTypes = count => {
+      const panel = typesPanel();
+      check(panel.querySelectorAll(".file-type-row").length === 8, "File-type rows are unbounded");
+      check(panel.querySelector('[data-kind="no_extension"]').cells[1].textContent === String(count), "File-type count did not match scan");
+      check(panel.querySelector("tfoot").textContent.includes(String(count)), "File-type total missing");
+      check(document.documentElement.scrollWidth <= innerWidth, "File-type view overflows horizontally");
+      check(!panel.querySelector('button[aria-label^="Delete "]'), "File type became a deletion target");
+    };
+    holdTypes = true;
+    button("File types").click();
+    await waitFor(() => resolveTypes && typesPanel()?.querySelector('table[aria-busy="true"]'), "Pending file-type query missing");
+    const oldTypes = resolveTypes;
+    document.querySelector("#btn-rescan").click();
+    await waitFor(() => rows().length === 129, "Rescan during file-type query failed");
+    button("File types").click();
+    await waitFor(typesReady, "File-type summary missing after rescan");
+    oldTypes();
+    await pause(30);
+    checkTypes(470);
+    check(!typesPanel().querySelector('[role="alert"]'), "Late file-type response crossed generations");
+    const typeScanCount = calls.filter(item => item.command === "run_scan").length;
+    for (const invalid of [false, true]) {
+      button("Storage map").click();
+      await waitFor(() => rows().length === 129, "Map missing before file-type retry");
+      if (invalid) invalidTypes = true; else failTypes = true;
+      button("File types").click();
+      await waitFor(() => typesPanel()?.querySelector('[role="alert"]'), "Invalid file-type summary did not fail");
+      check(!typesPanel().textContent.includes("470 scanned files"), "File-type failure retained old totals");
+      button("Retry").click();
+      await waitFor(typesReady, "File-type retry failed");
+      checkTypes(470);
+    }
+    check(calls.filter(item => item.command === "run_scan").length === typeScanCount, "File-type browsing rescanned the phone");
+    button("Storage map").click();
+    await waitFor(() => rows().length === 129, "Map missing after file types");
     const largestRows = () => [...document.querySelectorAll(".largest-file-row")];
     button("Largest files").click();
     await waitFor(() => document.querySelector("#largest-limit"), "Largest-files controls missing");
@@ -260,7 +315,7 @@
     await waitFor(() => largestRows().length === 100, "Maximum largest-files page missing");
     button("Show folder").click();
     await waitFor(() => rows().length === 129, "Show folder did not restore map");
-    check(calls.filter(item => item.command === "run_scan").length === scanCount, "Largest-files browsing rescanned the phone");
+    check(calls.filter(item => item.command === "run_scan").length === scanCount + 1, "Largest-files browsing rescanned the phone");
     const firstNames = rows().map(item => item.textContent);
     button("Next").click();
     await waitFor(() => rows().some(item => item.textContent.includes("file-127")), "Next page missing");
@@ -308,6 +363,11 @@
     button("Largest files").click();
     await waitFor(() => largestRows().length === 25, "Largest files did not refresh after deletion");
     check(!largestRows().some(row => row.textContent.includes("/fixture/ file-0 ")), "Deleted largest file survived revision");
+    button("File types").click();
+    await waitFor(typesReady, "File types did not refresh after deletion");
+    checkTypes(469);
+    button("Largest files").click();
+    await waitFor(() => largestRows().length === 25, "Largest files missing after type refresh");
     const nested = largestRows().find(row => row.textContent.includes("/large-folder/"));
     if (nested) nested.querySelector("button").click(); else button("Storage map").click();
     await waitFor(() => rows().length > 0, "Map missing after largest-files navigation");
@@ -330,6 +390,8 @@
 
     failDelete = false;
     readOnly = true;
+    coverageErrors = 2;
+    coverageSkipped = 3;
     document.querySelector("#btn-connect").click();
     await waitFor(() => rows().length === 129, "Read-only page missing");
     check(document.body.textContent.includes("Deletion disabled"), "Read-only banner missing");
@@ -337,6 +399,10 @@
     button("Largest files").click();
     await waitFor(() => largestRows().length === 25, "Read-only largest files missing");
     check([...document.querySelectorAll('.largest-file-row button[aria-label^="Delete "]')].every(item => item.disabled), "Read-only largest deletion enabled");
+    button("File types").click();
+    await waitFor(typesReady, "Read-only file types missing");
+    checkTypes(470);
+    check(typesPanel().textContent.includes("2 access errors") && typesPanel().textContent.includes("3 excluded or duplicate entries") && typesPanel().textContent.includes("/fixture"), "File-type coverage context missing");
     button("Storage map").click();
     await waitFor(() => rows().length === 129, "Read-only map missing");
     const previousAcknowledgements = () => (document.body.textContent.match(/Daemon acknowledged shutdown\./g) ?? []).length;
@@ -364,6 +430,8 @@
     check(picker().value === "phone-two", "Stop forgot the selected phone");
     const previousGeneration = scope().generation;
     readOnly = false;
+    coverageErrors = 0;
+    coverageSkipped = 0;
     stopOutcome = "acknowledged";
     selectDevice("phone-one");
     await pause(20);
@@ -386,6 +454,13 @@
     check(toast, "No toast for dismissal integration");
     toast.click();
     await waitFor(() => !toast.isConnected, "App did not remove the dismissed toast");
+    emptyScan = true;
+    document.querySelector("#btn-rescan").click();
+    await waitFor(() => rows().length === 1, "Empty scan missing");
+    button("File types").click();
+    await waitFor(typesReady, "Empty file-type summary missing");
+    checkTypes(0);
+    check(typesPanel().textContent.includes("No counted files") && !typesPanel().textContent.includes("NaN") && !typesPanel().textContent.includes("Infinity"), "Empty file-type view is misleading");
     check(violations.length === 0, `CSP blocked resources: ${violations.join(", ")}`);
     const fonts = performance.getEntriesByType("resource").filter(entry => entry.name.includes(".woff2"));
     check(fonts.length === 13 && fonts.every(entry => new URL(entry.name).origin === location.origin), "Fonts are missing or fetched off-site");
