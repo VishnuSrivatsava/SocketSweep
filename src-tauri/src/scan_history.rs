@@ -14,7 +14,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// st_size bytes, symlink/`.`/`..` exclusion everywhere; root read-only adds
 /// serial traversal, inode deduplication, virtual-filesystem and root mount
 /// alias exclusions). Old entries stay unread comparisons, not false deltas.
-pub(crate) const COUNTING_SEMANTICS: u32 = 1;
+// v2 also requires a daemon-verified canonical root; logical-path baselines
+// from v1 cannot be reused even when their strings happen to match.
+pub(crate) const COUNTING_SEMANTICS: u32 = 2;
 const FORMAT_VERSION: u32 = 1;
 const MAX_PER_KEY: usize = 10;
 const MAX_ENTRIES: usize = 100;
@@ -31,6 +33,15 @@ const INVALID_PREFIX: &str = "scan-history.invalid-";
 // Serialize local callers too; the persistent OS lock below protects the
 // complete read/modify/replace transaction across app instances.
 static FILE_LOCK: Mutex<()> = Mutex::new(());
+
+// A concurrent process spawn may briefly inherit a duplicate descriptor before
+// exec closes it. Explicit unlock releases ownership even while a copy exists.
+struct HistoryLock(std::fs::File);
+impl Drop for HistoryLock {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
 
 #[derive(Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Hash, Debug)]
 #[serde(rename_all = "snake_case")]
@@ -73,7 +84,7 @@ pub(crate) struct HistoryEntry {
 }
 
 impl HistoryEntry {
-    pub(crate) fn new(
+    fn new(
         serial: &str,
         root: &str,
         read_only: bool,
@@ -314,6 +325,7 @@ pub(crate) fn record(directory: &Path, entry: HistoryEntry) -> Result<Recorded, 
         .map_err(|e| format!("Cannot open the history lock: {e}"))?;
     lock.try_lock()
         .map_err(|e| format!("History is busy or cannot be locked: {e}"))?;
+    let _lock = HistoryLock(lock);
     let mut entries = match load(&path)? {
         Loaded::Missing => Vec::new(),
         Loaded::Entries(entries) => entries,
@@ -404,7 +416,62 @@ pub(crate) fn record(directory: &Path, entry: HistoryEntry) -> Result<Recorded, 
     Ok(Recorded { previous })
 }
 
-pub(crate) fn completed_entry(serial: &str, catalog: &Catalog) -> Result<HistoryEntry, String> {
+/// Captured before catalog publication; verification can then perform network
+/// I/O without holding the catalog lock. Only verified roots produce entries.
+pub(crate) struct CompletedScan(HistoryEntry);
+
+impl CompletedScan {
+    pub(crate) fn verify_root(mut self, raw: &str) -> Result<HistoryEntry, String> {
+        #[derive(Deserialize)]
+        #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+        enum RootInfo {
+            Ok {
+                version: u32,
+                scan_root: String,
+                canonical_root: String,
+                read_only: bool,
+            },
+            Error {
+                message: String,
+            },
+        }
+        let info: RootInfo =
+            serde_json::from_str(raw).map_err(|_| "Invalid scan-root metadata".to_string())?;
+        let (version, scan_root, canonical_root, read_only) = match info {
+            RootInfo::Ok {
+                version,
+                scan_root,
+                canonical_root,
+                read_only,
+            } => (version, scan_root, canonical_root, read_only),
+            RootInfo::Error { message } => {
+                return Err(if message == "Unknown command" {
+                    "Daemon lacks SCAN_ROOT_INFO; rebuild it to enable scan history".into()
+                } else {
+                    format!("Canonical scan root unavailable: {message}")
+                })
+            }
+        };
+        let canonical = canonical_root == "/"
+            || (canonical_root.starts_with('/')
+                && canonical_root
+                    .split('/')
+                    .skip(1)
+                    .all(|part| !matches!(part, "" | "." | "..")));
+        if version != 1
+            || scan_root != self.0.key.root
+            || read_only != (self.0.key.access == AccessMode::RootReadOnly)
+            || !canonical
+        {
+            return Err("Scan-root metadata does not match this scan".into());
+        }
+        self.0.key.root = canonical_root;
+        self.0.validate()?;
+        Ok(self.0)
+    }
+}
+
+pub(crate) fn prepare_completion(serial: &str, catalog: &Catalog) -> Result<CompletedScan, String> {
     let (errors, skipped) = catalog.coverage();
     if errors != 0 {
         return Err("Scans with access errors are not recorded as history baselines".into());
@@ -424,7 +491,7 @@ pub(crate) fn completed_entry(serial: &str, catalog: &Catalog) -> Result<History
     )?;
     entry.skipped = skipped;
     entry.validate()?;
-    Ok(entry)
+    Ok(CompletedScan(entry))
 }
 
 // ── Current-scan comparison ──────────────────────────────────────────────────
@@ -567,7 +634,17 @@ mod tests {
         serde_json::from_slice(&directory.read()).unwrap()
     }
 
+    fn root_info(root: &str, canonical: &str, read_only: bool) -> String {
+        json!({"status":"ok", "version":1, "scan_root":root,
+            "canonical_root":canonical, "read_only":read_only})
+        .to_string()
+    }
+
     fn response(size: u64) -> Response {
+        response_at(size, "/fixture", false)
+    }
+
+    fn response_at(size: u64, root: &str, read_only: bool) -> Response {
         fn frame(kind: &str, data: Value) -> Vec<u8> {
             let data = serde_json::to_vec(&json!({"type":kind,"data":data})).unwrap();
             let mut bytes = (data.len() as u32).to_be_bytes().to_vec();
@@ -575,22 +652,22 @@ mod tests {
             bytes
         }
         let entries = vec![
-            json!({"id":0,"parent":null,"name":"fixture","kind":"directory","size":0,"counted":true}),
+            json!({"id":0,"parent":null,"name":root.rsplit('/').next().filter(|name| !name.is_empty()).unwrap_or("/"),"kind":"directory","size":0,"counted":true}),
             json!({"id":1,"parent":0,"name":"leaf","kind":"file","size":size,"counted":true}),
         ];
         let mut bytes = frame(
             "started",
-            json!({"stream_version":1,"root":"/fixture","read_only":false}),
+            json!({"stream_version":1,"root":root,"read_only":read_only}),
         );
         bytes.extend(frame("entries", json!({"entries":entries})));
         let count = bytes.len();
         bytes.extend(frame(
             "done",
             json!({"total_files":1,"total_dirs":1,"total_size":size,"errors":0,
-                "skipped":0,"scan_time_ms":1,"scan_threads":4,"serialize_ms":0,
+                "skipped":0,"scan_time_ms":1,"scan_threads":if read_only {1} else {4},"serialize_ms":0,
                 "send_ms":0,"bytes_sent":count}),
         ));
-        scan_stream::read(&mut Reader::new(bytes), false, |_| Ok(())).unwrap()
+        scan_stream::read(&mut Reader::new(bytes), read_only, |_| Ok(())).unwrap()
     }
 
     #[test]
@@ -922,19 +999,25 @@ mod tests {
         let catalog = Catalog::new(response(7), "coverage".into());
         record(
             directory.path(),
-            completed_entry("phone", &catalog).unwrap(),
+            prepare_completion("phone", &catalog)
+                .unwrap()
+                .verify_root(&root_info("/fixture", "/fixture", false))
+                .unwrap(),
         )
         .unwrap();
         let original = directory.read();
         let mut partial = response(3);
         partial.errors = 1;
         let partial = Catalog::new(partial, "partial".into());
-        assert!(completed_entry("phone", &partial).is_err());
+        assert!(prepare_completion("phone", &partial).is_err());
         assert_eq!(directory.read(), original);
         let mut excluded = response(3);
         excluded.skipped = 2;
         let excluded = Catalog::new(excluded, "excluded".into());
-        let changed = completed_entry("phone", &excluded).unwrap();
+        let changed = prepare_completion("phone", &excluded)
+            .unwrap()
+            .verify_root(&root_info("/fixture", "/fixture", false))
+            .unwrap();
         assert!(record(directory.path(), changed.clone())
             .unwrap()
             .previous
@@ -1059,5 +1142,125 @@ mod tests {
         let recorded = record(directory.path(), entry("phone", "/sdcard", false, 2, 2, 2)).unwrap();
         assert_eq!(recorded.previous.unwrap().total_files, 1);
         assert!(!temporary.exists());
+    }
+    #[test]
+    fn verified_canonical_roots_merge_aliases_but_separate_retargeting_and_legacy_keys() {
+        let directory = Directory::new("canonical");
+        let first = Catalog::new(response_at(7, "/alias-a", false), "first".into());
+        let baseline = prepare_completion("phone", &first)
+            .unwrap()
+            .verify_root(&root_info("/alias-a", "/physical/original", false))
+            .unwrap();
+        assert!(record(directory.path(), baseline)
+            .unwrap()
+            .previous
+            .is_none());
+        let second = Catalog::new(response_at(9, "/alias-b", false), "second".into());
+        let same = prepare_completion("phone", &second)
+            .unwrap()
+            .verify_root(&root_info("/alias-b", "/physical/original", false))
+            .unwrap();
+        assert_eq!(
+            record(directory.path(), same)
+                .unwrap()
+                .previous
+                .unwrap()
+                .total_size,
+            7
+        );
+        let retargeted = prepare_completion("phone", &first)
+            .unwrap()
+            .verify_root(&root_info("/alias-a", "/physical/replacement", false))
+            .unwrap();
+        assert!(record(directory.path(), retargeted)
+            .unwrap()
+            .previous
+            .is_none());
+        let mut legacy = entry("legacy-phone", "/physical/original", false, 1, 1, 1);
+        legacy.key.counting_semantics = 1;
+        record(directory.path(), legacy).unwrap();
+        let current = prepare_completion("legacy-phone", &first)
+            .unwrap()
+            .verify_root(&root_info("/alias-a", "/physical/original", false))
+            .unwrap();
+        assert!(record(directory.path(), current)
+            .unwrap()
+            .previous
+            .is_none());
+        let readonly = Catalog::new(response_at(7, "/physical/original", true), "root".into());
+        let root = prepare_completion("phone", &readonly)
+            .unwrap()
+            .verify_root(&root_info("/physical/original", "/physical/original", true))
+            .unwrap();
+        assert!(record(directory.path(), root).unwrap().previous.is_none());
+    }
+
+    #[test]
+    fn malformed_stale_or_unverified_root_metadata_never_records_a_baseline() {
+        let directory = Directory::new("bad-root-info");
+        record(
+            directory.path(),
+            entry("phone", "/physical", false, 1, 1, 1),
+        )
+        .unwrap();
+        let original = directory.read();
+        let catalog = Catalog::new(response(7), "metadata".into());
+        let mut cases = vec![
+            "null".into(),
+            "{".into(),
+            json!({"status":"error", "message":"Unknown command"}).to_string(),
+            json!({"status":"error", "message":"No unchanged successful scan root"}).to_string(),
+            root_info("/wrong-scan", "/physical", false),
+            root_info("/fixture", "/physical", true),
+        ];
+        for path in ["relative", "/a/../b", "/a/./b", "//a", "/a/", "/a\0b"] {
+            cases.push(root_info("/fixture", path, false));
+        }
+        cases.push(root_info(
+            "/fixture",
+            &format!("/{}", "x".repeat(MAX_ROOT_BYTES)),
+            false,
+        ));
+        let mut version: Value =
+            serde_json::from_str(&root_info("/fixture", "/physical", false)).unwrap();
+        version["version"] = json!(2);
+        cases.push(version.to_string());
+        version["version"] = json!(1);
+        version["extra"] = json!(true);
+        cases.push(version.to_string());
+        for raw in cases {
+            let result = prepare_completion("phone", &catalog)
+                .unwrap()
+                .verify_root(&raw)
+                .and_then(|entry| record(directory.path(), entry));
+            assert!(result.is_err(), "{raw}");
+            assert_eq!(directory.read(), original);
+        }
+        for root in [
+            "/",
+            "/physical/a b",
+            "/physical/quote\"name",
+            "/physical/line\nname",
+        ] {
+            assert!(prepare_completion("phone", &catalog)
+                .unwrap()
+                .verify_root(&root_info("/fixture", root, false))
+                .is_ok());
+        }
+    }
+    #[test]
+    fn releasing_history_lock_does_not_wait_for_duplicate_descriptors() {
+        let directory = Directory::new("lock-copy");
+        std::fs::create_dir_all(directory.path()).unwrap();
+        let path = directory.path().join(LOCK_NAME);
+        let file = open_regular(&path, true).unwrap();
+        file.try_lock().unwrap();
+        let duplicate = file.try_clone().unwrap();
+        drop(HistoryLock(file));
+        let next = open_regular(&path, true).unwrap();
+        next.try_lock()
+            .expect("A duplicate must not prolong the previous writer's lock");
+        drop(HistoryLock(next));
+        drop(duplicate);
     }
 }

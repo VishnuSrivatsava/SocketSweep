@@ -2,6 +2,7 @@
 
 #include <cerrno>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <utility>
@@ -66,6 +67,23 @@ struct Root {
         return fd.get() >= 0 && ::stat(path.c_str(), &current) == 0 &&
                same_entry(identity, current);
     }
+
+    // Resolve metadata only while it still describes this pinned scan root.
+    // Deletion continues to use the original path and descriptor, never this
+    // resolved string. Reject alias changes before or during resolution.
+    bool canonical_path(std::string& resolved) const {
+        if (!unchanged()) return false;
+        char* canonical = ::realpath(path.c_str(), nullptr);
+        if (!canonical) return false;
+        SOCKETSWEEP_DELETE_CHECKPOINT("canonical_root", fd.get(), canonical);
+        struct stat current{};
+        const bool matches = ::stat(canonical, &current) == 0 &&
+                             same_entry(identity, current) && unchanged();
+        if (matches) resolved = canonical;
+        std::free(canonical);
+        return matches;
+    }
+
 };
 
 struct Result {

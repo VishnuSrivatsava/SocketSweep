@@ -172,6 +172,26 @@ static void root_alias_swap_at_unlink_keeps_original_anchor() {
             "Further deletion through the changed alias must be rejected");
 }
 
+static void canonical_root_rejects_alias_changes_during_resolution() {
+    Fixture f;
+    const auto alias = f.base / "alias";
+    fs::create_directory_symlink(f.storage, alias);
+    require(f.root.open(alias.string()), "Cannot pin alias");
+    std::string canonical;
+    require(f.root.canonical_path(canonical) && canonical == f.storage.string(),
+            "Canonical metadata must identify the pinned root");
+    bool swapped = false;
+    checkpoint = [&](const char* event, int, const char*) {
+        if (std::string(event) != "canonical_root" || swapped) return;
+        swapped = true;
+        fs::remove(alias);
+        fs::create_directory_symlink(f.outside, alias);
+    };
+    require(!f.root.canonical_path(canonical) && swapped,
+            "Root metadata must reject an alias retargeted during resolution");
+    f.protected_file_survived();
+}
+
 static void repeated_calls_release_descriptors() {
     Fixture f;
     struct rlimit limit{};
@@ -210,6 +230,7 @@ int main(int argc, char** argv) {
     else if (test == "leaf_replaced") leaf_swap_before_identity_check();
     else if (test == "leaf_unlink") leaf_swap_at_unlink_does_not_follow_symlink();
     else if (test == "root_alias") root_alias_swap_at_unlink_keeps_original_anchor();
+    else if (test == "canonical_root") canonical_root_rejects_alias_changes_during_resolution();
     else if (test == "descriptors") repeated_calls_release_descriptors();
     else if (test == "depth") depth_limit_fails_without_following_links();
     else require(false, "Unknown test case");

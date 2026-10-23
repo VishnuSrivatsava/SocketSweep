@@ -119,3 +119,26 @@ Directory streaming and compact host construction are inspired by
 particularly `e21a430`, `ec0679f` and `e7a7383`. This implementation keeps the
 current C++ engine, authenticated session, anchored reads/deletion and root
 safeguards rather than adopting the fork's daemon/transport wholesale.
+
+
+## Canonical root metadata for scan history
+
+After a verified stream reaches EOF, the host may send authenticated
+`SCAN_ROOT_INFO` on a fresh connection to the same owned daemon. A successful
+reply is small-command JSON, not a scan frame:
+
+```json
+{"status":"ok","version":1,"scan_root":"/sdcard","canonical_root":"/storage/emulated/0","read_only":false}
+```
+
+The paths above are illustrative. The daemon resolves only its pinned scan
+root and verifies the resolved path and original path against that root's
+device/inode identity. A missing or changed root returns an error. Resolving
+metadata does not grant deletion authority or replace deletion paths.
+
+The host checks the exact stream root, access mode, metadata version and
+canonical path before using it for history. Metadata failure does not invalidate
+a completed scan, but it cannot create or select a history baseline. Older
+daemons return Unknown command: scans continue, history remains unavailable
+until the daemon is rebuilt. This additive command changes neither session
+protocol v3 nor scan-stream v1; older clients do not need to request it.
