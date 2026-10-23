@@ -18,6 +18,7 @@ const CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
 pub(super) struct Connection {
     pub address: SocketAddr,
     pub token: String,
+    pub serial: String,
     pub read_only: bool,
 }
 
@@ -105,7 +106,7 @@ impl Session {
     fn new(adb: PathBuf, serial: String) -> Result<Self, String> {
         Ok(Self {
             adb,
-            serial,
+            serial: serial.clone(),
             directory: format!("/data/local/tmp/socketsweep-{}", new_random_id()?),
             privilege: Privilege::Shell,
             owned_directory: false,
@@ -116,6 +117,7 @@ impl Session {
             connection: Connection {
                 address: (Ipv4Addr::LOCALHOST, 0).into(),
                 token: new_random_id()?,
+                serial,
                 read_only: false,
             },
         })

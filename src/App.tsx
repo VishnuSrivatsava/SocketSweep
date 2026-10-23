@@ -10,6 +10,7 @@ import { FileTreeNode, QueryError } from "./FileTree";
 import { IconNuke } from "./Icons";
 import { LargestFiles } from "./LargestFiles";
 import { FileTypes } from "./FileTypes";
+import { ScanHistory } from "./ScanHistory";
 import { ToastContainer } from "./ToastContainer";
 import type { Toast } from "./ToastContainer";
 import { TerminalLog } from "./TerminalLog";
@@ -244,6 +245,7 @@ function ResultScreen({
           Root access · Read-only · Deletion disabled
         </div>
       )}
+      <ScanHistory scope={data} />
 
       {/* Stats row */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 px-6 py-4 shrink-0">

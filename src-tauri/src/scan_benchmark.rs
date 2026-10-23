@@ -401,6 +401,7 @@ mod tests {
             let connection = session::Connection {
                 address: listener.local_addr().unwrap(),
                 token: "0".repeat(64),
+                serial: "fixture-device".into(),
                 read_only: false,
             };
             let server = std::thread::spawn(move || {
