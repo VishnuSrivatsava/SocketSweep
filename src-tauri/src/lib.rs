@@ -21,6 +21,7 @@ use tauri::ipc::Channel;
 mod scan_benchmark;
 mod scan_stream;
 mod scan_store;
+mod scan_history;
 mod session;
 mod devices;
 use std::process::Command;
@@ -38,6 +39,7 @@ const TCP_READ_TIMEOUT: Duration = Duration::from_secs(120); // scans can be slo
 static SCAN_STORE: Mutex<Option<scan_store::Catalog>> = Mutex::new(None);
 
 fn invalidate_scan() -> Result<(), String> {
+    scan_history::clear_comparison();
     *SCAN_STORE.lock().map_err(|_| "Scan state is unavailable")? = None;
     Ok(())
 }
@@ -367,6 +369,7 @@ fn cancel_scan(scan_id: String) -> Result<(), String> {
 
 #[tauri::command(async)]
 fn run_scan(
+    app: tauri::AppHandle,
     path: Option<String>,
     scan_id: String,
     on_progress: Channel<ScanProgress>,
@@ -387,6 +390,7 @@ fn run_scan(
         .filter(|p| !p.is_empty())
         .unwrap_or_else(|| "/sdcard".into());
     let connection = active_connection()?;
+    let serial = connection.serial.clone();
     let payload = command_payload(&format!("SCAN_STREAM {effective_root}"), &connection.token)?;
     let read_only = connection.read_only;
     let cancelled = Arc::new(AtomicBool::new(false));
@@ -451,8 +455,10 @@ fn run_scan(
             }
         }
         // Public snapshot generations are independent of the secret daemon token.
-        let catalog = scan_store::Catalog::new(response, new_random_id()?);
+        let generation = new_random_id()?;
+        let catalog = scan_store::Catalog::new(response, generation.clone());
         let json = catalog.summary_json()?;
+        let history_entry = scan_history::completed_entry(&serial, &catalog);
         // Serialize bounded metadata before publishing deletion authority.
         let mut active = ACTIVE_SCAN
             .lock()
@@ -462,6 +468,21 @@ fn run_scan(
         }
         *SCAN_STORE.lock().map_err(|_| "Scan state is unavailable")? = Some(catalog);
         active.take();
+        drop(active);
+        // Completion and cancellation are committed above. History I/O happens
+        // outside the catalog lock and never changes whether the scan succeeded.
+        let recorded = history_entry.and_then(|entry| {
+            let directory = app.path().app_data_dir()
+                .map_err(|e| format!("Cannot locate the app data directory: {e}"))?;
+            scan_history::record(&directory, entry)
+        });
+        match recorded {
+            Ok(recorded) => scan_history::note_comparison(generation, recorded.previous),
+            Err(error) => {
+                eprintln!("Scan history unavailable: {error}");
+                scan_history::clear_comparison();
+            }
+        }
         Ok(json)
     })();
     if cancelled.load(Ordering::SeqCst) {
@@ -548,6 +569,15 @@ fn get_file_types(generation: String, revision: u32) -> Result<String, String> {
 }
 
 #[tauri::command(async)]
+fn get_scan_comparison(generation: String, revision: u32) -> Result<String, String> {
+    let store = SCAN_STORE.lock().map_err(|_| "Scan state is unavailable")?;
+    let catalog = store
+        .as_ref()
+        .ok_or("Scan is unavailable; rescan required")?;
+    scan_history::comparison_json(catalog, &generation, revision)
+}
+
+#[tauri::command(async)]
 fn get_scan_node(generation: String, revision: u32, node_id: u32) -> Result<String, String> {
     let store = SCAN_STORE.lock().map_err(|_| "Scan state is unavailable")?;
     store
@@ -592,6 +622,7 @@ pub fn run() {
             get_scan_node,
             get_largest_files,
             get_file_types,
+            get_scan_comparison,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

@@ -179,6 +179,29 @@ impl Catalog {
         }
         Ok(())
     }
+    /// Public generation/revision gate for sibling modules that serve
+    /// snapshot-scoped queries without exposing catalog internals.
+    pub fn require_scope(&self, generation: &str, revision: u32) -> Result<(), String> {
+        self.scope(generation, revision)
+    }
+    pub fn coverage(&self) -> (u64, u64) {
+        (self.response.errors, self.response.skipped)
+    }
+    pub fn root_path(&self) -> &str {
+        &self.response.root
+    }
+    pub fn read_only(&self) -> bool {
+        self.response.read_only
+    }
+    pub fn total_files(&self) -> u64 {
+        self.response.total_files
+    }
+    pub fn total_dirs(&self) -> u64 {
+        self.response.total_dirs
+    }
+    pub fn total_size(&self) -> u64 {
+        self.response.total_size
+    }
     fn node(&self, id: u32) -> Result<&Node, String> {
         let node = self
             .response

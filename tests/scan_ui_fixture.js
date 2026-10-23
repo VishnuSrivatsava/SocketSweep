@@ -30,6 +30,7 @@
   let discoveryError = false;
   const discoveryDump = "adb devices -l failed (exit 1):\n* daemon not running; starting now at tcp:5037\nADB server didn't ACK\nFull server startup log: /tmp/adb.fixture.log\ncould not install *smartsocket* listener: Address already in use\n<img src=invalid onerror=alert(1)>\n" + "startup diagnostics\n".repeat(2000);
   let activeDevice = null;
+  const scanRecords = [];
   let callbacks = 0;
   let rootChildren;
   let folderChildren;
@@ -93,7 +94,19 @@
         activeDevice = args.serial;
         return "Mock daemon";
       }
-      if (command === "run_scan") { generation++; reset(); return JSON.stringify(summary()); }
+      if (command === "run_scan") {
+        generation++;
+        reset();
+        const stats = summary();
+        scanRecords.push({
+          generation: scope().generation,
+          device: activeDevice,
+          readOnly, errors: stats.errors, skipped: stats.skipped, root: stats.root_path,
+          totals: { total_files: stats.total_files, total_dirs: stats.total_dirs, total_size: stats.total_size },
+          at: Date.now(),
+        });
+        return JSON.stringify(stats);
+      }
       if (command === "stop_daemon") {
         await pause(150);
         unavailable = true;
@@ -124,6 +137,25 @@
           files: files.slice(0, args.limit).map(item => detail(item.id)) });
         if (delayedLargest) { delayedLargest = false; await pause(300); }
         return response;
+      }
+      if (command === "get_scan_comparison") {
+        // Same shape as the Rust query: the delta compares the live totals
+        // with the previous scan of the same device, so deletions count.
+        const current = scanRecords.find(record => record.generation === scope().generation);
+        check(current, "Comparison requested for an unknown mock scan");
+        check(current.errors === 0, "Scans with access errors are not recorded as history baselines");
+        const previous = scanRecords.slice(0, scanRecords.indexOf(current)).reverse()
+          .find(record => record.errors === 0 && record.device === current.device
+            && record.readOnly === current.readOnly && record.root === current.root && record.skipped === current.skipped);
+        if (!previous) return JSON.stringify({ ...scope(), first: true, previous: null, delta: null });
+        const stats = summary();
+        return JSON.stringify({ ...scope(), first: false,
+          previous: { recorded_at: Math.floor(previous.at / 1000), ...previous.totals },
+          delta: {
+            files: stats.total_files - previous.totals.total_files,
+            dirs: stats.total_dirs - previous.totals.total_dirs,
+            size: stats.total_size - previous.totals.total_size,
+          } });
       }
       if (command === "get_scan_view") {
         const response = JSON.stringify(view(args));
@@ -158,7 +190,7 @@
   const report = (passed, error) => {
     const output = document.createElement("pre");
     output.id = "scan-test-report";
-    output.textContent = JSON.stringify({ fixture: "scan-ui", passed, error, ipc_calls: calls.length, checks: passed ? ["offline fonts under CSP", "bounded collapsed discovery diagnostics", "discovery retry recovery", "setup alignment", "result fonts", "file label semantics", "complete paging", "bounded file-type totals", "file-type retry and malformed response", "file-type generation and deletion revision", "file-type coverage and empty scan", "bounded largest files", "late largest response", "largest query retry", "largest ID-only deletion", "largest read-only guards", "largest folder navigation without rescanning", "late zoom", "Other tile", "stale confirmation", "ID-only deletion", "revision refresh", "partial failure", "read-only", "acknowledged shutdown", "unconfirmed shutdown", "reconnect", "stop action ordering", "toast dismissal integration", "bounded diagnostic integration"] : undefined });
+    output.textContent = JSON.stringify({ fixture: "scan-ui", passed, error, ipc_calls: calls.length, checks: passed ? ["offline fonts under CSP", "bounded collapsed discovery diagnostics", "discovery retry recovery", "setup alignment", "result fonts", "file label semantics", "complete paging", "first-scan comparison", "unchanged comparison after rescan", "deletion delta comparison", "cross-device comparison isolation", "bounded file-type totals", "file-type retry and malformed response", "file-type generation and deletion revision", "file-type coverage and empty scan", "bounded largest files", "late largest response", "largest query retry", "largest ID-only deletion", "largest read-only guards", "largest folder navigation without rescanning", "late zoom", "Other tile", "stale confirmation", "ID-only deletion", "revision refresh", "partial failure", "read-only", "acknowledged shutdown", "unconfirmed shutdown", "reconnect", "stop action ordering", "toast dismissal integration", "bounded diagnostic integration"] : undefined });
     document.body.append(output);
     void fetch("/report", { method: "POST", body: output.textContent }).then(() => {
       if (passed) location.replace("/tests/toast_lifecycle_fixture.html");
@@ -244,6 +276,7 @@
     document.querySelector("#btn-connect").click();
     await waitFor(() => rows().length === 129, "Initial page did not render 128 children");
     check(activeDevice === "phone-two" && document.querySelector("#connected-device").textContent.includes("phone-two"), "Results do not identify the selected device");
+    await waitFor(() => document.querySelector("#scan-history")?.textContent.includes("No previous comparable scan"), "First-scan comparison missing");
     const logRows = [...document.querySelectorAll("#terminal-log .log-entry")];
     check(logRows.some(row => row.textContent.includes("[ADB] Found:") && row.textContent.includes("… [truncated]")), "App did not bound oversized diagnostics");
     check(logRows.every(row => row.textContent.length < 4200), "App retained oversized log text");
@@ -347,6 +380,7 @@
     document.querySelector('[aria-label="Delete  file-0 "]').click();
     document.querySelector("#btn-rescan").click();
     await waitFor(() => rows().length === 129, "Rescan did not reload");
+    await waitFor(() => document.querySelector("#scan-history")?.textContent.includes("No change since"), "Unchanged comparison missing after rescan");
     await pause(350);
     check(!button("NUKE IT"), "Old confirmation survived rescan");
     button("Largest files").click();
@@ -356,6 +390,9 @@
     check(document.body.textContent.includes("/fixture/ file-0 "), "Exact confirmation path missing");
     button("NUKE IT").click();
     await waitFor(() => largestRows().length === 25 && !document.querySelector('[aria-label="Delete  file-0 "]'), "Deleted largest row survived revision refresh");
+    const historyLine = () => document.querySelector("#scan-history")?.textContent ?? "";
+    await waitFor(() => historyLine().includes("Since the previous scan"), "Deletion delta comparison missing");
+    check(historyLine().includes("-1 files"), "Deletion did not change the comparison delta");
     button("Storage map").click();
     await waitFor(() => rows().length === 129 && !document.querySelector('[aria-label="Delete  file-0 "]'), "Deleted map row survived revision refresh");
     check(calls.some(item => item.command === "delete_item" && item.args.nodeId === 2 && !("path" in item.args)), "ID-only delete was not invoked");
@@ -395,6 +432,7 @@
     document.querySelector("#btn-connect").click();
     await waitFor(() => rows().length === 129, "Read-only page missing");
     check(document.body.textContent.includes("Deletion disabled"), "Read-only banner missing");
+    await waitFor(() => document.querySelector("#scan-history")?.textContent.includes("comparison unavailable"), "Partial scan claimed a history comparison");
     check(!document.querySelector('[aria-label^="Delete "]'), "Read-only deletion enabled");
     button("Largest files").click();
     await waitFor(() => largestRows().length === 25, "Read-only largest files missing");
@@ -438,6 +476,7 @@
     document.querySelector("#btn-connect").click();
     await waitFor(() => rows().length === 129, "Explicit device switch did not scan");
     check(activeDevice === "phone-one" && scope().generation !== previousGeneration && document.querySelector("#connected-device").textContent.includes("phone-one"), "Device switch reused old results/identity");
+    await waitFor(() => document.querySelector("#scan-history")?.textContent.includes("No previous comparable scan"), "Cross-device comparison reused another device's baseline");
     check(!button("NUKE IT"), "Device switch retained a destructive confirmation");
     const deleteCallsBeforeSwitch = calls.filter(call => call.command === "delete_item").length;
     document.querySelector('[aria-label="Delete  file-0 "]').click();
