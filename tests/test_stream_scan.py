@@ -66,6 +66,40 @@ class StreamScanTests(DaemonHarness):
             self.assertEqual(item['total_size'], sum(e['size'] for e in entries.values()))
             return item, entries, batches
 
+    def test_scan_root_info_requires_success_and_tracks_retargeted_aliases(self):
+        effective_read_only = self.read_only or os.geteuid() == 0
+        self.assertEqual(self.request('SCAN_ROOT_INFO')['status'], 'error')
+        alias = self.root.parent / 'scan-alias'
+        alias.symlink_to(self.root, target_is_directory=True)
+        done, entries, _ = self.collect(alias)
+        self.assertEqual(done['type'], 'done')
+        info = self.request('SCAN_ROOT_INFO')
+        self.assertEqual(info, dict(status='ok', version=1, scan_root=entries[0]['path'],
+                                   canonical_root=str(self.root.resolve()), read_only=effective_read_only))
+        outside = self.root.parent / 'other-root'
+        outside.mkdir()
+        alias.unlink()
+        alias.symlink_to(outside, target_is_directory=True)
+        if not effective_read_only:
+            self.assertEqual(self.request('SCAN_ROOT_INFO')['status'], 'error')
+        # Read-only traversal pins its resolved original path, so changing the
+        # caller's alias does not change which directory that scan describes.
+        done, _, _ = self.collect(alias)
+        self.assertEqual(done['type'], 'done')
+        self.assertEqual(self.request('SCAN_ROOT_INFO')['canonical_root'], str(outside.resolve()))
+        self.collect(outside / 'missing')
+        self.assertEqual(self.request('SCAN_ROOT_INFO')['status'], 'error')
+
+    def test_scan_root_info_preserves_escaped_canonical_names_and_exact_verb(self):
+        target = self.root.parent / 'target \" with space'
+        target.mkdir()
+        alias = self.root.parent / 'plain-alias'
+        alias.symlink_to(target, target_is_directory=True)
+        self.assertEqual(self.collect(alias)[0]['type'], 'done')
+        self.assertEqual(self.request('SCAN_ROOT_INFO')['canonical_root'], str(target.resolve()))
+        for command in ['SCAN_ROOT_INFOX', 'SCAN_ROOT_INFO /', 'SCAN_ROOT_INFO ']:
+            self.assertEqual(self.request(command)['status'], 'error')
+
     def test_stream_requires_authentication_before_any_frames(self):
         for prefix in ["", f"AUTH {'0' * 64}\n"]:
             result = self.raw_request(f"{prefix}SCAN_STREAM {self.root}\n".encode())

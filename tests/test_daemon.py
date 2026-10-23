@@ -116,7 +116,7 @@ class DaemonTests(DaemonHarness):
         target = self.root / "keep"
         target.write_text("keep")
         self.scan()
-        for command in ["PING", f"SCAN {self.root}", f"DELETE {target}", "SHUTDOWN"]:
+        for command in ["PING", "SCAN_ROOT_INFO", f"SCAN {self.root}", f"DELETE {target}", "SHUTDOWN"]:
             self.assertEqual(self.raw_request((command + "\n").encode())["status"], "error")
             wrong = f"AUTH {'0' * 64}\n{command}\n".encode()
             self.assertEqual(self.raw_request(wrong)["status"], "error")
@@ -288,6 +288,7 @@ class DeletionRaceTests(unittest.TestCase):
     def test_leaf_replacement_before_identity_check(self): self.run_case("leaf_replaced")
     def test_leaf_symlink_replacement_at_unlink(self): self.run_case("leaf_unlink")
     def test_scan_root_alias_swap_at_unlink(self): self.run_case("root_alias")
+    def test_canonical_root_rejects_alias_changes_during_resolution(self): self.run_case("canonical_root")
     def test_repeated_calls_release_descriptors(self): self.run_case("descriptors")
     def test_deep_recursion_stops_safely(self): self.run_case("depth")
 

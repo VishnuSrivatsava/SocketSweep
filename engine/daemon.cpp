@@ -400,6 +400,20 @@ static void handle_client(int fd) {
         out.write(g_read_only ? "true" : "false");
         out.write("}\n");
     }
+    else if (cmd == "SCAN_ROOT_INFO") {
+        std::string canonical;
+        if (!g_scan_root.canonical_path(canonical) || canonical.size() > 16 * 1024) {
+            out.write("{\"status\":\"error\",\"message\":\"No unchanged successful scan root\"}\n");
+        } else {
+            out.write("{\"status\":\"ok\",\"version\":1,\"scan_root\":\"");
+            json_escape_into(out, g_scan_root.path);
+            out.write("\",\"canonical_root\":\"");
+            json_escape_into(out, canonical);
+            out.write("\",\"read_only\":");
+            out.write(g_read_only ? "true" : "false");
+            out.write("}\n");
+        }
+    }
     else if (cmd == "SHUTDOWN") {
         out.write("{\"status\":\"ok\",\"message\":\"shutting down\"}\n");
         out.flush();

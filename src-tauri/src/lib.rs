@@ -458,7 +458,7 @@ fn run_scan(
         let generation = new_random_id()?;
         let catalog = scan_store::Catalog::new(response, generation.clone());
         let json = catalog.summary_json()?;
-        let history_entry = scan_history::completed_entry(&serial, &catalog);
+        let history_entry = scan_history::prepare_completion(&serial, &catalog);
         // Serialize bounded metadata before publishing deletion authority.
         let mut active = ACTIVE_SCAN
             .lock()
@@ -471,7 +471,10 @@ fn run_scan(
         drop(active);
         // Completion and cancellation are committed above. History I/O happens
         // outside the catalog lock and never changes whether the scan succeeded.
-        let recorded = history_entry.and_then(|entry| {
+        let recorded = history_entry.and_then(|completion| {
+            let root_info = daemon_command_at(connection.address, "SCAN_ROOT_INFO",
+                &connection.token, Duration::from_secs(3))?;
+            let entry = completion.verify_root(&root_info)?;
             let directory = app.path().app_data_dir()
                 .map_err(|e| format!("Cannot locate the app data directory: {e}"))?;
             scan_history::record(&directory, entry)
