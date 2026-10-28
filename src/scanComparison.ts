@@ -1,4 +1,4 @@
-import { sameScan } from "./scanView";
+import { sameScan, isRecord as object, isCount as count } from "./scanView";
 import type { ScanScope } from "./scanView";
 
 export interface PreviousScan {
@@ -13,8 +13,6 @@ export interface ScanComparison extends ScanScope {
   delta?: { files: number; dirs: number; size: number };
 }
 type Expected = ScanScope & { total_files: number; total_dirs: number; total_size: number };
-const object = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
-const count = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 const change = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value);
 
 /** Reject stale, malformed or non-reconciling comparisons before display. */

@@ -11,6 +11,7 @@
   let delayedDetail = true;
   let delayedLargest = true;
   let failLargest = false;
+  let malformedLargest = false;
   let holdTypes = false;
   let resolveTypes;
   let failTypes = false;
@@ -145,6 +146,10 @@
       if (command === "get_largest_files") {
         check(Number.isInteger(args.limit) && args.limit > 0 && args.limit <= 100, "Unbounded largest-files query");
         if (failLargest) { failLargest = false; throw "Mock largest-files failure"; }
+        if (malformedLargest) {
+          malformedLargest = false;
+          return JSON.stringify({ ...scope(), limit: args.limit, total_files: summary().total_files, files: null });
+        }
         const files = [...rootChildren, ...folderChildren].filter(item => item.type === "file")
           .sort((a, b) => b.size - a.size || (a.name < b.name ? -1 : a.name > b.name ? 1 : a.id - b.id));
         const response = JSON.stringify({ ...scope(), limit: args.limit, total_files: files.length,
@@ -204,7 +209,7 @@
   const report = (passed, error) => {
     const output = document.createElement("pre");
     output.id = "scan-test-report";
-    output.textContent = JSON.stringify({ fixture: "scan-ui", passed, error, ipc_calls: calls.length, checks: passed ? ["offline fonts under CSP", "bounded collapsed discovery diagnostics", "discovery retry recovery", "setup alignment", "result fonts", "file label semantics", "complete paging", "first-scan comparison", "unchanged comparison after rescan", "deletion delta comparison", "cross-device comparison isolation", "bounded file-type totals", "file-type retry and malformed response", "file-type generation and deletion revision", "file-type coverage and empty scan", "bounded largest files", "late largest response", "largest query retry", "largest ID-only deletion", "largest read-only guards", "largest folder navigation without rescanning", "late zoom", "Other tile", "stale confirmation", "ID-only deletion", "revision refresh", "partial failure", "read-only", "acknowledged shutdown", "unconfirmed shutdown", "reconnect", "stop action ordering", "duplicate rescan guard", "rescan failure recovery", "rescan cancellation recovery", "toast dismissal integration", "bounded diagnostic integration"] : undefined });
+    output.textContent = JSON.stringify({ fixture: "scan-ui", passed, error, ipc_calls: calls.length, checks: passed ? ["offline fonts under CSP", "bounded collapsed discovery diagnostics", "discovery retry recovery", "setup alignment", "result fonts", "file label semantics", "complete paging", "first-scan comparison", "unchanged comparison after rescan", "deletion delta comparison", "cross-device comparison isolation", "bounded file-type totals", "file-type retry and malformed response", "file-type generation and deletion revision", "file-type coverage and empty scan", "bounded largest files", "late largest response", "largest query retry", "malformed largest response recovery", "largest ID-only deletion", "largest read-only guards", "largest folder navigation without rescanning", "late zoom", "Other tile", "stale confirmation", "ID-only deletion", "revision refresh", "partial failure", "read-only", "acknowledged shutdown", "unconfirmed shutdown", "reconnect", "stop action ordering", "duplicate rescan guard", "rescan failure recovery", "rescan cancellation recovery", "toast dismissal integration", "bounded diagnostic integration"] : undefined });
     document.body.append(output);
     void fetch("/report", { method: "POST", body: output.textContent }).then(() => {
       if (passed) location.replace("/tests/toast_lifecycle_fixture.html");
@@ -363,6 +368,12 @@
     await waitFor(() => largestRows().length === 50, "Largest-files retry failed");
     chooseLimit(100);
     await waitFor(() => largestRows().length === 100, "Maximum largest-files page missing");
+    malformedLargest = true;
+    chooseLimit(25);
+    await waitFor(() => button("Retry") || !document.querySelector("#btn-rescan"), "Malformed largest-files response did not offer retry");
+    check(button("Retry") && largestRows().length === 0 && document.querySelector("#btn-rescan"), "Malformed largest-files response retained rows or crashed results");
+    button("Retry").click();
+    await waitFor(() => largestRows().length === 25, "Malformed largest-files response did not recover");
     button("Show folder").click();
     await waitFor(() => rows().length === 129, "Show folder did not restore map");
     check(calls.filter(item => item.command === "run_scan").length === scanCount + 1, "Largest-files browsing rescanned the phone");

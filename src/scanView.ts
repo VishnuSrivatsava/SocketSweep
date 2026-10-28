@@ -54,6 +54,9 @@ export interface DeleteResult {
   removed: { files: number; dirs: number; size: number };
 }
 export interface ScanScope { generation: string; revision: number }
+/** Shared guards for scan IPC values before feature-specific validation. */
+export const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
+export const isCount = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 export function sameScan(a: ScanScope | null, b: ScanScope): boolean {
   return a?.generation === b.generation && a.revision === b.revision;
 }

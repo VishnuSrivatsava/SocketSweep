@@ -1,4 +1,4 @@
-import { sameScan } from "./scanView";
+import { sameScan, isRecord as object, isCount as count } from "./scanView";
 import type { ScanScope } from "./scanView";
 
 export const FILE_TYPE_LABELS = {
@@ -20,8 +20,6 @@ export interface FileTypesResponse extends ScanScope {
   categories: FileTypeCount[];
 }
 type Expected = ScanScope & { total_files: number; total_size: number };
-const object = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
-const count = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 
 /** Reject stale, malformed or non-reconciling summaries before showing totals. */
 export function parseFileTypes(raw: string, expected: Expected): FileTypesResponse {
