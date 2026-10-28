@@ -7,7 +7,7 @@ const source = await readFile(new URL("../src/scanView.ts", import.meta.url), "u
 const { outputText } = ts.transpileModule(source, {
   compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext },
 });
-const { sameScan, viewKey, viewReducer } = await import(
+const { sameScan, viewKey, viewReducer, parseNodeDetail } = await import(
   `data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`
 );
 const scope = { generation: "scan-a", revision: 0 };
@@ -80,4 +80,58 @@ test("retry clears the error and ignores the prior failure", () => {
   assert.equal(state.error, undefined);
   const pending = state;
   assert.equal(viewReducer(state, { type: "error", request: 1, error: "old error" }), pending);
+});
+
+const detailScope = { ...scope, root_path: "/sdcard", read_only: false, total_size: 100 };
+const detail = () => ({ ...scope, path: "/sdcard/photo.jpg", node: {
+  id: 1, parent_id: 0, name: "photo.jpg", type: "file", size: 100,
+  counted: true, child_count: 0, can_delete: true,
+} });
+const parseDetail = (value, expected = detailScope, id = 1) => parseNodeDetail(JSON.stringify(value), expected, id);
+
+test("node detail accepts files, directories, exact labels and uncounted special entries", () => {
+  assert.deepEqual(parseDetail(detail()), detail());
+  for (const name of [" file ", "\ufeffphoto.jpg", "photo-😀.jpg"]) {
+    const value = detail(); value.node.name = name; value.path = `/sdcard/${name}`;
+    assert.deepEqual(parseDetail(value), value);
+  }
+  const folder = detail(); folder.node.type = "directory"; folder.node.child_count = 3;
+  assert.deepEqual(parseDetail(folder), folder);
+  const special = detail(); special.node.counted = false; special.node.size = 0;
+  assert.deepEqual(parseDetail(special), special);
+  const root = detail(); root.node = { ...root.node, id: 0, parent_id: null, name: "sdcard", type: "directory", can_delete: false }; root.path = "/sdcard";
+  assert.deepEqual(parseDetail(root, detailScope, 0), root);
+  root.node.name = "/"; root.path = "/";
+  assert.deepEqual(parseDetail(root, { ...detailScope, root_path: "/" }, 0), root);
+});
+
+test("node detail rejects stale scopes and a different requested ID", () => {
+  assert.throws(() => parseDetail({ ...detail(), generation: "scan-b" }));
+  assert.throws(() => parseDetail({ ...detail(), revision: 1 }));
+  assert.throws(() => parseDetail(detail(), detailScope, 2));
+  assert.throws(() => parseDetail(detail(), detailScope, -1));
+});
+
+test("node detail rejects malformed records, IDs, counts and node kinds", () => {
+  for (const value of [null, [], {}, { ...detail(), node: null }, { ...detail(), path: {} }]) assert.throws(() => parseDetail(value));
+  for (const [field, value] of [
+    ["id", -1], ["id", 2 ** 32], ["parent_id", null], ["parent_id", 1],
+    ["size", -1], ["size", 101], ["size", 0.5], ["child_count", 1],
+    ["counted", "true"], ["can_delete", "true"], ["name", {}], ["type", "symlink"],
+    ["counted", false],
+  ]) assert.throws(() => parseDetail({ ...detail(), node: { ...detail().node, [field]: value } }), field);
+});
+
+test("node detail rejects misleading paths and unsafe deletion flags", () => {
+  for (const path of ["/elsewhere/photo.jpg", "/sdcard2/photo.jpg", "/sdcard/other.jpg", "/sdcard/../photo.jpg", "/sdcard//photo.jpg", "/sdcard/folder/photo.jpg"]) {
+    assert.throws(() => parseDetail({ ...detail(), path }), path);
+  }
+  for (const name of [".", "..", "a/b", "a\0b", "\ud800", "x".repeat(256), "photo\n.jpg"]) {
+    assert.throws(() => parseDetail({ ...detail(), path: `/sdcard/${name}`, node: { ...detail().node, name } }));
+  }
+  const newline = detail(); newline.node.name = "photo\n.jpg"; newline.path = `/sdcard/${newline.node.name}`; newline.node.can_delete = false;
+  assert.deepEqual(parseDetail(newline), newline);
+  assert.throws(() => parseDetail(detail(), { ...detailScope, read_only: true }));
+  const readOnly = detail(); readOnly.node.can_delete = false;
+  assert.deepEqual(parseDetail(readOnly, { ...detailScope, read_only: true }), readOnly);
 });

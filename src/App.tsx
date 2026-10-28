@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef } from "react";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { formatBytes } from "./formatBytes";
-import { sameScan } from "./scanView";
+import { sameScan, parseNodeDetail } from "./scanView";
 import type { ScanResponse, NodeDetail, DeleteResult } from "./scanView";
 import { IconNuke } from "./Icons";
 import { ToastContainer } from "./ToastContainer";
@@ -280,8 +280,8 @@ function App() {
     const request = ++confirmationRequest.current;
     try {
       const raw = await invoke<string>("get_scan_node", { generation: scope.generation, revision: scope.revision, nodeId });
-      const detail: NodeDetail = JSON.parse(raw);
-      if (request === confirmationRequest.current && !actionPending.current && sameScan(snapshot.current, scope) && sameScan(detail, scope) && detail.node.id === nodeId && detail.node.can_delete) {
+      const detail = parseNodeDetail(raw, scope, nodeId);
+      if (request === confirmationRequest.current && !actionPending.current && sameScan(snapshot.current, scope) && detail.node.can_delete) {
         setConfirmDelete(detail);
       }
     } catch (err) {
