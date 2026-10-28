@@ -280,7 +280,8 @@ button. Successful results require verified totals, a terminal completion frame
 and EOF. Rebuild the daemon before running this version locally; older v3
 binaries without the streaming capability are refused. See
 [the stream contract](docs/scan-stream-v1.md) for bounds, completion rules,
-cancellation, timing semantics and the remaining full-tree frontend limitation.
+cancellation and timing semantics. Results use the
+[host-owned scan store](docs/scan-store.md) with bounded queries for the frontend.
 
 Current startup also requires the rebuilt daemon for
 [owned session files, allocated ports, and lifetime cleanup](docs/daemon-sessions.md).
