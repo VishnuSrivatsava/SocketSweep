@@ -43,6 +43,16 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SRC="$SCRIPT_DIR/daemon.cpp"
 OUT="$SCRIPT_DIR/daemon"
 
+if [ -e "$OUT" ] && [ ! -f "$OUT" ]; then
+    echo "ERROR: Output path is not a regular file: $OUT"
+    exit 1
+fi
+
+# A failed compiler/linker may have already written its output. Stage beside
+# the destination so only a successful build replaces the working artifact.
+DAEMON_BUILD_TMP="$(mktemp -d "$SCRIPT_DIR/.daemon-build.XXXXXX")"
+trap 'rm -rf "$DAEMON_BUILD_TMP"' EXIT
+
 echo "[build] Compiling daemon.cpp → daemon (aarch64-linux-android) ..."
 
 "$CC" \
@@ -50,7 +60,9 @@ echo "[build] Compiling daemon.cpp → daemon (aarch64-linux-android) ..."
     -fno-exceptions -fno-rtti -DNDEBUG \
     -static-libstdc++ \
     -s \
-    -o "$OUT" "$SRC"
+    -o "$DAEMON_BUILD_TMP/daemon" "$SRC"
+
+mv -f "$DAEMON_BUILD_TMP/daemon" "$OUT"
 
 # Tauri bundles this copy, rather than engine/daemon. Keep both in sync so
 # local development uses the same protocol and guards as release builds.

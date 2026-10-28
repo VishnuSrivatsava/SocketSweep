@@ -25,6 +25,7 @@ dist-ssr
 
 # SocketSweep custom ignores
 engine/daemon
+engine/.daemon-build.*/
 output.json
 
 # Exclude local JSON test dumps

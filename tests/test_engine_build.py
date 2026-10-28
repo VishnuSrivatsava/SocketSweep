@@ -27,7 +27,8 @@ class EngineBuildTests(unittest.TestCase):
         self.bundled.write_bytes(b"existing bundle")
         (self.engine / "daemon").write_bytes(b"existing engine")
         self.environment = {key: value for key, value in os.environ.items()
-                            if key not in ("NDK", "ANDROID_NDK_LATEST_HOME", "ANDROID_NDK_HOME")}
+                            if key not in ("NDK", "ANDROID_NDK_LATEST_HOME", "ANDROID_NDK_HOME",
+                                           "FAKE_COMPILER_FAIL", "FAKE_COMPILER_NO_OUTPUT")}
         self.ndks = {label: self.fake_ndk(label) for label in ("explicit", "latest", "home")}
 
     def fake_ndk(self, label):
@@ -36,9 +37,12 @@ class EngineBuildTests(unittest.TestCase):
         compiler = ndk / f"toolchains/llvm/prebuilt/{host}/bin/aarch64-linux-android31-clang++"
         compiler.parent.mkdir(parents=True)
         compiler.write_text("#!/usr/bin/env python3\n"
-                            "import json, sys\nfrom pathlib import Path\n"
+                            "import json, os, sys\nfrom pathlib import Path\n"
                             f"Path({str(ndk / 'calls.json')!r}).write_text(json.dumps(sys.argv[1:]))\n"
-                            f"Path(sys.argv[sys.argv.index('-o') + 1]).write_bytes({label.encode()!r})\n")
+                            "if os.environ.get('FAKE_COMPILER_NO_OUTPUT'): sys.exit(0)\n"
+                            f"Path(sys.argv[sys.argv.index('-o') + 1]).write_bytes({label.encode()!r})\n"
+                            "if os.environ.get('FAKE_COMPILER_FAIL'): sys.exit(1)\n"
+                            "Path(sys.argv[sys.argv.index('-o') + 1]).chmod(0o755)\n")
         compiler.chmod(0o700)
         return ndk
 
@@ -52,9 +56,14 @@ class EngineBuildTests(unittest.TestCase):
         self.assertEqual((self.engine / "daemon").read_bytes(), label.encode())
         self.assertEqual(self.bundled.read_bytes(), label.encode())
         args = json.loads((self.ndks[label] / "calls.json").read_text())
+        staged = Path(args[args.index("-o") + 1])
+        self.assertEqual(staged.name, "daemon")
+        self.assertEqual(staged.parent.parent, self.engine)
+        self.assertFalse(staged.parent.exists(), "Staging directory leaked after success")
+        self.assertTrue(os.access(self.engine / "daemon", os.X_OK))
         self.assertEqual(args, ["-std=c++17", "-O2", "-pthread", "-Wall", "-Wextra", "-Wpedantic",
                                 "-fno-exceptions", "-fno-rtti", "-DNDEBUG", "-static-libstdc++", "-s",
-                                "-o", str(self.engine / "daemon"), str(self.engine / "daemon.cpp")])
+                                "-o", str(staged), str(self.engine / "daemon.cpp")])
         for other in self.ndks:
             if other != label:
                 self.assertFalse((self.ndks[other] / "calls.json").exists())
@@ -88,3 +97,31 @@ class EngineBuildTests(unittest.TestCase):
                 self.assertEqual(self.bundled.read_bytes(), b"existing bundle")
                 self.assertEqual((self.engine / "daemon").read_bytes(), b"existing engine")
                 self.assertFalse(any((ndk / "calls.json").exists() for ndk in self.ndks.values()))
+
+    def test_failed_compiler_preserves_both_existing_artifacts(self):
+        result = self.build(NDK=self.ndks["explicit"], FAKE_COMPILER_FAIL="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((self.engine / "daemon").read_bytes(), b"existing engine")
+        self.assertEqual(self.bundled.read_bytes(), b"existing bundle")
+        self.assertEqual(list(self.engine.glob(".daemon-build.*")), [])
+
+    def test_compiler_success_without_output_cannot_publish_a_stale_binary(self):
+        result = self.build(NDK=self.ndks["explicit"], FAKE_COMPILER_NO_OUTPUT="1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((self.engine / "daemon").read_bytes(), b"existing engine")
+        self.assertEqual(self.bundled.read_bytes(), b"existing bundle")
+        self.assertEqual(list(self.engine.glob(".daemon-build.*")), [])
+
+    def test_output_directory_is_rejected_without_mutation(self):
+        output = self.engine / "daemon"
+        output.unlink()
+        output.mkdir()
+        sentinel = output / "keep"
+        sentinel.write_bytes(b"keep")
+        result = self.build(NDK=self.ndks["explicit"])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Output path is not a regular file", result.stdout)
+        self.assertEqual(sentinel.read_bytes(), b"keep")
+        self.assertEqual(list(output.iterdir()), [sentinel])
+        self.assertEqual(self.bundled.read_bytes(), b"existing bundle")
+        self.assertFalse((self.ndks["explicit"] / "calls.json").exists())
