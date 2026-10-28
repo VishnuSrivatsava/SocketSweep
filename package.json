@@ -8,7 +8,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "lint": "eslint src tests vite.config.ts eslint.config.js --max-warnings 0",
-    "test": "node --test tests/format_bytes.test.mjs tests/scan_view.test.mjs tests/log_history.test.mjs tests/lint_gate.test.mjs tests/devices.test.mjs tests/file_types.test.mjs tests/scan_history.test.mjs",
+    "test": "node --test tests/format_bytes.test.mjs tests/scan_view.test.mjs tests/log_history.test.mjs tests/lint_gate.test.mjs tests/devices.test.mjs tests/file_types.test.mjs tests/scan_history.test.mjs tests/largest_files.test.mjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },

@@ -1,37 +1,31 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { sameScan } from "./scanView";
-import type { ScanScope, NodeDetail } from "./scanView";
+import { parseLargestFiles } from "./largestFilesSummary";
+import type { LargestResponse } from "./largestFilesSummary";
+import type { ScanResponse } from "./scanView";
 import { formatBytes } from "./formatBytes";
 
-interface LargestResponse extends ScanScope {
-  limit: number;
-  total_files: number;
-  files: Pick<NodeDetail, "node" | "path">[];
-}
-
 export function LargestFiles({ scope, busy, onZoom, onNuke }: {
-  scope: ScanScope;
+  scope: ScanResponse;
   busy: boolean;
   onZoom: (id: number) => void;
   onNuke: (id: number) => void;
 }) {
-  const { generation, revision } = scope;
+  const { generation, revision, root_path, read_only, total_files, total_size } = scope;
   const [limit, setLimit] = useState(25);
   const [retry, setRetry] = useState(0);
-  const key = JSON.stringify([generation, revision, limit, retry]);
+  const key = JSON.stringify([generation, revision, root_path, read_only, total_files, total_size, limit, retry]);
   const [state, setState] = useState<{ key: string; data?: LargestResponse; error?: string }>({ key: "" });
   useEffect(() => {
     let current = true;
     void invoke<string>("get_largest_files", { generation, revision, limit }).then(raw => {
-      const data: LargestResponse = JSON.parse(raw);
-      if (!sameScan(data, { generation, revision }) || data.limit !== limit) throw new Error("Scan query returned unexpected largest files");
+      const data = parseLargestFiles(raw, { generation, revision, root_path, read_only, total_files, total_size }, limit);
       if (current) setState({ key, data });
     }).catch(error => {
       if (current) setState({ key, error: String(error) });
     });
     return () => { current = false; };
-  }, [generation, revision, limit, key]);
+  }, [generation, revision, root_path, read_only, total_files, total_size, limit, key]);
   // Hide the previous revision/limit synchronously, before its effect cleans up.
   const data = state.key === key ? state.data : undefined;
   const error = state.key === key ? state.error : undefined;

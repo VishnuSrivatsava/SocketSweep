@@ -32,6 +32,17 @@ The limit selector remains available after an error. Frontend queries hide old
 rows immediately when their scan revision or limit changes and ignore late
 responses after replacement or unmount.
 
+The frontend also validates the response before rendering rows or actions:
+matching scope/workload/limit, exactly the bounded number of rows, unique
+unsigned IDs and paths, counted regular-file metadata, safe sizes, descending
+size order, exact root/name/path relationships and deletion eligibility.
+Selected bytes cannot exceed scan totals; a complete list must reconcile with
+the scan's bytes. Valid UTF-8 labels, including whitespace, BOM and CR/LF names,
+remain exact. Delimiter-containing or oversized command paths cannot offer
+deletion. Invalid data uses the existing error/retry view instead of crashing
+the results screen. Rust remains the final authority for IDs, paths and deletes.
+
+
 This is an adaptation of the largest-files idea in Shanmukh's fork at
 [`d677b530`](https://github.com/ksaishanmukh/SocketSweep/tree/d677b530e00dec75c305fc56318720aa8c161692)
 (commits `670736d`, `5e442e2`), implemented on SocketSweep's existing host catalog.
