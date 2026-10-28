@@ -9,6 +9,7 @@
   let readOnly = false;
   let delayedZoom = true;
   let delayedDetail = true;
+  let badDetail = null;
   let delayedLargest = true;
   let failLargest = false;
   let malformedLargest = false;
@@ -182,6 +183,11 @@
         return response;
       }
       if (command === "get_scan_node") {
+        if (badDetail) {
+          const path = badDetail === "object" ? {} : "/outside/file-0";
+          badDetail = null;
+          return JSON.stringify({ ...detail(args.nodeId), path });
+        }
         const response = JSON.stringify(detail(args.nodeId));
         if (delayedDetail) { delayedDetail = false; await pause(300); }
         return response;
@@ -404,6 +410,16 @@
     other.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     await pause(30);
     check(calls.filter(item => item.command === "get_scan_view").length === before, "Other tile zoomed");
+
+    for (const invalidPath of ["object", "outside"]) {
+      badDetail = invalidPath;
+      const toastsBeforeBadDetail = document.querySelectorAll("#toast-container > div").length;
+      const deletesBeforeBadDetail = calls.filter(call => call.command === "delete_item").length;
+      document.querySelector('[aria-label="Delete  file-0 "]').click();
+      await waitFor(() => !document.querySelector("#btn-rescan") || button("NUKE IT") || document.querySelectorAll("#toast-container > div").length > toastsBeforeBadDetail, "Malformed confirmation was not reported");
+      check(document.querySelector("#btn-rescan") && !button("NUKE IT"), "Malformed confirmation crashed results or opened a delete dialog");
+      check(calls.filter(call => call.command === "delete_item").length === deletesBeforeBadDetail, "Malformed confirmation issued a delete");
+    }
 
     document.querySelector('[aria-label="Delete  file-0 "]').click();
     document.querySelector("#btn-rescan").click();

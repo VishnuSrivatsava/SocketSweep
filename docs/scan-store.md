@@ -24,6 +24,11 @@ rows and broader navigation work.
 - Every query, detail request, cursor and delete requires the current generation
   and revision. IDs never renumber within a generation. Deleted nodes and their
   descendants become unavailable; revision changes invalidate older cursors.
+- Before showing deletion confirmation, the UI validates node details against
+  the requested snapshot and ID, including node shape, exact root-relative path,
+  UTF-8 limits and deletion eligibility flags. Invalid details show an error
+  without opening the dialog or issuing a delete. The largest-files query shares
+  the same node/path validation. Rust remains the final deletion authority.
 - `delete_item` accepts IDs, never a frontend path. Rust reconstructs the exact
   accepted UTF-8 path, refuses the root/read-only entries and line-protocol
   delimiters/oversized commands, then uses the existing authenticated command

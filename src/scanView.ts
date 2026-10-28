@@ -57,6 +57,58 @@ export interface ScanScope { generation: string; revision: number }
 /** Shared guards for scan IPC values before feature-specific validation. */
 export const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 export const isCount = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+export const isU32 = (value: unknown): value is number => isCount(value) && value <= 0xffff_ffff;
+const encoder = new TextEncoder();
+const decoder = new TextDecoder("utf-8", { ignoreBOM: true });
+const textBytes = (value: string) => {
+  const bytes = encoder.encode(value);
+  return decoder.decode(bytes) === value ? bytes.length : Infinity;
+};
+const entryName = (value: unknown): value is string => typeof value === "string" && value !== "" && value !== "." && value !== ".."
+  && !value.includes("/") && !value.includes("\0") && textBytes(value) <= 255;
+type NodeContext = Pick<ScanResponse, "root_path" | "read_only" | "total_size">;
+const invalidNode = () => new Error("Scan node response does not match this scan");
+
+/** Shared node/path contract; contextual actions still require their own scope. */
+export function parseNodeReference(value: unknown, expected: NodeContext): Pick<NodeDetail, "node" | "path"> {
+  if (!isRecord(value) || !isRecord(value.node) || typeof value.path !== "string") throw invalidNode();
+  const node = value.node;
+  if (!isU32(node.id) || typeof node.name !== "string"
+    || (node.parent_id !== null && !isU32(node.parent_id)) || !isCount(node.size) || node.size > expected.total_size
+    || !isCount(node.child_count) || typeof node.counted !== "boolean" || typeof node.can_delete !== "boolean"
+    || (node.type !== "file" && node.type !== "directory")
+    || (node.type === "file" && node.child_count !== 0)
+    || (!node.counted && (node.size !== 0 || node.child_count !== 0))) throw invalidNode();
+  const pathBytes = textBytes(value.path);
+  if (pathBytes > 16 * 1024 || (node.can_delete && (expected.read_only || node.id === 0
+    || /[\r\n\0]/.test(value.path) || pathBytes + "DELETE ".length > 16 * 1024))) throw invalidNode();
+  if (node.id === 0) {
+    const rootName = expected.root_path === "/" ? "/" : expected.root_path.slice(expected.root_path.lastIndexOf("/") + 1);
+    if (node.parent_id !== null || node.type !== "directory" || !node.counted
+      || node.name !== rootName || value.path !== expected.root_path) throw invalidNode();
+  } else {
+    if (!isU32(node.parent_id) || node.parent_id >= node.id || !entryName(node.name)) throw invalidNode();
+    const prefix = expected.root_path === "/" ? "/" : `${expected.root_path}/`;
+    const relative = value.path.startsWith(prefix) ? value.path.slice(prefix.length) : "";
+    const parts = relative.split("/");
+    if (!parts.every(entryName) || parts[parts.length - 1] !== node.name
+      || (node.parent_id === 0) !== (parts.length === 1)) throw invalidNode();
+  }
+  return { path: value.path, node: {
+    id: node.id, parent_id: node.parent_id, name: node.name,
+    type: node.type, size: node.size, counted: node.counted, child_count: node.child_count, can_delete: node.can_delete,
+  } };
+}
+
+/** Validate the fresh detail used by confirmation without accepting UI paths. */
+export function parseNodeDetail(raw: string, expected: ScanScope & NodeContext, nodeId: number): NodeDetail {
+  const data: unknown = JSON.parse(raw);
+  if (!isRecord(data) || typeof data.generation !== "string" || !isU32(data.revision) || !isU32(nodeId)
+    || !sameScan({ generation: data.generation, revision: data.revision }, expected)) throw invalidNode();
+  const reference = parseNodeReference(data, expected);
+  if (reference.node.id !== nodeId) throw invalidNode();
+  return { generation: data.generation, revision: data.revision, ...reference };
+}
 export function sameScan(a: ScanScope | null, b: ScanScope): boolean {
   return a?.generation === b.generation && a.revision === b.revision;
 }
