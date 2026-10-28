@@ -19,6 +19,9 @@
   let coverageErrors = 0;
   let coverageSkipped = 0;
   let failDelete = false;
+  let failScan = false;
+  let holdScan = false;
+  let heldScan;
   let stopOutcome = "acknowledged";
   const readyDevices = [
     { serial: "phone-one", state: "device", model: "Pixel <One>" },
@@ -95,6 +98,11 @@
         return "Mock daemon";
       }
       if (command === "run_scan") {
+        if (failScan) { failScan = false; throw "Fixture rescan failure"; }
+        if (holdScan) {
+          holdScan = false;
+          return new Promise((_, reject) => { heldScan = { scanId: args.scanId, reject }; });
+        }
         generation++;
         reset();
         const stats = summary();
@@ -106,6 +114,12 @@
           at: Date.now(),
         });
         return JSON.stringify(stats);
+      }
+      if (command === "cancel_scan") {
+        check(heldScan && args.scanId === heldScan.scanId, "Cancellation targeted the wrong scan");
+        heldScan.reject("Scan cancelled");
+        heldScan = undefined;
+        return;
       }
       if (command === "stop_daemon") {
         await pause(150);
@@ -190,7 +204,7 @@
   const report = (passed, error) => {
     const output = document.createElement("pre");
     output.id = "scan-test-report";
-    output.textContent = JSON.stringify({ fixture: "scan-ui", passed, error, ipc_calls: calls.length, checks: passed ? ["offline fonts under CSP", "bounded collapsed discovery diagnostics", "discovery retry recovery", "setup alignment", "result fonts", "file label semantics", "complete paging", "first-scan comparison", "unchanged comparison after rescan", "deletion delta comparison", "cross-device comparison isolation", "bounded file-type totals", "file-type retry and malformed response", "file-type generation and deletion revision", "file-type coverage and empty scan", "bounded largest files", "late largest response", "largest query retry", "largest ID-only deletion", "largest read-only guards", "largest folder navigation without rescanning", "late zoom", "Other tile", "stale confirmation", "ID-only deletion", "revision refresh", "partial failure", "read-only", "acknowledged shutdown", "unconfirmed shutdown", "reconnect", "stop action ordering", "toast dismissal integration", "bounded diagnostic integration"] : undefined });
+    output.textContent = JSON.stringify({ fixture: "scan-ui", passed, error, ipc_calls: calls.length, checks: passed ? ["offline fonts under CSP", "bounded collapsed discovery diagnostics", "discovery retry recovery", "setup alignment", "result fonts", "file label semantics", "complete paging", "first-scan comparison", "unchanged comparison after rescan", "deletion delta comparison", "cross-device comparison isolation", "bounded file-type totals", "file-type retry and malformed response", "file-type generation and deletion revision", "file-type coverage and empty scan", "bounded largest files", "late largest response", "largest query retry", "largest ID-only deletion", "largest read-only guards", "largest folder navigation without rescanning", "late zoom", "Other tile", "stale confirmation", "ID-only deletion", "revision refresh", "partial failure", "read-only", "acknowledged shutdown", "unconfirmed shutdown", "reconnect", "stop action ordering", "duplicate rescan guard", "rescan failure recovery", "rescan cancellation recovery", "toast dismissal integration", "bounded diagnostic integration"] : undefined });
     document.body.append(output);
     void fetch("/report", { method: "POST", body: output.textContent }).then(() => {
       if (passed) location.replace("/tests/toast_lifecycle_fixture.html");
@@ -300,8 +314,11 @@
     button("File types").click();
     await waitFor(() => resolveTypes && typesPanel()?.querySelector('table[aria-busy="true"]'), "Pending file-type query missing");
     const oldTypes = resolveTypes;
-    document.querySelector("#btn-rescan").click();
+    const rescan = document.querySelector("#btn-rescan");
+    rescan.click();
+    rescan.click();
     await waitFor(() => rows().length === 129, "Rescan during file-type query failed");
+    check(calls.filter(item => item.command === "run_scan").length === scanCount + 1, "Duplicate rescan queued a second scan");
     button("File types").click();
     await waitFor(typesReady, "File-type summary missing after rescan");
     oldTypes();
@@ -500,6 +517,32 @@
     await waitFor(typesReady, "Empty file-type summary missing");
     checkTypes(0);
     check(typesPanel().textContent.includes("No counted files") && !typesPanel().textContent.includes("NaN") && !typesPanel().textContent.includes("Infinity"), "Empty file-type view is misleading");
+    // Exercise the actual App callbacks: duplicate/sibling actions must not
+    // queue behind a rescan, and its guard must release on every outcome.
+    for (const outcome of ["failure", "cancel"]) {
+      const scansBefore = calls.filter(call => call.command === "run_scan").length;
+      const stopsBefore = calls.filter(call => call.command === "stop_daemon").length;
+      const rescanButton = document.querySelector("#btn-rescan");
+      const stopButton = document.querySelector("#btn-disconnect");
+      if (outcome === "failure") failScan = true; else holdScan = true;
+      rescanButton.click();
+      rescanButton.click();
+      stopButton.click();
+      check(calls.filter(call => call.command === "run_scan").length === scansBefore + 1, "Duplicate failed/pending rescan queued another scan");
+      check(calls.filter(call => call.command === "stop_daemon").length === stopsBefore, "Disconnect competed with a pending rescan");
+      if (outcome === "cancel") {
+        await waitFor(() => heldScan && button("Cancel scan"), "Pending rescan cannot be cancelled");
+        const pendingId = heldScan.scanId;
+        button("Cancel scan").click();
+        check(calls.some(call => call.command === "cancel_scan" && call.args.scanId === pendingId), "Rescan cancellation was not sent");
+      }
+      await waitFor(() => document.querySelector("#btn-connect") && !document.querySelector("#btn-connect").disabled, "Failed/cancelled rescan did not return to ready setup");
+      check(rows().length === 0, "Failed/cancelled rescan retained old results");
+      check(calls.filter(call => call.command === "stop_daemon").length === stopsBefore + 1, "Rescan failure did not clean up exactly once");
+      document.querySelector("#btn-connect").click();
+      await waitFor(() => rows().length === 1, "Rescan guard remained held after failure/cancellation");
+      check(calls.filter(call => call.command === "run_scan").length === scansBefore + 2, "Recovery did not start exactly one fresh scan");
+    }
     check(violations.length === 0, `CSP blocked resources: ${violations.join(", ")}`);
     const fonts = performance.getEntriesByType("resource").filter(entry => entry.name.includes(".woff2"));
     check(fonts.length === 13 && fonts.every(entry => new URL(entry.name).origin === location.origin), "Fonts are missing or fetched off-site");

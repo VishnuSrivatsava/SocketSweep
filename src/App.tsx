@@ -215,6 +215,7 @@ function App() {
   // ── Rescan ──────────────────────────────────────────────────────────────
   const handleRescan = useCallback(async () => {
     if (!scanData || actionPending.current) return;
+    actionPending.current = true;
     const scanPath = scanData.root_path;
     setPhase("scanning");
     setStatusText(`Re-scanning ${scanPath} …`);
@@ -236,6 +237,8 @@ function App() {
       try { await invoke("stop_daemon"); } catch { /* retain the scan error */ }
       setScanData(null);
       setPhase("setup");
+    } finally {
+      actionPending.current = false;
     }
   }, [pushToast, addLog, scanData, requestScan]);
 
