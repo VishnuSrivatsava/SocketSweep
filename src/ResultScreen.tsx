@@ -13,9 +13,9 @@ import { ScanHistory } from "./ScanHistory";
 
 function StatCard({ label, value, accent = false }: { label: string; value: string; accent?: boolean }) {
   return (
-    <div className="glass-card rounded-xl px-5 py-4 flex flex-col gap-1">
-      <span className="text-xs font-medium text-zinc-500 uppercase tracking-wider">{label}</span>
-      <span className={`text-xl font-bold font-mono tracking-tight ${accent ? "text-accent-400" : "text-zinc-100"}`}>
+    <div className="glass-card rounded-lg px-3 py-2 flex flex-col gap-0.5">
+      <span className="text-[10px] font-medium text-zinc-500 uppercase tracking-wider">{label}</span>
+      <span className={`text-lg font-bold font-mono tracking-tight ${accent ? "text-accent-400" : "text-zinc-100"}`}>
         {value}
       </span>
     </div>
@@ -101,9 +101,9 @@ export function ResultScreen({
   const breadcrumbs = page?.breadcrumbs ?? [];
 
   return (
-    <div className="flex flex-col h-full animate-fade-in-up">
+    <div className="flex flex-col h-full min-h-0 animate-fade-in-up">
       {/* Top bar */}
-      <header className="flex items-center justify-between px-6 py-4 border-b border-zinc-800/80 shrink-0">
+      <header className="flex items-center justify-between gap-3 px-4 py-2 border-b border-zinc-800/80 shrink-0">
         <div className="flex items-center gap-3">
           <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
           <h1 className="text-base font-semibold text-zinc-200 tracking-tight">SocketSweep</h1>
@@ -151,23 +151,23 @@ export function ResultScreen({
         </div>
       </header>
 
-      <p id="connected-device" className="px-6 pt-3 text-xs text-zinc-500 break-all">Device: <span className="font-mono">{deviceSerial}</span></p>
+      <p id="connected-device" className="px-4 pt-2 text-xs text-zinc-500 break-all">Device: <span className="font-mono">{deviceSerial}</span></p>
       {data.read_only && (
-        <div className="px-6 pt-3 text-xs text-accent-300">
+        <div className="px-4 pt-2 text-xs text-accent-300">
           Root access · Read-only · Deletion disabled
         </div>
       )}
       <ScanHistory scope={data} />
 
       {/* Stats row */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 px-6 py-4 shrink-0">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 px-4 py-2 shrink-0">
         <StatCard label="Total Size" value={formatBytes(data.total_size)} accent />
         <StatCard label="Files" value={data.total_files.toLocaleString("en-US")} />
         <StatCard label="Directories" value={data.total_dirs.toLocaleString("en-US")} />
         <StatCard label="Scan Time" value={`${data.scan_time_ms}ms`} />
       </div>
 
-      <div className="flex gap-2 px-6 pb-3 shrink-0" role="group" aria-label="Scan view">
+      <div className="flex gap-2 px-4 pb-2 shrink-0" role="group" aria-label="Scan view">
         <button aria-pressed={mode === "map"} disabled={busy} onClick={() => setMode("map")}
           className={`px-3 py-2 rounded-lg text-xs ${mode === "map" ? "bg-zinc-700 text-white" : "bg-zinc-900 text-zinc-400"}`}>Storage map</button>
         <button aria-pressed={mode === "largest"} disabled={busy} onClick={() => setMode("largest")}
@@ -175,9 +175,9 @@ export function ResultScreen({
         <button aria-pressed={mode === "types"} disabled={busy} onClick={() => setMode("types")}
           className={`px-3 py-2 rounded-lg text-xs ${mode === "types" ? "bg-zinc-700 text-white" : "bg-zinc-900 text-zinc-400"}`}>File types</button>
       </div>
-      {mode === "types" ? <FileTypes scope={data} busy={busy} /> : mode === "largest" ? <LargestFiles scope={data} busy={busy} onZoom={onZoom} onNuke={onNuke} /> : <>
+      {mode === "types" ? <FileTypes scope={data} busy={busy} /> : mode === "largest" ? <LargestFiles scope={data} busy={busy} onZoom={onZoom} onNuke={onNuke} /> : <div className="flex-1 min-h-0 grid grid-rows-[7rem_minmax(0,1fr)] md:grid-rows-1 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)] gap-3 px-4 pb-3">
       {/* Treemap */}
-      <div className="px-6 mb-4 shrink-0 h-48">
+      <div className="min-h-0 min-w-0">
         <div className="glass-card rounded-xl p-2 w-full h-full relative group">
           <ResponsiveContainer width="100%" height="100%">
             <Treemap
@@ -212,9 +212,9 @@ export function ResultScreen({
       </div>
 
       {/* File tree */}
-      <div className="flex-1 overflow-y-auto px-3 pb-4 min-h-0">
+      <section aria-label="Files and folders" className="glass-card rounded-xl overflow-y-auto px-2 pb-3 min-h-0 min-w-0">
         <div className="flex items-center gap-2 px-3 py-2 mb-1">
-          <span className="text-xs font-semibold text-zinc-500 uppercase tracking-wider flex-1">Storage Map</span>
+          <span className="text-xs font-semibold text-zinc-500 uppercase tracking-wider flex-1">Files and folders</span>
           <span className="text-xs text-zinc-500">
             {[data.errors > 0 ? `${data.errors} access errors` : "", data.skipped > 0 ? `${data.skipped} excluded or duplicate entries` : ""].filter(Boolean).join(" · ")}
           </span>
@@ -224,8 +224,8 @@ export function ResultScreen({
         {page && <FileTreeNode node={page.node} scope={data} parentSize={page.node.size} depth={0}
           onNuke={onNuke} onZoom={onZoom} expanded={expanded} toggle={toggle} busy={busy} rootView={view} />}
 
-      </div>
-      </>}
+      </section>
+      </div>}
     </div>
   );
 }

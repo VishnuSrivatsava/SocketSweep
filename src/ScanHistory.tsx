@@ -53,5 +53,5 @@ export function ScanHistory({ scope }: { scope: ScanResponse }) {
   } else {
     text = "Previous-scan comparison unavailable.";
   }
-  return <p id="scan-history" role="status" className="px-6 pt-1 text-xs text-zinc-500">{text}</p>;
+  return <p id="scan-history" role="status" className="px-4 pt-1 text-xs text-zinc-500">{text}</p>;
 }

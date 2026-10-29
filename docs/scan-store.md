@@ -5,6 +5,10 @@ statistics, the root summary, and a fresh public generation rather than a
 nested tree. Generations use independent random IDs; the daemon's secret
 session token never crosses IPC.
 
+Results keep scan statistics compact and show the map beside the scrollable file
+list at desktop widths. Narrower windows use a short map above the list.
+Diagnostics start collapsed; open **Diagnostics** to inspect the retained log.
+
 `get_scan_view` accepts a generation, revision, node ID and optional cursor.
 It returns the current node, exact path, breadcrumbs, up to 128 children, and
 previous/next cursors. Directory indexes sort by size descending, name, then

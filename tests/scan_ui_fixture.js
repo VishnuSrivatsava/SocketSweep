@@ -215,7 +215,7 @@
   const report = (passed, error) => {
     const output = document.createElement("pre");
     output.id = "scan-test-report";
-    output.textContent = JSON.stringify({ fixture: "scan-ui", passed, error, ipc_calls: calls.length, checks: passed ? ["offline fonts under CSP", "bounded collapsed discovery diagnostics", "discovery retry recovery", "setup alignment", "result fonts", "file label semantics", "complete paging", "first-scan comparison", "unchanged comparison after rescan", "deletion delta comparison", "cross-device comparison isolation", "bounded file-type totals", "file-type retry and malformed response", "file-type generation and deletion revision", "file-type coverage and empty scan", "bounded largest files", "late largest response", "largest query retry", "malformed largest response recovery", "largest ID-only deletion", "largest read-only guards", "largest folder navigation without rescanning", "late zoom", "Other tile", "stale confirmation", "ID-only deletion", "revision refresh", "partial failure", "read-only", "acknowledged shutdown", "unconfirmed shutdown", "reconnect", "stop action ordering", "duplicate rescan guard", "rescan failure recovery", "rescan cancellation recovery", "toast dismissal integration", "bounded diagnostic integration"] : undefined });
+    output.textContent = JSON.stringify({ fixture: "scan-ui", passed, error, ipc_calls: calls.length, checks: passed ? ["offline fonts under CSP", "bounded collapsed discovery diagnostics", "discovery retry recovery", "setup alignment", "result fonts", "file label semantics", "usable file workspace", "collapsible diagnostics", "complete paging", "first-scan comparison", "unchanged comparison after rescan", "deletion delta comparison", "cross-device comparison isolation", "bounded file-type totals", "file-type retry and malformed response", "file-type generation and deletion revision", "file-type coverage and empty scan", "bounded largest files", "late largest response", "largest query retry", "malformed largest response recovery", "largest ID-only deletion", "largest read-only guards", "largest folder navigation without rescanning", "late zoom", "Other tile", "stale confirmation", "ID-only deletion", "revision refresh", "partial failure", "read-only", "acknowledged shutdown", "unconfirmed shutdown", "reconnect", "stop action ordering", "duplicate rescan guard", "rescan failure recovery", "rescan cancellation recovery", "toast dismissal integration", "bounded diagnostic integration"] : undefined });
     document.body.append(output);
     void fetch("/report", { method: "POST", body: output.textContent }).then(() => {
       if (passed) location.replace("/tests/toast_lifecycle_fixture.html");
@@ -310,6 +310,23 @@
     check(document.documentElement.scrollWidth <= innerWidth, "Results overflow horizontally");
     check(document.body.textContent.includes("128 entries on this page of 271"), "Missing full entry count");
     check(!rows().find(item => item.textContent.includes("file-0")).querySelector("button:disabled"), "File label became an unavailable control");
+    const fileViewport = document.querySelector('[aria-label="Files and folders"]');
+    const fileBounds = fileViewport.getBoundingClientRect();
+    check(fileBounds.height >= innerHeight * 0.55, `File browser too short: ${fileBounds.height}px of ${innerHeight}px`);
+    check(fileViewport.scrollHeight > fileViewport.clientHeight, "File browser cannot scroll its entries");
+    const logDisclosure = document.querySelector("#terminal-log");
+    check(logDisclosure.tagName === "DETAILS" && !logDisclosure.open, "Diagnostics did not start collapsed");
+    logDisclosure.querySelector("summary").click();
+    await waitFor(() => logDisclosure.open, "Diagnostics did not open");
+    check(logDisclosure.getBoundingClientRect().height > 100 && logRows[0].getBoundingClientRect().height > 0, "Expanded diagnostics are not readable");
+    check(fileViewport.clientHeight >= innerHeight * 0.3, "Expanded diagnostics made files unusable");
+    logDisclosure.querySelector("summary").click();
+    await waitFor(() => !logDisclosure.open, "Diagnostics did not close");
+    check(Math.abs(fileViewport.getBoundingClientRect().height - fileBounds.height) < 2, "Closing diagnostics did not restore browsing space");
+    const scrollBefore = fileViewport.scrollTop;
+    fileViewport.scrollTop = 200;
+    check(fileViewport.scrollTop > scrollBefore, "File list does not scroll independently");
+    fileViewport.scrollTop = 0;
     const scanCount = calls.filter(item => item.command === "run_scan").length;
     const typesPanel = () => document.querySelector('section[aria-label="File types"]');
     const typesReady = () => typesPanel()?.querySelector('table[aria-busy="false"]') && !typesPanel().querySelector('[role="alert"]');

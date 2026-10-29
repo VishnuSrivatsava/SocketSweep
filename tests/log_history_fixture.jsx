@@ -17,6 +17,7 @@ const renderMeasured = async history => {
   const start = performance.now();
   root.render(<TerminalLog history={history} />);
   await waitFor(() => rows().length === history.entries.length, "Log rows missing");
+  document.querySelector("#terminal-log").open = true;
   layout();
   await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   return performance.now() - start;
