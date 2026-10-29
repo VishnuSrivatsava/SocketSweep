@@ -1067,7 +1067,7 @@ mod tests {
             return;
         }
         let original = directory.read();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0)).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o0)).unwrap();
         assert!(record(directory.path(), entry("phone", "/sdcard", false, 2, 2, 2)).is_err());
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         assert_eq!(directory.read(), original);
