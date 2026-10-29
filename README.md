@@ -59,8 +59,8 @@ For comparison, doing the same thing over MTP (plugging in the phone and browsin
 ## 📸 What It Looks Like
 
 <div align="center">
-  <img src="assets/ui.png" alt="SocketSweep Dashboard" width="45%" />
-  <img src="assets/tree.png" alt="SocketSweep Treemap" width="45%" />
+  <img src="assets/ui.png" alt="SocketSweep device setup" width="45%" />
+  <img src="assets/tree.png" alt="SocketSweep storage analysis" width="45%" />
   <br />
   <p><em>Left: Connection Dashboard | Right: Interactive Treemap — click any block to drill down</em></p>
 </div>
