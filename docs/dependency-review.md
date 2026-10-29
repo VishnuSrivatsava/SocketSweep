@@ -178,3 +178,41 @@ adoption; it is not part of the current dependency graph.
 All 33 Rust library tests pass with the updated lockfile. Three-platform locked
 builds and packaging CI exercise the framework integration. No native app,
 Android daemon, ADB command, or phone test is run locally for this update.
+
+## Release refresh — 29 October
+
+For the v1.2.0 candidate (#108), repeated the full `npm audit --json` against the
+current lockfile: zero reported findings. Built cargo-audit 0.22.2 from its
+locked published source into a temporary tools directory and fetched RustSec
+commit `40f5be6fb12ed93fc591bf4ab23b7d793b3f2239` (1,381 advisories; last update
+28 October). No advisory ignores, target filters or severity filters were used.
+
+The refreshed audit found one additional informational unsoundness warning:
+Tokio 1.52.3 is affected by
+[RUSTSEC-2026-0386](https://rustsec.org/advisories/RUSTSEC-2026-0386.html), concerning
+I/O safety in `AsyncFd` constructors. Updated the transitive Tokio package to
+the compatible patched boundary 1.53.3; no direct dependency, override or
+framework upgrade was added. Its declared Rust minimum is 1.71, below this
+project's 1.89 requirement. The lockfile delta changes only Tokio's version and
+checksum; unrelated dependency bindings remain unchanged.
+
+The upstream fix deprecates the affected safe constructors in favor of unsafe
+registration with explicit file-descriptor lifetime obligations. SocketSweep
+has no direct `AsyncFd` calls. That source observation is not a complete
+transitive reachability or correctness proof, and an audit finding disappearing
+does not establish universal I/O safety.
+
+Auditing the updated lockfile with `--no-fetch` against the same database gives:
+
+| cargo-audit category | Before Tokio update | After |
+| --- | --- | --- |
+| Vulnerability entries | 0 | 0 |
+| Unsoundness warnings | 2 (Tokio, GLib) | 1 (GLib) |
+| Unmaintained-package warnings | 6 | 6 |
+
+The seven existing GLib/proc-macro-error/UNIC warnings remain open in #63.
+[Tauri's own advisory configuration at the reviewed upstream commit](https://github.com/tauri-apps/tauri/blob/548a3692f59405aeb239c5b63fa589824eee51e8/.cargo/audit.toml)
+still records the GLib 0.18.5 warning and identifies GTK4 as its upgrade path.
+SocketSweep does not copy those suppressions or claim an unsupported GLib
+replacement resolves GTK's copy. This refresh is a dated dependency review,
+not a security certification or a physical-device validation result.
