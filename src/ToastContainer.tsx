@@ -27,6 +27,7 @@ function ToastItem({ toast: t, onDismiss, onRemove }: { toast: Toast; onDismiss:
 
   return (
     <div
+      role={t.type === "error" ? "alert" : "status"}
       className={`
         ${t.exiting ? "animate-toast-out" : "animate-toast-in"}
         flex items-start gap-3 px-4 py-3 rounded-lg border shadow-xl cursor-pointer
@@ -40,7 +41,7 @@ function ToastItem({ toast: t, onDismiss, onRemove }: { toast: Toast; onDismiss:
       `}
       onClick={() => onDismiss(t.id)}
     >
-      <span className="mt-0.5 text-base">
+      <span aria-hidden="true" className="mt-0.5 text-base">
         {t.type === "error" ? "✕" : t.type === "success" ? "✓" : "ℹ"}
       </span>
       <p className="text-sm leading-relaxed flex-1">{t.message}</p>

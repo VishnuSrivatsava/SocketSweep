@@ -61,17 +61,19 @@ const report = async (passed, error) => {
   window.setTimeout = nativeTimeout;
   window.clearTimeout = nativeClear;
   await fetch("/report", { method: "POST", body: JSON.stringify({ fixture: "toast-lifecycle", passed, error,
-    checks: passed ? ["natural expiry", "stable lifetime across rerenders", "early dismissal", "repeated dismissal", "dismissal during exit", "independent toasts", "unmount before expiry", "unmount during exit", "repeated notifications release timers"] : undefined }) });
+    checks: passed ? ["toast status semantics", "natural expiry", "stable lifetime across rerenders", "early dismissal", "repeated dismissal", "dismissal during exit", "independent toasts", "unmount before expiry", "unmount during exit", "repeated notifications release timers"] : undefined }) });
   if (passed) location.replace("/tests/log_history_fixture.html");
 };
 
 void (async () => {
   add(1);
   await waitFor(() => item("Toast 1") && timers.size === 1, "Initial toast timer missing");
+  check(item("Toast 1").getAttribute("role") === "status", "Info toast lacks status semantics");
   advance(4000);
-  toasts = toasts.map(toast => ({ ...toast, message: "Toast 1 updated" }));
+  toasts = toasts.map(toast => ({ ...toast, message: "Toast 1 updated", type: "success" }));
   render();
   await waitFor(() => item("Toast 1 updated"), "Rerender missing");
+  check(item("Toast 1 updated").getAttribute("role") === "status", "Success toast lacks status semantics");
   check([...timers.values()][0].at === 5000, "Rerender restarted lifetime");
   advance(999);
   check(!item("Toast 1").classList.contains("animate-toast-out"), "Toast expired before five seconds");
@@ -91,6 +93,8 @@ void (async () => {
 
   add(2, 3);
   await waitFor(() => item("Toast 2") && item("Toast 3") && timers.size === 2, "Independent timers missing");
+  check(item("Toast 2").getAttribute("role") === "alert", "Error toast lacks alert semantics");
+  check(item("Toast 2").querySelector("span").getAttribute("aria-hidden") === "true", "Decorative toast icon is announced");
   advance(100);
   item("Toast 2").click();
   await waitFor(() => item("Toast 2").classList.contains("animate-toast-out") && timers.size === 2, "Early dismissal failed");
