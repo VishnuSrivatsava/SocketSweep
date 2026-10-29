@@ -70,17 +70,17 @@ For comparison, doing the same thing over MTP (plugging in the phone and browsin
 ## 🚀 How to Use
 
 ### 1. Download
-**[Download SocketSweep v1.1.1](https://github.com/VishnuSrivatsava/SocketSweep/releases/tag/v1.1.1)**
+**[Download SocketSweep v1.2.0](https://github.com/VishnuSrivatsava/SocketSweep/releases/tag/v1.2.0)**
 
 | Platform | Download |
 |----------|----------|
-| 🪟 **Windows** | [Installer (.exe)](https://github.com/VishnuSrivatsava/SocketSweep/releases/tag/v1.1.1) · [Enterprise (.msi)](https://github.com/VishnuSrivatsava/SocketSweep/releases/tag/v1.1.1) |
-| 🍎 **macOS** (Apple Silicon) | [Disk Image (.dmg)](https://github.com/VishnuSrivatsava/SocketSweep/releases/tag/v1.1.1) |
-| 🐧 **Linux** | [AppImage](https://github.com/VishnuSrivatsava/SocketSweep/releases/tag/v1.1.1) · [.deb](https://github.com/VishnuSrivatsava/SocketSweep/releases/tag/v1.1.1) |
+| 🪟 **Windows** | [Installer (.exe)](https://github.com/VishnuSrivatsava/SocketSweep/releases/tag/v1.2.0) · [Enterprise (.msi)](https://github.com/VishnuSrivatsava/SocketSweep/releases/tag/v1.2.0) |
+| 🍎 **macOS** (Apple Silicon) | [Disk Image (.dmg)](https://github.com/VishnuSrivatsava/SocketSweep/releases/tag/v1.2.0) |
+| 🐧 **Linux** | [AppImage](https://github.com/VishnuSrivatsava/SocketSweep/releases/tag/v1.2.0) · [.deb](https://github.com/VishnuSrivatsava/SocketSweep/releases/tag/v1.2.0) |
 
-> **AppImage updates:** Starting with the next release, AppImages include update information and a matching `.zsync` release asset for delta updates with [AppImageUpdate](https://github.com/AppImageCommunity/AppImageUpdate). Updates follow the latest published stable release. Existing v1.1.1 downloads need one manual upgrade to an AppImage with this metadata.
+> **AppImage updates:** Starting with v1.2.0, AppImages include update information and a matching `.zsync` release asset for delta updates with [AppImageUpdate](https://github.com/AppImageCommunity/AppImageUpdate). Updates follow the latest published stable release. Existing v1.1.1 downloads need one manual upgrade to an AppImage with this metadata.
 
-> **Arch Linux (x86_64):** See [`socketsweep-bin`](https://aur.archlinux.org/packages/socketsweep-bin) for AUR packaging. For a direct download, use the **Linux AppImage** linked above. In the download directory, run `chmod +x SocketSweep_1.1.1_amd64.AppImage`, then `./SocketSweep_1.1.1_amd64.AppImage` ([AppImage instructions](https://docs.appimage.org/introduction/quickstart.html)). The `.deb` download is for Debian/Ubuntu; `pacman` requires an Arch package.
+> **Arch Linux (x86_64):** See [`socketsweep-bin`](https://aur.archlinux.org/packages/socketsweep-bin) for AUR packaging. For a direct download, use the **Linux AppImage** linked above. In the download directory, run `chmod +x SocketSweep_1.2.0_amd64.AppImage`, then `./SocketSweep_1.2.0_amd64.AppImage` ([AppImage instructions](https://docs.appimage.org/introduction/quickstart.html)). The `.deb` download is for Debian/Ubuntu; `pacman` requires an Arch package.
 
 > **macOS note:** Since the build is ad-hoc signed, run this once after installing:
 > ```bash
@@ -116,8 +116,7 @@ for behavior and manual checks.
 
 ### Optional: scan with root access
 
-This option is included in source builds and the next release; v1.1.1 does not
-expose it.
+This option is available starting with v1.2.0; v1.1.1 does not expose it.
 
 On an already-rooted device, enable **Scan with root access (read-only)** before
 connecting. Choose **App and user data (`/data`)** to include private app files,
