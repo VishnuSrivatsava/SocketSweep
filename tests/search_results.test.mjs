@@ -26,12 +26,13 @@ test("valid pages keep exact labels, IDs and both entry kinds", () => {
   assert.equal(parse(page, expected, "log", 100).results[0].ignored, undefined);
 });
 
-test("empty results and full pages with a continuation are accepted", () => {
+test("empty results and byte-bounded short pages with a continuation are accepted", () => {
   const empty = { ...report(), results: [] };
   assert.equal(parse(empty).results.length, 0);
   const full = { ...report(), has_more: true, results: Array(MAX_SEARCH_RESULTS).fill(row(2, "app.log", 7)) };
   full.results = full.results.map((entry, index) => row(index + 2, `app-${index}.log`, 1));
   assert.equal(parse(full).has_more, true);
+  assert.equal(parse({ ...report(), has_more: true }).has_more, true);
 });
 
 test("malformed payloads, pages, queries and continuations are rejected", () => {
@@ -43,8 +44,8 @@ test("malformed payloads, pages, queries and continuations are rejected", () => 
   for (const changes of [{ generation: "old" }, { revision: 1 }, { revision: -1 }, { query: "LOG" }, { skip: 1 }, { has_more: "no" }]) {
     assert.throws(() => parse({ ...report(), ...changes }));
   }
-  // A short page cannot claim more matches; skip must echo the request.
-  assert.throws(() => parse({ ...report(), has_more: true }));
+  // A continuation must make progress; skip must echo the request.
+  assert.throws(() => parse({ ...report(), results: [], has_more: true }));
   assert.throws(() => parse(report(), expected, "log", 3));
   assert.throws(() => parse(report(), expected, "log", -1));
   assert.throws(() => parse(report(), expected, "", 0));

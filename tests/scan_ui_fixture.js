@@ -171,9 +171,11 @@
           return JSON.stringify({ ...scope(), query: args.query, skip: args.skip, has_more: false, results: null });
         }
         const matches = [...rootChildren, ...folderChildren].filter(item => item.name.toLowerCase().includes(args.query.toLowerCase()));
+        // Simulate a page shortened by the backend's serialized-byte budget.
+        const limit = args.query === "nested" ? 37 : 100;
         const response = JSON.stringify({ ...scope(), query: args.query, skip: args.skip,
-          has_more: matches.length > args.skip + 100,
-          results: matches.slice(args.skip, args.skip + 100).map(item => detail(item.id)) });
+          has_more: matches.length > args.skip + limit,
+          results: matches.slice(args.skip, args.skip + limit).map(item => detail(item.id)) });
         if (holdSearch) { holdSearch = false; return new Promise(resolve => { resolveSearch = () => resolve(response); }); }
         return response;
       }
@@ -459,8 +461,15 @@
     searchNext().click();
     await waitFor(() => searchRows().length > 0, "Second search page missing");
     searchFor("nested");
-    await waitFor(() => searchRows().length === 100, "Nested search page missing");
+    await waitFor(() => searchRows().length === 37, "Byte-bounded search page missing");
     const nestedCount = searchRows().length;
+    const firstNestedNames = searchRows().map(row => row.textContent);
+    searchNext().click();
+    await waitFor(() => searchRows()[0]?.textContent.includes("nested-37"), "Short-page continuation skipped matches");
+    check(calls.filter(call => call.command === "get_search_results").at(-1).args.skip === 37, "Short-page continuation used a fixed offset");
+    button("Previous").click();
+    await waitFor(() => searchRows()[0]?.textContent.includes("nested-0"), "Short-page Previous failed");
+    check(JSON.stringify(searchRows().map(row => row.textContent)) === JSON.stringify(firstNestedNames), "Previous changed short-page boundaries");
     searchFor("zzz-no-match");
     await waitFor(() => document.body.textContent.includes("No matching names"), "Empty search state missing");
     failSearch = true;
@@ -478,6 +487,8 @@
     await waitFor(() => document.body.textContent.includes("No matching names"), "Pre-delete empty state missing");
     searchFor("file");
     await waitFor(() => searchRows().length === 100, "Search results missing before delete");
+    searchNext().click();
+    await waitFor(() => searchRows()[0]?.textContent.includes(" file-100 "), "Second page missing before delete");
     // Keep " file-0 "/" file-1 " for the later confirmation and
     // partial-failure phases; delete another root file so the search row
     // disappears on the revision refresh.
@@ -489,6 +500,9 @@
     await waitFor(() => button("NUKE IT"), "Search confirmation missing");
     button("NUKE IT").click();
     await waitFor(() => !document.querySelector(`[aria-label="${targetLabel}"]`), "Deleted search row survived revision refresh");
+    await waitFor(() => searchRows()[0]?.textContent.includes(" file-0 "), "Deletion did not restart search pagination");
+    check(calls.filter(call => call.command === "get_search_results").at(-1).args.skip === 0, "Revision refresh retained the old offset");
+    check(!button("Previous"), "Previous remained enabled after revision reset");
     check(calls.filter(call => call.command === "delete_item").length === deletesBeforeSearch + 1, "Search deletion count wrong");
     check(calls.filter(item => item.command === "run_scan").length === scanCount + 1, "Search browsing rescanned the phone");
     button("Storage map").click();

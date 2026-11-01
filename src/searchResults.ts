@@ -19,7 +19,7 @@ export function parseSearchResults(raw: string, expected: Expected, query: strin
     || !isCount(skip) || !isU32(skip) || !isCount(data.skip) || data.skip !== skip
     || typeof data.has_more !== "boolean"
     || !Array.isArray(data.results) || data.results.length > MAX_SEARCH_RESULTS
-    || (data.results.length < MAX_SEARCH_RESULTS && data.has_more)) throw invalid();
+    || (data.results.length === 0 && data.has_more)) throw invalid();
   const results: SearchResponse["results"] = [];
   const seen = new Set<number>();
   const paths = new Set<string>();

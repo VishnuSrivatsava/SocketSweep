@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { parseSearchResults, MAX_SEARCH_RESULTS } from "./searchResults";
+import { parseSearchResults } from "./searchResults";
 import type { SearchResponse } from "./searchResults";
 import type { ScanResponse } from "./scanView";
 import { formatBytes } from "./formatBytes";
@@ -14,7 +14,12 @@ export function SearchFiles({ scope, busy, onZoom, onNuke }: {
   const { generation, revision, root_path, read_only, total_size } = scope;
   const [input, setInput] = useState("");
   const [query, setQuery] = useState("");
-  const [skip, setSkip] = useState(0);
+  const pageScope = JSON.stringify([generation, revision]);
+  const [pagination, setPagination] = useState({ scope: pageScope, offsets: [0] });
+  // A revision changes DFS order. Reset synchronously before issuing a request;
+  // keep the submitted query, but never carry offsets into a changed snapshot.
+  const offsets = pagination.scope === pageScope ? pagination.offsets : [0];
+  const skip = offsets[offsets.length - 1];
   const [retry, setRetry] = useState(0);
   const key = JSON.stringify([generation, revision, root_path, read_only, total_size, query, skip, retry]);
   const [state, setState] = useState<{ key: string; data?: SearchResponse; error?: string }>({ key: "" });
@@ -35,7 +40,7 @@ export function SearchFiles({ scope, busy, onZoom, onNuke }: {
   const submit = () => {
     if (!input) return;
     setQuery(input);
-    setSkip(0);
+    setPagination({ scope: pageScope, offsets: [0] });
   };
   const results = data?.results ?? [];
   return <section aria-label="Search" className="flex-1 min-h-0 overflow-y-auto px-6 pb-4">
@@ -52,9 +57,9 @@ export function SearchFiles({ scope, busy, onZoom, onNuke }: {
         {data ? `Showing ${results.length ? `${skip + 1}–${skip + results.length}` : "0"} matches for “${query}”` : error ? "Search unavailable" : "Search names in the completed scan."}
       </p>
       <div className="flex gap-2 shrink-0 text-xs">
-        <button disabled={busy || !data || skip === 0} onClick={() => setSkip(value => Math.max(0, value - MAX_SEARCH_RESULTS))}
+        <button disabled={busy || !data || skip === 0} onClick={() => setPagination({ scope: pageScope, offsets: offsets.slice(0, -1) })}
           className="text-zinc-300 hover:underline disabled:text-zinc-600">Previous</button>
-        <button disabled={busy || !data?.has_more} onClick={() => setSkip(value => value + MAX_SEARCH_RESULTS)}
+        <button disabled={busy || !data?.has_more} onClick={() => setPagination({ scope: pageScope, offsets: [...offsets, skip + results.length] })}
           className="text-zinc-300 hover:underline disabled:text-zinc-600">Next</button>
       </div>
     </div>

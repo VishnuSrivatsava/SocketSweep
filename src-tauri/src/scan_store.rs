@@ -480,13 +480,19 @@ impl Catalog {
 
     // Traverse the live index like visit_files, but report every entry kind
     // and counted state, so search mirrors exactly what browsing shows.
-    fn visit_entries(&self, mut visit: impl FnMut(u32, &Node)) {
+    // Returning false stops traversal, including descent into the current node.
+    fn visit_entries(
+        &self,
+        mut visit: impl FnMut(u32, &Node) -> Result<bool, String>,
+    ) -> Result<(), String> {
         let mut pending = vec![self.children[0].iter()];
         while let Some(children) = pending.last_mut() {
             if let Some(key) = children.next() {
                 let id = key.2;
                 let node = &self.response.nodes[id as usize];
-                visit(id, node);
+                if !visit(id, node)? {
+                    break;
+                }
                 if node.kind == Kind::Directory {
                     pending.push(self.children[id as usize].iter());
                 }
@@ -494,6 +500,7 @@ impl Catalog {
                 pending.pop();
             }
         }
+        Ok(())
     }
 
     pub fn file_types_json(&self, generation: &str, revision: u32) -> Result<String, String> {
@@ -539,10 +546,10 @@ impl Catalog {
     /// Substring search over live entry names with explicit paging; matching,
     /// ordering and bounds are documented in docs/search.md. Results follow
     /// the live index's depth-first order, which is deterministic within a
-    /// revision. Every request walks the reachable index once: O(N + skip)
-    /// matching time and O(depth + page) auxiliary state, with no persistent
-    /// per-query index. Deleted subtrees are absent because their keys leave
-    /// the parent indexes.
+    /// revision. Traversal stops at the first match beyond the row/byte budget:
+    /// O(N) worst-case matching time and O(depth + page) auxiliary state, with
+    /// no persistent per-query index. Deleted subtrees are absent because
+    /// their keys leave the parent indexes.
     pub fn search_json(
         &self,
         generation: &str,
@@ -559,22 +566,6 @@ impl Catalog {
                 "Search text is longer than any stored name ({MAX_SEARCH_QUERY_BYTES} bytes)"
             ));
         }
-        let needle = query.as_bytes();
-        let mut matched: Vec<u32> = Vec::with_capacity(MAX_SEARCH_RESULTS + 1);
-        let mut omitted = 0_usize;
-        let mut more = false;
-        self.visit_entries(|id, node| {
-            if more || !name_matches(&node.name, needle) {
-                return;
-            }
-            if omitted < skip as usize {
-                omitted += 1;
-            } else if matched.len() == MAX_SEARCH_RESULTS {
-                more = true;
-            } else {
-                matched.push(id);
-            }
-        });
         #[derive(Serialize)]
         struct Entry<'a> {
             node: NodeSummary<'a>,
@@ -589,22 +580,48 @@ impl Catalog {
             has_more: bool,
             results: Vec<Entry<'a>>,
         }
-        let results = matched
-            .into_iter()
-            .map(|id| Entry {
-                node: self.summary_node(id),
-                path: self.path(id),
-            })
-            .collect();
-        json(&Search {
+        let mut page = Search {
             generation: &self.generation,
             revision: self.revision,
             query,
             skip,
-            has_more: more,
-            results,
-        })
-        .map_err(|error| format!("{error}. Try a shorter or more specific search."))
+            has_more: false,
+            results: Vec::with_capacity(MAX_SEARCH_RESULTS),
+        };
+        // The empty envelope includes brackets and metadata. `false` is one
+        // byte longer than `true`, so this also covers a continuation page.
+        let mut remaining = MAX_QUERY_BYTES - json(&page)?.len();
+        let mut omitted = 0_usize;
+        self.visit_entries(|id, node| {
+            if !name_matches(&node.name, query.as_bytes()) {
+                return Ok(true);
+            }
+            if omitted < skip as usize {
+                omitted += 1;
+                return Ok(true);
+            }
+            if page.results.len() == MAX_SEARCH_RESULTS {
+                page.has_more = true;
+                return Ok(false);
+            }
+            let entry = Entry {
+                node: self.summary_node(id),
+                path: self.path(id),
+            };
+            // Measure JSON escaping as well as raw path/name bytes and commas.
+            let bytes = json(&entry)?.len() + usize::from(!page.results.is_empty());
+            if bytes > remaining {
+                if page.results.is_empty() {
+                    return Err("Search result exceeds response limit".into());
+                }
+                page.has_more = true;
+                return Ok(false);
+            }
+            remaining -= bytes;
+            page.results.push(entry);
+            Ok(true)
+        })?;
+        json(&page)
     }
 
     pub fn detail_json(&self, generation: &str, revision: u32, id: u32) -> Result<String, String> {
@@ -1626,6 +1643,78 @@ mod tests {
         assert_eq!(page(250)["has_more"], false);
         assert_eq!(page(400)["results"], json!([]));
         assert_eq!(page(0), page(0));
+    }
+
+    #[test]
+    fn search_pages_fit_the_byte_budget_and_reach_every_long_path_match() {
+        for (name, depth) in [
+            ("d".repeat(255), 43),
+            ("\u{1}".repeat(250), 8),
+            ("\u{1}".repeat(255), 63),
+        ] {
+            let mut entries = vec![root()];
+            for id in 1..=depth {
+                entries.push(entry(id, Some(id - 1), &name, "directory", 0, true));
+            }
+            for index in 0..250 {
+                entries.push(entry(
+                    depth + index + 1,
+                    Some(depth),
+                    &format!("needle-{index:03}"),
+                    "file",
+                    1,
+                    true,
+                ));
+            }
+            let store = Catalog::new(fixture(&entries, false), "generation-a".into());
+            let mut seen = BTreeSet::new();
+            let mut skip = 0;
+            loop {
+                let raw = store.search_json("generation-a", 0, "needle", skip).unwrap();
+                assert!(raw.len() <= MAX_QUERY_BYTES);
+                let page: Value = serde_json::from_str(&raw).unwrap();
+                let rows = page["results"].as_array().unwrap();
+                assert!(!rows.is_empty() && rows.len() < MAX_SEARCH_RESULTS);
+                assert_eq!(page["skip"], skip);
+                for row in rows {
+                    assert!(seen.insert(row["node"]["id"].as_u64().unwrap()));
+                }
+                skip += rows.len() as u32;
+                assert_eq!(page["has_more"], skip < 250);
+                if page["has_more"] == false {
+                    break;
+                }
+            }
+            assert_eq!(seen.len(), 250);
+        }
+    }
+
+    #[test]
+    fn entry_traversal_stops_at_lookahead_without_descending_further() {
+        let entries = vec![
+            root(),
+            entry(1, Some(0), "folder", "directory", 0, true),
+            entry(2, Some(1), "child", "file", 1, true),
+            entry(3, Some(0), "sibling", "file", 0, true),
+        ];
+        let store = Catalog::new(fixture(&entries, false), "generation-a".into());
+        let mut visited = Vec::new();
+        store
+            .visit_entries(|id, _| {
+                visited.push(id);
+                Ok(false)
+            })
+            .unwrap();
+        assert_eq!(visited, [1]);
+        let store = Catalog::new(fixture(&wide(250), false), "generation-a".into());
+        let mut matches = 0;
+        store
+            .visit_entries(|_, node| {
+                matches += usize::from(name_matches(&node.name, b"file-"));
+                Ok(matches <= MAX_SEARCH_RESULTS)
+            })
+            .unwrap();
+        assert_eq!(matches, MAX_SEARCH_RESULTS + 1);
     }
 
     #[test]
