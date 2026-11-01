@@ -11,6 +11,10 @@ use std::time::Instant;
 
 pub const PAGE_SIZE: usize = 128;
 pub const MAX_LARGEST_FILES: usize = 100;
+/// A search needle longer than any stored name cannot match: the stream
+/// decoder rejects entry names over 255 bytes.
+pub const MAX_SEARCH_QUERY_BYTES: usize = 255;
+pub const MAX_SEARCH_RESULTS: usize = 100;
 const CHART_SIZE: usize = 64;
 const MAX_QUERY_BYTES: usize = 1024 * 1024;
 type Key = (Reverse<u64>, Arc<str>, u32);
@@ -134,6 +138,24 @@ pub struct DeletePlan {
     revision: u32,
     node_id: u32,
     pub path: String,
+}
+
+/// ASCII letters compare case-insensitively, matching the file-type
+/// classifier's fold rule; every other byte compares exactly. Candidates must
+/// start on a UTF-8 character boundary so a multi-byte character can never
+/// contribute a partial-byte match. Worst case O(name × needle) byte work.
+fn name_matches(name: &str, needle: &[u8]) -> bool {
+    if needle.is_empty() || needle.len() > name.len() {
+        return false;
+    }
+    let hay = name.as_bytes();
+    (0..=hay.len() - needle.len()).any(|start| {
+        name.is_char_boundary(start)
+            && hay[start..start + needle.len()]
+                .iter()
+                .zip(needle)
+                .all(|(h, n)| (n.is_ascii() && h.eq_ignore_ascii_case(n)) || h == n)
+    })
 }
 
 fn json(value: &impl Serialize) -> Result<String, String> {
@@ -456,6 +478,24 @@ impl Catalog {
         }
     }
 
+    // Traverse the live index like visit_files, but report every entry kind
+    // and counted state, so search mirrors exactly what browsing shows.
+    fn visit_entries(&self, mut visit: impl FnMut(u32, &Node)) {
+        let mut pending = vec![self.children[0].iter()];
+        while let Some(children) = pending.last_mut() {
+            if let Some(key) = children.next() {
+                let id = key.2;
+                let node = &self.response.nodes[id as usize];
+                visit(id, node);
+                if node.kind == Kind::Directory {
+                    pending.push(self.children[id as usize].iter());
+                }
+            } else {
+                pending.pop();
+            }
+        }
+    }
+
     pub fn file_types_json(&self, generation: &str, revision: u32) -> Result<String, String> {
         self.scope(generation, revision)?;
         #[derive(Serialize)]
@@ -494,6 +534,77 @@ impl Catalog {
             total_size: self.response.total_size,
             categories,
         })
+    }
+
+    /// Substring search over live entry names with explicit paging; matching,
+    /// ordering and bounds are documented in docs/search.md. Results follow
+    /// the live index's depth-first order, which is deterministic within a
+    /// revision. Every request walks the reachable index once: O(N + skip)
+    /// matching time and O(depth + page) auxiliary state, with no persistent
+    /// per-query index. Deleted subtrees are absent because their keys leave
+    /// the parent indexes.
+    pub fn search_json(
+        &self,
+        generation: &str,
+        revision: u32,
+        query: &str,
+        skip: u32,
+    ) -> Result<String, String> {
+        self.scope(generation, revision)?;
+        if query.is_empty() {
+            return Err("Enter text to search this scan".into());
+        }
+        if query.len() > MAX_SEARCH_QUERY_BYTES {
+            return Err(format!(
+                "Search text is longer than any stored name ({MAX_SEARCH_QUERY_BYTES} bytes)"
+            ));
+        }
+        let needle = query.as_bytes();
+        let mut matched: Vec<u32> = Vec::with_capacity(MAX_SEARCH_RESULTS + 1);
+        let mut omitted = 0_usize;
+        let mut more = false;
+        self.visit_entries(|id, node| {
+            if more || !name_matches(&node.name, needle) {
+                return;
+            }
+            if omitted < skip as usize {
+                omitted += 1;
+            } else if matched.len() == MAX_SEARCH_RESULTS {
+                more = true;
+            } else {
+                matched.push(id);
+            }
+        });
+        #[derive(Serialize)]
+        struct Entry<'a> {
+            node: NodeSummary<'a>,
+            path: String,
+        }
+        #[derive(Serialize)]
+        struct Search<'a> {
+            generation: &'a str,
+            revision: u32,
+            query: &'a str,
+            skip: u32,
+            has_more: bool,
+            results: Vec<Entry<'a>>,
+        }
+        let results = matched
+            .into_iter()
+            .map(|id| Entry {
+                node: self.summary_node(id),
+                path: self.path(id),
+            })
+            .collect();
+        json(&Search {
+            generation: &self.generation,
+            revision: self.revision,
+            query,
+            skip,
+            has_more: more,
+            results,
+        })
+        .map_err(|error| format!("{error}. Try a shorter or more specific search."))
     }
 
     pub fn detail_json(&self, generation: &str, revision: u32, id: u32) -> Result<String, String> {
@@ -1437,5 +1548,114 @@ mod tests {
         assert!(json(&"\u{0001}".repeat(MAX_QUERY_BYTES / 6 + 1)).is_err());
         let store = Catalog::new(fixture(&wide(1000), false), "generation-a".into());
         assert!(store.view_json("generation-a", 0, 0, None).unwrap().len() < MAX_QUERY_BYTES);
+    }
+
+    #[test]
+    fn search_matches_ascii_folded_exact_bytes_and_every_entry_kind() {
+        let entries = vec![
+            root(),
+            entry(1, Some(0), "Photo.JPG", "file", 5, true),
+            entry(2, Some(0), "photo.jpg", "file", 3, true),
+            entry(3, Some(0), "phöt", "file", 1, true),
+            entry(4, Some(0), "Photos", "directory", 0, true),
+            entry(5, Some(4), "link", "other", 0, false),
+            entry(6, Some(0), "a\nb", "file", 0, true),
+        ];
+        let store = Catalog::new(fixture(&entries, false), "generation-a".into());
+        let ids = |raw: Result<String, String>| {
+            json!(value(raw)["results"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| row["node"]["id"].clone())
+                .collect::<Vec<_>>())
+        };
+        // ASCII letters fold; non-ASCII bytes compare exactly.
+        assert_eq!(ids(store.search_json("generation-a", 0, "PHOTO.JPG", 0)), json!([1, 2]));
+        assert_eq!(ids(store.search_json("generation-a", 0, "photo", 0)), json!([1, 2, 4]));
+        assert_eq!(ids(store.search_json("generation-a", 0, "PHÖ", 0)), json!([]));
+        assert_eq!(ids(store.search_json("generation-a", 0, "phö", 0)), json!([3]));
+        // Other/uncounted entries and newline names stay searchable; the root
+        // itself never matches.
+        assert_eq!(ids(store.search_json("generation-a", 0, "link", 0)), json!([5]));
+        assert_eq!(ids(store.search_json("generation-a", 0, "\n", 0)), json!([6]));
+        assert_eq!(ids(store.search_json("generation-a", 0, "fixture", 0)), json!([]));
+        for query in ["", "x".repeat(256).as_str()] {
+            assert!(store.search_json("generation-a", 0, query, 0).is_err());
+        }
+        assert!(store.search_json("generation-a", 0, &"x".repeat(255), 0).is_ok());
+        assert!(store.search_json("old", 0, "photo", 0).is_err());
+        assert!(store.search_json("generation-a", 1, "photo", 0).is_err());
+    }
+
+    #[test]
+    fn search_pagination_reaches_every_match_in_deterministic_order() {
+        let store = Catalog::new(fixture(&wide(250), false), "generation-a".into());
+        let page = |skip: u32| value(store.search_json("generation-a", 0, "FILE-", skip));
+        // Every root child is a matched sibling, so pages follow the child
+        // index order: size descending, then name, then ID.
+        let mut seen = Vec::new();
+        let mut skip = 0;
+        loop {
+            let result = page(skip);
+            let results = result["results"].as_array().unwrap();
+            assert!(results.len() <= MAX_SEARCH_RESULTS);
+            assert_eq!(result["query"], "FILE-");
+            assert_eq!(result["skip"], skip);
+            for (left, right) in results.iter().zip(results.iter().skip(1)) {
+                let order = |row: &Value| {
+                    (
+                        Reverse(row["node"]["size"].as_u64().unwrap()),
+                        row["node"]["name"].as_str().unwrap().to_string(),
+                        row["node"]["id"].as_u64().unwrap(),
+                    )
+                };
+                assert!(order(left) <= order(right));
+            }
+            let ids: Vec<_> = results.iter().map(|row| row["node"]["id"].clone()).collect();
+            assert!(!ids.iter().any(|id| seen.contains(id)));
+            let done = !result["has_more"].as_bool().unwrap();
+            seen.extend(ids);
+            if done {
+                break;
+            }
+            skip += MAX_SEARCH_RESULTS as u32;
+        }
+        assert_eq!(seen.len(), 250);
+        assert_eq!(page(250)["results"], json!([]));
+        assert_eq!(page(250)["has_more"], false);
+        assert_eq!(page(400)["results"], json!([]));
+        assert_eq!(page(0), page(0));
+    }
+
+    #[test]
+    fn search_excludes_deleted_subtrees_and_requires_current_revision() {
+        let entries = vec![
+            root(),
+            entry(1, Some(0), "Music", "directory", 0, true),
+            entry(2, Some(1), "song.mp3", "file", 4, true),
+            entry(3, Some(0), "readme.txt", "file", 2, true),
+        ];
+        let mut store = Some(Catalog::new(fixture(&entries, false), "generation-a".into()));
+        let results = |store: &Option<Catalog>, revision: u32, query: &str| {
+            json!(value(
+                store.as_ref().unwrap().search_json("generation-a", revision, query, 0)
+            )["results"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| row["node"]["id"].clone())
+                .collect::<Vec<_>>())
+        };
+        assert_eq!(results(&store, 0, "song"), json!([2]));
+        let plan = store
+            .as_ref()
+            .unwrap()
+            .prepare_delete("generation-a", 0, 1)
+            .unwrap();
+        finish_delete(&mut store, &plan, success()).unwrap();
+        assert_eq!(results(&store, 1, "song"), json!([]));
+        assert_eq!(results(&store, 1, "readme"), json!([3]));
+        assert!(store.as_ref().unwrap().search_json("generation-a", 0, "song", 0).is_err());
     }
 }
