@@ -13,6 +13,10 @@
   let delayedLargest = true;
   let failLargest = false;
   let malformedLargest = false;
+  let holdSearch = false;
+  let resolveSearch;
+  let failSearch = false;
+  let malformedSearch = false;
   let holdTypes = false;
   let resolveTypes;
   let failTypes = false;
@@ -158,6 +162,23 @@
         if (delayedLargest) { delayedLargest = false; await pause(300); }
         return response;
       }
+      if (command === "get_search_results") {
+        check(typeof args.query === "string" && args.query !== "" && args.query.length <= 255, "Unbounded search query");
+        check(Number.isInteger(args.skip) && args.skip >= 0, "Invalid search skip");
+        if (failSearch) { failSearch = false; throw "Fixture search failure"; }
+        if (malformedSearch) {
+          malformedSearch = false;
+          return JSON.stringify({ ...scope(), query: args.query, skip: args.skip, has_more: false, results: null });
+        }
+        const matches = [...rootChildren, ...folderChildren].filter(item => item.name.toLowerCase().includes(args.query.toLowerCase()));
+        // Simulate a page shortened by the backend's serialized-byte budget.
+        const limit = args.query === "nested" ? 37 : 100;
+        const response = JSON.stringify({ ...scope(), query: args.query, skip: args.skip,
+          has_more: matches.length > args.skip + limit,
+          results: matches.slice(args.skip, args.skip + limit).map(item => detail(item.id)) });
+        if (holdSearch) { holdSearch = false; return new Promise(resolve => { resolveSearch = () => resolve(response); }); }
+        return response;
+      }
       if (command === "get_scan_comparison") {
         // Same shape as the Rust query: the delta compares the live totals
         // with the previous scan of the same device, so deletions count.
@@ -215,7 +236,7 @@
   const report = (passed, error) => {
     const output = document.createElement("pre");
     output.id = "scan-test-report";
-    output.textContent = JSON.stringify({ fixture: "scan-ui", passed, error, ipc_calls: calls.length, checks: passed ? ["offline fonts under CSP", "bounded collapsed discovery diagnostics", "discovery retry recovery", "setup alignment", "result fonts", "file label semantics", "usable file workspace", "collapsible diagnostics", "complete paging", "first-scan comparison", "unchanged comparison after rescan", "deletion delta comparison", "cross-device comparison isolation", "bounded file-type totals", "file-type retry and malformed response", "file-type generation and deletion revision", "file-type coverage and empty scan", "bounded largest files", "late largest response", "largest query retry", "malformed largest response recovery", "largest ID-only deletion", "largest read-only guards", "largest folder navigation without rescanning", "late zoom", "Other tile", "stale confirmation", "ID-only deletion", "revision refresh", "partial failure", "read-only", "acknowledged shutdown", "unconfirmed shutdown", "reconnect", "stop action ordering", "duplicate rescan guard", "rescan failure recovery", "rescan cancellation recovery", "toast dismissal integration", "bounded diagnostic integration"] : undefined });
+    output.textContent = JSON.stringify({ fixture: "scan-ui", passed, error, ipc_calls: calls.length, checks: passed ? ["offline fonts under CSP", "bounded collapsed discovery diagnostics", "discovery retry recovery", "setup alignment", "result fonts", "file label semantics", "usable file workspace", "collapsible diagnostics", "complete paging", "first-scan comparison", "unchanged comparison after rescan", "deletion delta comparison", "cross-device comparison isolation", "bounded file-type totals", "file-type retry and malformed response", "file-type generation and deletion revision", "file-type coverage and empty scan", "bounded largest files", "late largest response", "largest query retry", "malformed largest response recovery", "largest ID-only deletion", "largest read-only guards", "largest folder navigation without rescanning", "bounded search results", "late search response", "search retry and malformed response", "search ID-only deletion", "read-only search deletion disabled", "late zoom", "Other tile", "stale confirmation", "ID-only deletion", "revision refresh", "partial failure", "read-only", "acknowledged shutdown", "unconfirmed shutdown", "reconnect", "stop action ordering", "duplicate rescan guard", "rescan failure recovery", "rescan cancellation recovery", "toast dismissal integration", "bounded diagnostic integration"] : undefined });
     document.body.append(output);
     void fetch("/report", { method: "POST", body: output.textContent }).then(() => {
       if (passed) location.replace("/tests/toast_lifecycle_fixture.html");
@@ -411,6 +432,82 @@
     await waitFor(() => rows().some(item => item.textContent.includes("large-folder")), "First page missing");
     check(JSON.stringify(rows().map(item => item.textContent)) === JSON.stringify(firstNames), "Paging changed ordering");
 
+    // Search: bounded pages, a superseded held response, retry, malformed
+    // recovery, and ID-only deletion. No rescan is ever allowed here.
+    const searchRows = () => [...document.querySelectorAll(".search-result-row")];
+    const searchFor = text => {
+      const input = document.querySelector("#search-input");
+      const set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+      set.call(input, text);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      document.querySelector("#search-submit").click();
+    };
+    const searchNext = () => [...document.querySelectorAll("button")].find(item => item.textContent.trim() === "Next" && !item.disabled);
+    button("Search").click();
+    await waitFor(() => document.querySelector("#search-input"), "Search controls missing");
+    // The first response is held; an empty superseding query must win and
+    // the held response must never replace it.
+    holdSearch = true;
+    searchFor("file");
+    await waitFor(() => document.querySelector("#search-input").value === "file", "Search query not submitted");
+    searchFor("zzz-no-match");
+    await waitFor(() => document.body.textContent.includes("No matching names"), "Superseding search state missing");
+    resolveSearch();
+    await pause(60);
+    check(searchRows().length === 0 && document.body.textContent.includes("No matching names"), "Held search response replaced the current results");
+    searchFor("file");
+    await waitFor(() => searchRows().length === 100, "Bounded search page missing");
+    check(searchNext(), "Search continuation missing");
+    searchNext().click();
+    await waitFor(() => searchRows().length > 0, "Second search page missing");
+    searchFor("nested");
+    await waitFor(() => searchRows().length === 37, "Byte-bounded search page missing");
+    const nestedCount = searchRows().length;
+    const firstNestedNames = searchRows().map(row => row.textContent);
+    searchNext().click();
+    await waitFor(() => searchRows()[0]?.textContent.includes("nested-37"), "Short-page continuation skipped matches");
+    check(calls.filter(call => call.command === "get_search_results").at(-1).args.skip === 37, "Short-page continuation used a fixed offset");
+    button("Previous").click();
+    await waitFor(() => searchRows()[0]?.textContent.includes("nested-0"), "Short-page Previous failed");
+    check(JSON.stringify(searchRows().map(row => row.textContent)) === JSON.stringify(firstNestedNames), "Previous changed short-page boundaries");
+    searchFor("zzz-no-match");
+    await waitFor(() => document.body.textContent.includes("No matching names"), "Empty search state missing");
+    failSearch = true;
+    searchFor("file");
+    await waitFor(() => button("Retry"), "Search failure not shown");
+    button("Retry").click();
+    await waitFor(() => searchRows().length === 100, "Search retry failed");
+    malformedSearch = true;
+    searchFor("nested");
+    await waitFor(() => button("Retry"), "Malformed search response did not offer retry");
+    check(searchRows().length === 0, "Malformed search response retained rows");
+    button("Retry").click();
+    await waitFor(() => searchRows().length === nestedCount, "Malformed search response did not recover");
+    searchFor("zzz-no-match");
+    await waitFor(() => document.body.textContent.includes("No matching names"), "Pre-delete empty state missing");
+    searchFor("file");
+    await waitFor(() => searchRows().length === 100, "Search results missing before delete");
+    searchNext().click();
+    await waitFor(() => searchRows()[0]?.textContent.includes(" file-100 "), "Second page missing before delete");
+    // Keep " file-0 "/" file-1 " for the later confirmation and
+    // partial-failure phases; delete another root file so the search row
+    // disappears on the revision refresh.
+    const target = searchRows().find(row => !row.textContent.includes("/large-folder/")
+      && !row.textContent.includes(" file-0 ") && !row.textContent.includes(" file-1 "));
+    const targetLabel = target.querySelector('[aria-label^="Delete "]').getAttribute("aria-label");
+    const deletesBeforeSearch = calls.filter(call => call.command === "delete_item").length;
+    target.querySelector('[aria-label^="Delete "]').click();
+    await waitFor(() => button("NUKE IT"), "Search confirmation missing");
+    button("NUKE IT").click();
+    await waitFor(() => !document.querySelector(`[aria-label="${targetLabel}"]`), "Deleted search row survived revision refresh");
+    await waitFor(() => searchRows()[0]?.textContent.includes(" file-0 "), "Deletion did not restart search pagination");
+    check(calls.filter(call => call.command === "get_search_results").at(-1).args.skip === 0, "Revision refresh retained the old offset");
+    check(!button("Previous"), "Previous remained enabled after revision reset");
+    check(calls.filter(call => call.command === "delete_item").length === deletesBeforeSearch + 1, "Search deletion count wrong");
+    check(calls.filter(item => item.command === "run_scan").length === scanCount + 1, "Search browsing rescanned the phone");
+    button("Storage map").click();
+    await waitFor(() => rows().length === 129, "Map missing after search");
+
     zoomFolder();
     await waitFor(() => button("← Back to Root"), "Zoom navigation missing");
     button("← Back to Root").click();
@@ -498,6 +595,13 @@
     button("Largest files").click();
     await waitFor(() => largestRows().length === 25, "Read-only largest files missing");
     check([...document.querySelectorAll('.largest-file-row button[aria-label^="Delete "]')].every(item => item.disabled), "Read-only largest deletion enabled");
+    button("Search").click();
+    await waitFor(() => document.querySelector("#search-input"), "Read-only search controls missing");
+    searchFor("file");
+    await waitFor(() => searchRows().length > 0, "Read-only search results missing");
+    check(searchRows().length > 0 && [...document.querySelectorAll('.search-result-row button[aria-label^="Delete "]')].every(item => item.disabled), "Read-only search deletion enabled");
+    button("Storage map").click();
+    await waitFor(() => rows().length === 129, "Read-only map missing after search");
     button("File types").click();
     await waitFor(typesReady, "Read-only file types missing");
     checkTypes(470);

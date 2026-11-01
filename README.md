@@ -102,6 +102,9 @@ That's it. No apps to install on your phone, no Wi-Fi setup, no root required.
 In development builds, **File types** shows counts and bytes by filename extension
 from the completed scan. See [classification rules and coverage](docs/file-types.md).
 
+In development builds, **Search** finds entry names across the completed scan
+with bounded, fully paginated results. See [matching rules and bounds](docs/search.md).
+
 Verified scans without access errors are recorded locally when history storage
 is available. The results header compares compatible scans of the same device,
 folder and access mode; failed or cancelled scans never become baselines. See

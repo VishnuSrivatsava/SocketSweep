@@ -572,6 +572,20 @@ fn get_file_types(generation: String, revision: u32) -> Result<String, String> {
 }
 
 #[tauri::command(async)]
+fn get_search_results(
+    generation: String,
+    revision: u32,
+    query: String,
+    skip: u32,
+) -> Result<String, String> {
+    let store = SCAN_STORE.lock().map_err(|_| "Scan state is unavailable")?;
+    store
+        .as_ref()
+        .ok_or("Scan is unavailable; rescan required")?
+        .search_json(&generation, revision, &query, skip)
+}
+
+#[tauri::command(async)]
 fn get_scan_comparison(generation: String, revision: u32) -> Result<String, String> {
     let store = SCAN_STORE.lock().map_err(|_| "Scan state is unavailable")?;
     let catalog = store
@@ -625,6 +639,7 @@ pub fn run() {
             get_scan_node,
             get_largest_files,
             get_file_types,
+            get_search_results,
             get_scan_comparison,
         ])
         .build(tauri::generate_context!())
