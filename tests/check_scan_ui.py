@@ -27,7 +27,22 @@ def browser_version(chrome):
         return f"Version unavailable: {error}"[:512]
 
 
-def wait_for_report(reports, process, expected, timeout=40):
+# The first report additionally budgets one-time browser startup on fresh CI
+# runners: profile creation, font cache and driver probing exceeded the
+# per-fixture deadline before any report in #78. The execution deadline for
+# every later report is unchanged, and assertions never move.
+STARTUP_FIXTURE = 'device-discovery'
+REPORT_TIMEOUT = 40
+STARTUP_TIMEOUT = 120
+
+
+def report_timeout(expected):
+    return STARTUP_TIMEOUT if expected == STARTUP_FIXTURE else REPORT_TIMEOUT
+
+
+def wait_for_report(reports, process, expected, timeout=None):
+    if timeout is None:
+        timeout = report_timeout(expected)
     deadline = monotonic() + timeout
     while True:
         try:
@@ -38,7 +53,7 @@ def wait_for_report(reports, process, expected, timeout=40):
             if status is not None:
                 raise RuntimeError(f"Browser exited with status {status} while waiting for {expected}")
             if monotonic() >= deadline:
-                raise TimeoutError(f"Headless browser timed out waiting for {expected}")
+                raise TimeoutError(f"Headless browser timed out after {timeout}s waiting for {expected}")
 
 
 def log_tail(log):

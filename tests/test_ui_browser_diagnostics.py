@@ -33,8 +33,26 @@ class UiBrowserDiagnosticsTests(unittest.TestCase):
     def test_live_browser_times_out_with_expected_fixture(self):
         process = Mock()
         process.poll.return_value = None
-        with self.assertRaisesRegex(TimeoutError, "waiting for scan-ui"):
+        with self.assertRaisesRegex(TimeoutError, r"timed out after 0s waiting for scan-ui"):
             harness.wait_for_report(Queue(), process, "scan-ui", timeout=0)
+
+    def test_first_fixture_uses_the_startup_deadline_and_later_ones_do_not(self):
+        # #78: one-time browser startup on a fresh runner exceeded the
+        # per-fixture deadline before the first report.
+        self.assertGreater(harness.STARTUP_TIMEOUT, harness.REPORT_TIMEOUT)
+        self.assertEqual(harness.report_timeout("device-discovery"), harness.STARTUP_TIMEOUT)
+        for fixture in ("folder-expansion", "scan-ui", "toast-lifecycle", "log-history"):
+            self.assertEqual(harness.report_timeout(fixture), harness.REPORT_TIMEOUT)
+
+    def test_startup_deadline_budgets_a_slow_first_report(self):
+        process = Mock()
+        process.poll.return_value = None
+        reports = Mock()
+        reports.get.side_effect = Empty
+        with patch.object(harness, "monotonic", side_effect=[0, 1, 119, 119.5, 120]):
+            with self.assertRaisesRegex(TimeoutError, "after 120s waiting for device-discovery"):
+                harness.wait_for_report(reports, process, "device-discovery")
+        self.assertEqual(reports.get.call_count, 2)
 
     def test_empty_queue_does_not_reset_the_deadline(self):
         process = Mock()
