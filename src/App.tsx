@@ -363,21 +363,21 @@ function App() {
 
       {/* Custom Confirm Modal */}
       {confirmDelete && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in-up">
-          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 max-w-sm w-full shadow-2xl">
-            <div className="flex items-center gap-3 mb-4">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in-up">
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 max-w-sm w-full max-h-[calc(100vh-2rem)] flex flex-col overflow-y-auto shadow-2xl">
+            <div className="flex items-center gap-3 mb-4 shrink-0">
               <div className="w-10 h-10 rounded-full bg-red-500/10 flex items-center justify-center text-red-500">
                 <IconNuke />
               </div>
               <h3 className="text-lg font-bold text-zinc-100">Delete Item?</h3>
             </div>
-            <p className="text-sm text-zinc-400 mb-2">
+            <p className="text-sm text-zinc-400 mb-2 shrink-0">
               Are you sure you want to permanently delete:
             </p>
-            <p className="text-sm font-mono text-zinc-300 bg-zinc-950 p-2 rounded-lg whitespace-break-spaces break-all border border-zinc-800 mb-6">
+            <p tabIndex={0} className="min-h-0 overflow-y-auto focus-visible:outline-2 focus-visible:outline-accent-400 text-sm font-mono text-zinc-300 bg-zinc-950 p-2 rounded-lg whitespace-break-spaces break-all border border-zinc-800 mb-6">
               {confirmDelete.path}
             </p>
-            <div className="flex items-center gap-3 justify-end">
+            <div className="flex items-center gap-3 justify-end shrink-0">
               <button
                 onClick={() => { confirmationRequest.current += 1; setConfirmDelete(null); }}
                 className="px-4 py-2 rounded-lg text-sm font-medium text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors"
