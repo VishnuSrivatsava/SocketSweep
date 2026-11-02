@@ -374,7 +374,7 @@ function App() {
             <p className="text-sm text-zinc-400 mb-2">
               Are you sure you want to permanently delete:
             </p>
-            <p className="text-sm font-mono text-zinc-300 bg-zinc-950 p-2 rounded-lg break-all border border-zinc-800 mb-6">
+            <p className="text-sm font-mono text-zinc-300 bg-zinc-950 p-2 rounded-lg whitespace-break-spaces break-all border border-zinc-800 mb-6">
               {confirmDelete.path}
             </p>
             <div className="flex items-center gap-3 justify-end">
