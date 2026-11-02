@@ -7,6 +7,7 @@
   let revision = 0;
   let unavailable = false;
   let readOnly = false;
+  let scanRoot = "/fixture";
   let delayedZoom = true;
   let delayedDetail = true;
   let badDetail = null;
@@ -60,14 +61,14 @@
   reset();
   const scope = () => ({ generation: `fixture-${generation}`, revision });
   const summary = () => ({
-    ...scope(), status: "ok", root_path: "/fixture", root: { ...node(0, null, "fixture", rootChildren.reduce((sum, item) => sum + item.size, 0), true), child_count: rootChildren.length },
+    ...scope(), status: "ok", root_path: scanRoot, root: { ...node(0, null, "fixture", rootChildren.reduce((sum, item) => sum + item.size, 0), true), child_count: rootChildren.length },
     total_files: rootChildren.filter(item => item.type === "file").length + folderChildren.length, total_dirs: 1 + rootChildren.filter(item => item.type === "directory").length,
     total_size: rootChildren.reduce((sum, item) => sum + item.size, 0), errors: coverageErrors, skipped: coverageSkipped, scan_time_ms: 1, read_only: readOnly,
   });
   const detail = id => {
     const target = id === 0 ? summary().root : [...rootChildren, ...folderChildren].find(item => item.id === id);
     check(target, "Unknown mock node");
-    return { ...scope(), node: target, path: `/fixture/${target.parent_id === 1 ? "large-folder/" : ""}${target.name}` };
+    return { ...scope(), node: target, path: `${scanRoot}/${target.parent_id === 1 ? "large-folder/" : ""}${target.name}` };
   };
   const view = args => {
     const directory = args.nodeId === 0 ? summary().root : detail(args.nodeId).node;
@@ -81,7 +82,7 @@
     const chart = all.slice(0, 64).map(item => ({ node_id: item.id, name: item.name, size: item.size }));
     const remainder = directory.size - chart.reduce((sum, tile) => sum + tile.size, 0);
     if (all.length && remainder) chart.push({ node_id: null, name: "Other", size: remainder });
-    return { ...scope(), node: directory, path: args.nodeId === 0 ? "/fixture" : detail(args.nodeId).path,
+    return { ...scope(), node: directory, path: args.nodeId === 0 ? scanRoot : detail(args.nodeId).path,
       breadcrumbs: args.nodeId === 0 ? [{ id: 0, name: "fixture" }] : [{ id: 0, name: "fixture" }, { id: args.nodeId, name: directory.name }],
       children, chart,
       previous_cursor: offset ? { direction: "previous", node_id: children[0].id } : null,
@@ -237,7 +238,7 @@
   const report = (passed, error) => {
     const output = document.createElement("pre");
     output.id = "scan-test-report";
-    output.textContent = JSON.stringify({ fixture: "scan-ui", passed, error, ipc_calls: calls.length, checks: passed ? ["offline fonts under CSP", "bounded collapsed discovery diagnostics", "discovery retry recovery", "setup alignment", "result fonts", "file label semantics", "usable file workspace", "collapsible diagnostics", "complete paging", "first-scan comparison", "unchanged comparison after rescan", "deletion delta comparison", "cross-device comparison isolation", "bounded file-type totals", "file-type retry and malformed response", "file-type generation and deletion revision", "file-type coverage and empty scan", "bounded largest files", "late largest response", "largest query retry", "malformed largest response recovery", "largest ID-only deletion", "largest read-only guards", "largest folder navigation without rescanning", "bounded search results", "late search response", "search retry and malformed response", "search ID-only deletion", "read-only search deletion disabled", "late zoom", "Other tile", "stale confirmation", "exact confirmation whitespace", "ID-only deletion", "revision refresh", "partial failure", "read-only", "acknowledged shutdown", "unconfirmed shutdown", "reconnect", "stop action ordering", "duplicate rescan guard", "rescan failure recovery", "rescan cancellation recovery", "toast dismissal integration", "bounded diagnostic integration"] : undefined });
+    output.textContent = JSON.stringify({ fixture: "scan-ui", passed, error, ipc_calls: calls.length, checks: passed ? ["offline fonts under CSP", "bounded collapsed discovery diagnostics", "discovery retry recovery", "setup alignment", "result fonts", "file label semantics", "usable file workspace", "collapsible diagnostics", "complete paging", "first-scan comparison", "unchanged comparison after rescan", "deletion delta comparison", "cross-device comparison isolation", "bounded file-type totals", "file-type retry and malformed response", "file-type generation and deletion revision", "file-type coverage and empty scan", "bounded largest files", "late largest response", "largest query retry", "malformed largest response recovery", "largest ID-only deletion", "largest read-only guards", "largest folder navigation without rescanning", "bounded search results", "late search response", "search retry and malformed response", "search ID-only deletion", "read-only search deletion disabled", "late zoom", "Other tile", "stale confirmation", "exact confirmation whitespace", "reachable long-path confirmation", "ID-only deletion", "revision refresh", "partial failure", "read-only", "acknowledged shutdown", "unconfirmed shutdown", "reconnect", "stop action ordering", "duplicate rescan guard", "rescan failure recovery", "rescan cancellation recovery", "toast dismissal integration", "bounded diagnostic integration"] : undefined });
     document.body.append(output);
     void fetch("/report", { method: "POST", body: output.textContent }).then(() => {
       if (passed) location.replace("/tests/toast_lifecycle_fixture.html");
@@ -713,6 +714,39 @@
       await waitFor(() => rows().length === 1, "Rescan guard remained held after failure/cancellation");
       check(calls.filter(call => call.command === "run_scan").length === scansBefore + 2, "Recovery did not start exactly one fresh scan");
     }
+    // A deep scan root keeps the catalog consistent without inventing parent IDs.
+    emptyScan = false;
+    scanRoot = "/" + Array.from({ length: 29 }, (_, index) => `directory-${index}-${"d".repeat(60)}`).join("/") + "/fixture";
+    document.querySelector("#btn-rescan").click();
+    await waitFor(() => rows().length === 129, "Deep-root scan did not render");
+    const deletesBeforeLongPath = calls.filter(call => call.command === "delete_item").length;
+    document.querySelector('[aria-label="Delete  file-0 "]').click();
+    await waitFor(() => button("NUKE IT"), "Long-path confirmation missing");
+    const fullPath = `${scanRoot}/ file-0 `;
+    const longPath = [...document.querySelectorAll("p")].find(item => item.textContent === fullPath);
+    check(longPath, "Confirmation truncated or changed the long path");
+    for (const action of [button("Cancel"), button("NUKE IT")]) {
+      const bounds = action.getBoundingClientRect();
+      check(bounds.top >= 0 && bounds.bottom <= innerHeight && bounds.left >= 0 && bounds.right <= innerWidth,
+        `Long-path action outside viewport: ${bounds.top}..${bounds.bottom} of ${innerHeight}`);
+      const hit = document.elementFromPoint((bounds.left + bounds.right) / 2, (bounds.top + bounds.bottom) / 2);
+      check(action === hit || action.contains(hit), "Long-path action is obscured");
+    }
+    check(longPath.scrollHeight > longPath.clientHeight, "Long path has no scrollable area");
+    check(longPath.tabIndex === 0, "Long path cannot be reached by keyboard");
+    longPath.focus();
+    check(document.activeElement === longPath, "Long path cannot receive keyboard focus");
+    longPath.scrollTop = longPath.scrollHeight;
+    check(longPath.scrollTop > 0, "Long path cannot be scrolled");
+    const lastCharacter = document.createRange();
+    lastCharacter.setStart(longPath.firstChild, fullPath.length - 1);
+    lastCharacter.setEnd(longPath.firstChild, fullPath.length);
+    const lastBounds = lastCharacter.getBoundingClientRect();
+    const pathBounds = longPath.getBoundingClientRect();
+    check(lastBounds.top >= pathBounds.top && lastBounds.bottom <= pathBounds.bottom, "End of long path is unreachable");
+    button("Cancel").click();
+    await waitFor(() => !button("NUKE IT"), "Long-path confirmation did not cancel");
+    check(calls.filter(call => call.command === "delete_item").length === deletesBeforeLongPath, "Long-path cancellation issued a delete");
     check(violations.length === 0, `CSP blocked resources: ${violations.join(", ")}`);
     const fonts = performance.getEntriesByType("resource").filter(entry => entry.name.includes(".woff2"));
     check(fonts.length === 13 && fonts.every(entry => new URL(entry.name).origin === location.origin), "Fonts are missing or fetched off-site");
