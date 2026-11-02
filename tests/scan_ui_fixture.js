@@ -49,9 +49,10 @@
     id, parent_id, name, size, type: directory ? "directory" : "file", counted: true,
     child_count: directory ? 200 : 0, can_delete: id !== 0 && !readOnly,
   });
+  const whitespaceName = " file-3  double\t  ";
   const reset = () => {
     folderChildren = Array.from({ length: 200 }, (_, i) => node(i + 1001, 1, `nested-${i}`, 1));
-    rootChildren = [node(1, 0, "large-folder", 200, true), ...Array.from({ length: 270 }, (_, i) => node(i + 2, 0, ` file-${i} `, 1))];
+    rootChildren = [node(1, 0, "large-folder", 200, true), ...Array.from({ length: 270 }, (_, i) => node(i + 2, 0, i === 3 ? whitespaceName : ` file-${i} `, 1))];
     if (emptyScan) { rootChildren = []; folderChildren = []; }
     unavailable = false;
     revision = 0;
@@ -236,7 +237,7 @@
   const report = (passed, error) => {
     const output = document.createElement("pre");
     output.id = "scan-test-report";
-    output.textContent = JSON.stringify({ fixture: "scan-ui", passed, error, ipc_calls: calls.length, checks: passed ? ["offline fonts under CSP", "bounded collapsed discovery diagnostics", "discovery retry recovery", "setup alignment", "result fonts", "file label semantics", "usable file workspace", "collapsible diagnostics", "complete paging", "first-scan comparison", "unchanged comparison after rescan", "deletion delta comparison", "cross-device comparison isolation", "bounded file-type totals", "file-type retry and malformed response", "file-type generation and deletion revision", "file-type coverage and empty scan", "bounded largest files", "late largest response", "largest query retry", "malformed largest response recovery", "largest ID-only deletion", "largest read-only guards", "largest folder navigation without rescanning", "bounded search results", "late search response", "search retry and malformed response", "search ID-only deletion", "read-only search deletion disabled", "late zoom", "Other tile", "stale confirmation", "ID-only deletion", "revision refresh", "partial failure", "read-only", "acknowledged shutdown", "unconfirmed shutdown", "reconnect", "stop action ordering", "duplicate rescan guard", "rescan failure recovery", "rescan cancellation recovery", "toast dismissal integration", "bounded diagnostic integration"] : undefined });
+    output.textContent = JSON.stringify({ fixture: "scan-ui", passed, error, ipc_calls: calls.length, checks: passed ? ["offline fonts under CSP", "bounded collapsed discovery diagnostics", "discovery retry recovery", "setup alignment", "result fonts", "file label semantics", "usable file workspace", "collapsible diagnostics", "complete paging", "first-scan comparison", "unchanged comparison after rescan", "deletion delta comparison", "cross-device comparison isolation", "bounded file-type totals", "file-type retry and malformed response", "file-type generation and deletion revision", "file-type coverage and empty scan", "bounded largest files", "late largest response", "largest query retry", "malformed largest response recovery", "largest ID-only deletion", "largest read-only guards", "largest folder navigation without rescanning", "bounded search results", "late search response", "search retry and malformed response", "search ID-only deletion", "read-only search deletion disabled", "late zoom", "Other tile", "stale confirmation", "exact confirmation whitespace", "ID-only deletion", "revision refresh", "partial failure", "read-only", "acknowledged shutdown", "unconfirmed shutdown", "reconnect", "stop action ordering", "duplicate rescan guard", "rescan failure recovery", "rescan cancellation recovery", "toast dismissal integration", "bounded diagnostic integration"] : undefined });
     document.body.append(output);
     void fetch("/report", { method: "POST", body: output.textContent }).then(() => {
       if (passed) location.replace("/tests/toast_lifecycle_fixture.html");
@@ -331,6 +332,27 @@
     check(document.documentElement.scrollWidth <= innerWidth, "Results overflow horizontally");
     check(document.body.textContent.includes("128 entries on this page of 271"), "Missing full entry count");
     check(!rows().find(item => item.textContent.includes("file-0")).querySelector("button:disabled"), "File label became an unavailable control");
+    const deletesBeforeWhitespace = calls.filter(call => call.command === "delete_item").length;
+    const whitespaceDelete = [...document.querySelectorAll('button[aria-label^="Delete "]')]
+      .find(item => item.getAttribute("aria-label") === `Delete ${whitespaceName}`);
+    check(whitespaceDelete, "Whitespace filename missing from the initial page");
+    const detailDelayBeforeWhitespace = delayedDetail;
+    whitespaceDelete.click();
+    await waitFor(() => button("NUKE IT"), "Whitespace confirmation missing");
+    const exactPath = `/fixture/${whitespaceName}`;
+    const confirmationPath = [...document.querySelectorAll("p")].find(item => item.textContent === exactPath);
+    check(confirmationPath?.innerText === exactPath, "Confirmation collapses filename whitespace");
+    for (let index = 0; index < exactPath.length; index++) {
+      if (exactPath[index] !== " " && exactPath[index] !== "\t") continue;
+      const range = document.createRange();
+      range.setStart(confirmationPath.firstChild, index);
+      range.setEnd(confirmationPath.firstChild, index + 1);
+      check(range.getBoundingClientRect().width > 0, `Confirmation whitespace at ${index} has no rendered width`);
+    }
+    button("Cancel").click();
+    await waitFor(() => !button("NUKE IT"), "Whitespace confirmation did not cancel");
+    check(calls.filter(call => call.command === "delete_item").length === deletesBeforeWhitespace, "Cancelled whitespace confirmation issued a delete");
+    delayedDetail = detailDelayBeforeWhitespace;
     const fileViewport = document.querySelector('[aria-label="Files and folders"]');
     const fileBounds = fileViewport.getBoundingClientRect();
     check(fileBounds.height >= innerHeight * 0.55, `File browser too short: ${fileBounds.height}px of ${innerHeight}px`);
