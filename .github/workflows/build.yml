@@ -126,22 +126,6 @@ jobs:
           Remove-Item -Recurse -Force platform-tools, platform-tools.zip
           Write-Host "✓ ADB binaries ready for Windows"
 
-      # Windows ADB is adb.exe and requires companion DLLs.
-      # Patch tauri.conf.json to bundle the correct filenames.
-      - name: Patch Tauri config for Windows ADB
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $conf = Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
-          $conf.bundle.resources = @(
-            "bin/adb.exe",
-            "bin/AdbWinApi.dll",
-            "bin/AdbWinUsbApi.dll",
-            "bin/daemon"
-          )
-          $conf | ConvertTo-Json -Depth 10 | Set-Content src-tauri/tauri.conf.json
-          Write-Host "✓ tauri.conf.json patched for Windows"
-
       - name: Update version from Git tag
         if: startsWith(github.ref, 'refs/tags/v')
         shell: node {0}

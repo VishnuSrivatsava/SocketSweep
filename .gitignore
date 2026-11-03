@@ -25,6 +25,9 @@ dist-ssr
 
 # SocketSweep custom ignores
 engine/daemon
+/src-tauri/bin/adb.exe
+/src-tauri/bin/AdbWinApi.dll
+/src-tauri/bin/AdbWinUsbApi.dll
 engine/.daemon-build.*/
 output.json
 
