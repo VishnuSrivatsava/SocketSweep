@@ -5,7 +5,7 @@ import { sameScan, parseNodeDetail } from "./scanView";
 import type { ScanResponse, NodeDetail, DeleteResult } from "./scanView";
 import { IconNuke } from "./Icons";
 import { ToastContainer } from "./ToastContainer";
-import type { Toast } from "./ToastContainer";
+import { useToasts } from "./useToasts";
 import { TerminalLog } from "./TerminalLog";
 import { appendLog, emptyLogHistory } from "./logHistory";
 import { useDevices } from "./useDevices";
@@ -29,10 +29,6 @@ type AppPhase = "setup" | "connecting" | "scanning" | "result";
 function formatNumber(n: number): string {
   return n.toLocaleString("en-US");
 }
-
-// ── Toast System ────────────────────────────────────────────────────────────
-
-let toastId = 0;
 
 // ── Scanning Screen ─────────────────────────────────────────────────────────
 
@@ -109,28 +105,12 @@ function App() {
   const [cancelling, setCancelling] = useState(false);
   const activeScan = useRef<string | null>(null);
   const [statusText, setStatusText] = useState("Initializing…");
-  const [toasts, setToasts] = useState<Toast[]>([]);
+  const { toasts, pushToast, dismissToast, removeToast } = useToasts();
   const [logs, setLogs] = useState(emptyLogHistory);
 
   const addLog = useCallback((msg: string) => {
     const entry = `[${new Date().toLocaleTimeString()}] ${msg}`;
     setLogs((prev) => appendLog(prev, entry));
-  }, []);
-
-  // ── Toast helpers ───────────────────────────────────────────────────────
-  const pushToast = useCallback((message: string, type: Toast["type"] = "error") => {
-    const id = ++toastId;
-    setToasts((prev) => [...prev, { id, message, type }]);
-  }, []);
-
-  const dismissToast = useCallback((id: number) => {
-    setToasts((prev) =>
-      prev.map((t) => (t.id === id && !t.exiting ? { ...t, exiting: true } : t))
-    );
-  }, []);
-
-  const removeToast = useCallback((id: number) => {
-    setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
   const requestScan = useCallback(async (path: string): Promise<ScanResponse> => {
