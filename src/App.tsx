@@ -3,7 +3,7 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { formatBytes } from "./formatBytes";
 import { sameScan, parseNodeDetail } from "./scanView";
 import type { ScanResponse, NodeDetail, DeleteResult } from "./scanView";
-import { IconNuke } from "./Icons";
+import { DeleteConfirmation } from "./DeleteConfirmation";
 import { ToastContainer } from "./ToastContainer";
 import { useToasts } from "./useToasts";
 import { TerminalLog } from "./TerminalLog";
@@ -100,7 +100,7 @@ function App() {
   const [busy, setBusy] = useState(false);
   const actionPending = useRef(false);
   const confirmationRequest = useRef(0);
-  const [confirmDelete, setConfirmDelete] = useState<NodeDetail | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<(NodeDetail & { trigger: HTMLButtonElement }) | null>(null);
   const [scanProgress, setScanProgress] = useState<ScanProgress | null>(null);
   const [cancelling, setCancelling] = useState(false);
   const activeScan = useRef<string | null>(null);
@@ -254,7 +254,7 @@ function App() {
   }, [pushToast, addLog]);
 
   // Resolve confirmation details separately; destructive IPC accepts only IDs.
-  const handleNuke = useCallback(async (nodeId: number) => {
+  const handleNuke = useCallback(async (nodeId: number, trigger: HTMLButtonElement) => {
     const scope = snapshot.current;
     if (!scope || scope.read_only || actionPending.current) return;
     const request = ++confirmationRequest.current;
@@ -262,7 +262,7 @@ function App() {
       const raw = await invoke<string>("get_scan_node", { generation: scope.generation, revision: scope.revision, nodeId });
       const detail = parseNodeDetail(raw, scope, nodeId);
       if (request === confirmationRequest.current && !actionPending.current && sameScan(snapshot.current, scope) && detail.node.can_delete) {
-        setConfirmDelete(detail);
+        setConfirmDelete({ ...detail, trigger });
       }
     } catch (err) {
       if (request === confirmationRequest.current && sameScan(snapshot.current, scope)) pushToast(String(err), "error");
@@ -342,38 +342,12 @@ function App() {
       <TerminalLog history={logs} />
 
       {/* Custom Confirm Modal */}
-      {confirmDelete && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in-up">
-          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 max-w-sm w-full max-h-[calc(100vh-2rem)] flex flex-col overflow-y-auto shadow-2xl">
-            <div className="flex items-center gap-3 mb-4 shrink-0">
-              <div className="w-10 h-10 rounded-full bg-red-500/10 flex items-center justify-center text-red-500">
-                <IconNuke />
-              </div>
-              <h3 className="text-lg font-bold text-zinc-100">Delete Item?</h3>
-            </div>
-            <p className="text-sm text-zinc-400 mb-2 shrink-0">
-              Are you sure you want to permanently delete:
-            </p>
-            <p tabIndex={0} className="min-h-0 overflow-y-auto focus-visible:outline-2 focus-visible:outline-accent-400 text-sm font-mono text-zinc-300 bg-zinc-950 p-2 rounded-lg whitespace-break-spaces break-all border border-zinc-800 mb-6">
-              {confirmDelete.path}
-            </p>
-            <div className="flex items-center gap-3 justify-end shrink-0">
-              <button
-                onClick={() => { confirmationRequest.current += 1; setConfirmDelete(null); }}
-                className="px-4 py-2 rounded-lg text-sm font-medium text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={executeDelete}
-                className="px-4 py-2 rounded-lg text-sm font-bold bg-red-600 hover:bg-red-500 text-white transition-colors shadow-lg shadow-red-500/20"
-              >
-                NUKE IT
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {confirmDelete && <DeleteConfirmation
+        path={confirmDelete.path}
+        trigger={confirmDelete.trigger}
+        onCancel={() => { confirmationRequest.current += 1; setConfirmDelete(null); }}
+        onConfirm={executeDelete}
+      />}
     </div>
   );
 }

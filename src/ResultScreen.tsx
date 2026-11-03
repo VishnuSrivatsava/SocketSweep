@@ -70,7 +70,7 @@ export function ResultScreen({
   data: ScanResponse;
   onRescan: () => void;
   onDisconnect: () => void;
-  onNuke: (nodeId: number) => void;
+  onNuke: (nodeId: number, trigger: HTMLButtonElement) => void;
   busy: boolean;
   deviceSerial: string;
 }) {
