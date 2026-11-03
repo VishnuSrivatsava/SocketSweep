@@ -40,7 +40,7 @@ def toolchain():
         candidates = [ndk for sdk in sdk_roots for ndk in sorted((sdk / "ndk").glob("*"))]
     for ndk in candidates:
         compiler = ndk / "toolchains/llvm/prebuilt" / host / "bin" / compiler_name
-        if compiler.is_file():
+        if compiler.is_file() and os.access(compiler, os.X_OK):
             return compiler
     if override:
         raise ValueError(f"Compiler not found at {compiler}")
@@ -51,6 +51,9 @@ def build(platform, commit):
     compiler = toolchain()
     bundle = REPO / "src-tauri/bin/daemon"
     local = REPO / "engine/daemon"
+    for output in (bundle,) if platform else (bundle, local):
+        if output.exists() and not output.is_file():
+            raise ValueError(f"Output path is not a regular file: {output}")
     print(f"[build] Compiler: {compiler}", flush=True)
     # Stage beside the destination so compiler or strip failures preserve it.
     with TemporaryDirectory(prefix=".daemon-build-", dir=bundle.parent) as stage:

@@ -15,11 +15,12 @@ class EngineBuildTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="socketsweep build fixture ")
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         self.engine = self.root / "repository with spaces/engine"
         self.engine.mkdir(parents=True)
-        script = Path(__file__).resolve().parents[1] / "engine/build.sh"
-        shutil.copyfile(script, self.engine / "build.sh")
+        scripts = Path(__file__).resolve().parents[1] / "engine"
+        for name in ("build.sh", "build_daemon.py"):
+            shutil.copyfile(scripts / name, self.engine / name)
         # Fail closed if a broken discovery path ever selects a real compiler.
         (self.engine / "daemon.cpp").write_text('#error "Use the fake compiler fixture"\n')
         self.bundled = self.engine.parent / "src-tauri/bin/daemon"
@@ -58,7 +59,7 @@ class EngineBuildTests(unittest.TestCase):
         args = json.loads((self.ndks[label] / "calls.json").read_text())
         staged = Path(args[args.index("-o") + 1])
         self.assertEqual(staged.name, "daemon")
-        self.assertEqual(staged.parent.parent, self.engine)
+        self.assertEqual(staged.parent.parent, self.bundled.parent)
         self.assertFalse(staged.parent.exists(), "Staging directory leaked after success")
         self.assertTrue(os.access(self.engine / "daemon", os.X_OK))
         self.assertEqual(args, ["-std=c++17", "-O2", "-pthread", "-Wall", "-Wextra", "-Wpedantic",
@@ -103,14 +104,14 @@ class EngineBuildTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual((self.engine / "daemon").read_bytes(), b"existing engine")
         self.assertEqual(self.bundled.read_bytes(), b"existing bundle")
-        self.assertEqual(list(self.engine.glob(".daemon-build.*")), [])
+        self.assertEqual(list(self.engine.glob(".daemon-build-*")) + list(self.bundled.parent.glob(".daemon-build-*")), [])
 
     def test_compiler_success_without_output_cannot_publish_a_stale_binary(self):
         result = self.build(NDK=self.ndks["explicit"], FAKE_COMPILER_NO_OUTPUT="1")
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual((self.engine / "daemon").read_bytes(), b"existing engine")
         self.assertEqual(self.bundled.read_bytes(), b"existing bundle")
-        self.assertEqual(list(self.engine.glob(".daemon-build.*")), [])
+        self.assertEqual(list(self.engine.glob(".daemon-build-*")) + list(self.bundled.parent.glob(".daemon-build-*")), [])
 
     def test_output_directory_is_rejected_without_mutation(self):
         output = self.engine / "daemon"
@@ -120,7 +121,7 @@ class EngineBuildTests(unittest.TestCase):
         sentinel.write_bytes(b"keep")
         result = self.build(NDK=self.ndks["explicit"])
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Output path is not a regular file", result.stdout)
+        self.assertIn("Output path is not a regular file", result.stderr)
         self.assertEqual(sentinel.read_bytes(), b"keep")
         self.assertEqual(list(output.iterdir()), [sentinel])
         self.assertEqual(self.bundled.read_bytes(), b"existing bundle")
