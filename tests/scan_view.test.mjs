@@ -7,7 +7,7 @@ const source = await readFile(new URL("../src/scanView.ts", import.meta.url), "u
 const { outputText } = ts.transpileModule(source, {
   compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext },
 });
-const { sameScan, viewKey, viewReducer, parseNodeDetail, parseScanSummary, parseDeleteResult } = await import(
+const { sameScan, viewKey, viewReducer, parseNodeDetail, parseScanSummary, parseDeleteResult, parseScanView } = await import(
   `data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`
 );
 const scope = { generation: "scan-a", revision: 0 };
@@ -156,4 +156,22 @@ test("scan and deletion summaries validate before becoming the active snapshot",
   assert.deepEqual(parseDeleteResult(deletion), deletion);
   assert.throws(() => parseDeleteResult({ ...deletion, removed: { ...deletion.removed, files: -1 } }));
   assert.throws(() => parseDeleteResult({ ...deletion, summary: {} }));
+});
+
+test("folder views reject malformed children, cursor anchors and chart data", () => {
+  const node = { id: 0, parent_id: null, name: "/", type: "directory", size: 1,
+    counted: true, child_count: 1, can_delete: false };
+  const child = { ...node, id: 1, parent_id: 0, name: "file", type: "file", child_count: 0 };
+  const view = { ...scope, node, path: "/", children: [child], breadcrumbs: [{ id: 0, name: "/" }],
+    chart: [{ node_id: 1, name: "file", size: 1 }], previous_cursor: null, next_cursor: null };
+  const parse = data => parseScanView(JSON.stringify(data), scope, 0);
+  assert.deepEqual(parse(view), view);
+  for (const invalid of [
+    { ...view, revision: 1 }, { ...view, children: null }, { ...view, children: [child, child] },
+    { ...view, children: [{ ...child, parent_id: 2 }] },
+    { ...view, next_cursor: { direction: "next", node_id: 2 } },
+    { ...view, chart: [{ ...view.chart[0], size: -1 }] },
+  ]) {
+    assert.throws(() => parse(invalid), /unexpected view/);
+  }
 });

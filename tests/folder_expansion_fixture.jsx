@@ -29,7 +29,7 @@ const waitFor = async (predicate, message) => {
   const end = Date.now() + 3000;
   while (!predicate()) { if (Date.now() > end) throw Error(message); await pause(); }
 };
-const directory = (id, name, child_count) => ({ id, name, child_count, type: "directory", size: 3, counted: true, can_delete: false });
+const directory = (id, name, child_count) => ({ id, parent_id: id - 1, name, child_count, type: "directory", size: 3, counted: true, can_delete: false });
 const parent = directory(1, "parent", 2);
 const nested = directory(2, "nested", 1);
 const file = name => ({ id: 3, parent_id: 1, name, child_count: 0, type: "file", size: 1, counted: true, can_delete: false });
