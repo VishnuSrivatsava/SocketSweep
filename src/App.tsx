@@ -2,8 +2,8 @@ import { useState, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { checkAdb, confirmDaemonShutdown, startDaemon, stopDaemon } from "./daemonIpc";
 import { formatBytes } from "./formatBytes";
-import { sameScan, parseNodeDetail } from "./scanView";
-import type { ScanResponse, NodeDetail, DeleteResult } from "./scanView";
+import { sameScan, parseNodeDetail, parseDeleteResult } from "./scanView";
+import type { ScanResponse, NodeDetail } from "./scanView";
 import { DeleteConfirmation } from "./DeleteConfirmation";
 import { ToastContainer } from "./ToastContainer";
 import { useToasts } from "./useToasts";
@@ -185,7 +185,7 @@ function App() {
         generation: target.generation, revision: target.revision, nodeId: target.node.id,
       });
       if (!sameScan(snapshot.current, target)) return;
-      const result: DeleteResult = JSON.parse(raw);
+      const result = parseDeleteResult(JSON.parse(raw));
       if (result.summary.generation !== target.generation || result.summary.revision !== target.revision + 1) {
         throw new Error("Deletion returned an unexpected scan snapshot");
       }

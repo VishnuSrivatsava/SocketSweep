@@ -100,6 +100,35 @@ export function parseNodeReference(value: unknown, expected: NodeContext): Pick<
   } };
 }
 
+export function parseScanSummary(data: unknown): ScanResponse {
+  const invalid = () => new Error("Invalid scan summary");
+  if (!isRecord(data) || data.status !== "ok" || typeof data.generation !== "string" || !data.generation
+    || !isU32(data.revision) || typeof data.root_path !== "string" || !data.root_path.startsWith("/")
+    || data.root_path.includes("\0") || typeof data.read_only !== "boolean" || !isCount(data.total_size)
+    || !isCount(data.total_files) || !isCount(data.total_dirs) || !isCount(data.errors)
+    || !isCount(data.skipped) || !isCount(data.scan_time_ms)
+    || (data.streamed !== undefined && typeof data.streamed !== "boolean")) throw invalid();
+  for (const field of ["traverse_ms", "sort_ms", "serialize_ms", "send_ms", "bytes_sent"]) {
+    if (data[field] !== undefined && !isCount(data[field])) throw invalid();
+  }
+  const { node } = parseNodeReference({ node: data.root, path: data.root_path }, {
+    root_path: data.root_path, read_only: data.read_only, total_size: data.total_size,
+  });
+  if (node.id !== 0 || node.size !== data.total_size) throw invalid();
+  return { ...data, root: node } as ScanResponse;
+}
+
+export function parseDeleteResult(data: unknown): DeleteResult {
+  if (!isRecord(data) || typeof data.message !== "string" || !isRecord(data.removed)
+    || !isCount(data.removed.files) || !isCount(data.removed.dirs) || !isCount(data.removed.size)) {
+    throw new Error("Invalid deletion result");
+  }
+  return {
+    summary: parseScanSummary(data.summary), message: data.message,
+    removed: { files: data.removed.files, dirs: data.removed.dirs, size: data.removed.size },
+  };
+}
+
 /** Validate the fresh detail used by confirmation without accepting UI paths. */
 export function parseNodeDetail(raw: string, expected: ScanScope & NodeContext, nodeId: number): NodeDetail {
   const data: unknown = JSON.parse(raw);
