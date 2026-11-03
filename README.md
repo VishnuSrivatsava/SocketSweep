@@ -246,6 +246,7 @@ sequenceDiagram
 2. **Rust** (v1.89+ with Cargo; native file locking for scan history)
 3. **Android NDK** (v26d or newer)
 4. **Android SDK / ADB** installed and added to your system `$PATH`.
+5. **Python 3** for building the daemon.
 
 ### 1. Compile the C++ Daemon
 Cross-compile the daemon for `aarch64-linux-android`:
@@ -254,11 +255,11 @@ Cross-compile the daemon for `aarch64-linux-android`:
 # export NDK="/path/to/your/android-ndk-r26d"
 
 # Build the daemon
-cd engine
-bash ./build.sh
+bash engine/build.sh
 ```
+On Windows, run `python engine/build_daemon.py` from the repository root.
 The script prefers `NDK`, then `ANDROID_NDK_LATEST_HOME`, then `ANDROID_NDK_HOME`.
-If none is set, it searches the default Linux/macOS SDK directories. An invalid
+If none is set, it searches configured and default Android SDK directories. An invalid
 configured path fails explicitly rather than selecting a different toolchain.
 
 *This generates the stripped `daemon` binary in the `engine/` directory and
