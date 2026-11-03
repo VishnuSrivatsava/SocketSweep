@@ -69,16 +69,41 @@ const entryName = (value: unknown): value is string => typeof value === "string"
 type NodeContext = Pick<ScanResponse, "root_path" | "read_only" | "total_size">;
 const invalidNode = () => new Error("Scan node response does not match this scan");
 
+function isScanNode(node: unknown): node is ScanNode {
+  return isRecord(node) && isU32(node.id) && typeof node.name === "string"
+    && (node.parent_id === null || isU32(node.parent_id)) && isCount(node.size)
+    && isCount(node.child_count) && typeof node.counted === "boolean" && typeof node.can_delete === "boolean"
+    && (node.type === "directory" || (node.type === "file" && node.child_count === 0))
+    && (node.counted || (node.size === 0 && node.child_count === 0));
+}
+
+export function parseScanView(raw: string, scope: ScanScope, nodeId: number): ScanView {
+  const data: unknown = JSON.parse(raw);
+  const validCursor = (cursor: unknown, direction: PageCursor["direction"], anchor: number | undefined) =>
+    cursor === null || (anchor !== undefined && isRecord(cursor)
+      && cursor.direction === direction && cursor.node_id === anchor);
+  if (!isRecord(data) || data.generation !== scope.generation || data.revision !== scope.revision
+    || !isScanNode(data.node) || data.node.id !== nodeId || typeof data.path !== "string"
+    || !Array.isArray(data.children) || data.children.length > 128
+    || !data.children.every(child => isScanNode(child) && child.parent_id === nodeId)
+    || new Set(data.children.map(child => child.id)).size !== data.children.length
+    || !validCursor(data.previous_cursor, "previous", data.children[0]?.id)
+    || !validCursor(data.next_cursor, "next", data.children[data.children.length - 1]?.id)
+    || !Array.isArray(data.breadcrumbs)
+    || !data.breadcrumbs.every(crumb => isRecord(crumb) && isU32(crumb.id) && typeof crumb.name === "string")
+    || !Array.isArray(data.chart) || data.chart.length > 65
+    || !data.chart.every(tile => isRecord(tile) && (tile.node_id === null || isU32(tile.node_id))
+      && typeof tile.name === "string" && isCount(tile.size))) {
+    throw new Error("Scan query returned an unexpected view");
+  }
+  return data as unknown as ScanView;
+}
+
 /** Shared node/path contract; contextual actions still require their own scope. */
 export function parseNodeReference(value: unknown, expected: NodeContext): Pick<NodeDetail, "node" | "path"> {
   if (!isRecord(value) || !isRecord(value.node) || typeof value.path !== "string") throw invalidNode();
   const node = value.node;
-  if (!isU32(node.id) || typeof node.name !== "string"
-    || (node.parent_id !== null && !isU32(node.parent_id)) || !isCount(node.size) || node.size > expected.total_size
-    || !isCount(node.child_count) || typeof node.counted !== "boolean" || typeof node.can_delete !== "boolean"
-    || (node.type !== "file" && node.type !== "directory")
-    || (node.type === "file" && node.child_count !== 0)
-    || (!node.counted && (node.size !== 0 || node.child_count !== 0))) throw invalidNode();
+  if (!isScanNode(node) || node.size > expected.total_size) throw invalidNode();
   const pathBytes = textBytes(value.path);
   if (pathBytes > 16 * 1024 || (node.can_delete && (expected.read_only || node.id === 0
     || /[\r\n\0]/.test(value.path) || pathBytes + "DELETE ".length > 16 * 1024))) throw invalidNode();

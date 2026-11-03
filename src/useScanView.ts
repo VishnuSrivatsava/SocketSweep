@@ -1,7 +1,7 @@
 import { useEffect, useReducer, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { sameScan, viewKey, viewReducer } from "./scanView";
-import type { PageCursor, ScanScope, ScanView } from "./scanView";
+import { parseScanView, viewKey, viewReducer } from "./scanView";
+import type { PageCursor, ScanScope } from "./scanView";
 
 export function useScanView(scope: ScanScope, nodeId: number, enabled: boolean) {
   const { generation, revision } = scope;
@@ -24,8 +24,7 @@ export function useScanView(scope: ScanScope, nodeId: number, enabled: boolean) 
     void invoke<string>("get_scan_view", {
       generation, revision, nodeId, cursor: queryCursor,
     }).then(raw => {
-      const page: ScanView = JSON.parse(raw);
-      if (!sameScan(page, { generation, revision }) || page.node.id !== nodeId) throw new Error("Scan query returned an unexpected view");
+      const page = parseScanView(raw, { generation, revision }, nodeId);
       if (current) dispatch({ type: "success", request: id, page });
     }).catch(error => {
       if (current) dispatch({ type: "error", request: id, error: String(error) });
