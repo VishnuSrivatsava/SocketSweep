@@ -11,6 +11,7 @@ jobs:
   build:
     strategy:
       fail-fast: false
+      # Pin Google Platform-Tools archives and verify their bytes before unpacking.
       matrix:
         include:
           # Linux builds on the oldest still-supported Ubuntu LTS so the
@@ -19,13 +20,16 @@ jobs:
           # catalog ("error-glibc-too-new" otherwise).
           - os: ubuntu-22.04
             platform: linux
-            adb_url: https://dl.google.com/android/repository/platform-tools-latest-linux.zip
+            adb_url: https://dl.google.com/android/repository/platform-tools_r37.0.1-linux.zip
+            adb_sha256: d230f13842f60f782a8645f9c813f8f845bf36089ea7289f28c48f17979313f1
           - os: macos-latest
             platform: macos
-            adb_url: https://dl.google.com/android/repository/platform-tools-latest-darwin.zip
+            adb_url: https://dl.google.com/android/repository/platform-tools_r37.0.1-darwin.zip
+            adb_sha256: ee39ad5967e95c2a07f04dbcbde96b1a0c916ba376096db5d2f498b7727a5d1d
           - os: windows-latest
             platform: windows
-            adb_url: https://dl.google.com/android/repository/platform-tools-latest-windows.zip
+            adb_url: https://dl.google.com/android/repository/platform-tools_r37.0.1-win.zip
+            adb_sha256: 45f4d63113e895ebde0c90f194099a4676b6ac653bd28d54314a9e022bbc1a99
 
     runs-on: ${{ matrix.os }}
 
@@ -107,7 +111,8 @@ jobs:
       - name: Download ADB (Unix)
         if: runner.os != 'Windows'
         run: |
-          curl -sL -o platform-tools.zip "${{ matrix.adb_url }}"
+          curl -fsSL -o platform-tools.zip "${{ matrix.adb_url }}"
+          echo "${{ matrix.adb_sha256 }}  platform-tools.zip" | shasum -a 256 -c -
           unzip -qo platform-tools.zip
           cp platform-tools/adb src-tauri/bin/adb
           chmod +x src-tauri/bin/adb
@@ -119,6 +124,10 @@ jobs:
         shell: pwsh
         run: |
           Invoke-WebRequest -Uri "${{ matrix.adb_url }}" -OutFile platform-tools.zip
+          $hash = (Get-FileHash -Algorithm SHA256 platform-tools.zip).Hash
+          if ($hash -ne "${{ matrix.adb_sha256 }}") {
+            throw "Android Platform-Tools archive SHA-256 mismatch"
+          }
           Expand-Archive platform-tools.zip -DestinationPath . -Force
           Copy-Item platform-tools\adb.exe         src-tauri\bin\adb.exe
           Copy-Item platform-tools\AdbWinApi.dll    src-tauri\bin\AdbWinApi.dll
