@@ -1,0 +1,10 @@
+{
+  "bundle": {
+    "resources": [
+      "bin/adb.exe",
+      "bin/AdbWinApi.dll",
+      "bin/AdbWinUsbApi.dll",
+      "bin/daemon"
+    ]
+  }
+}

@@ -290,10 +290,18 @@ Current startup also requires the rebuilt daemon for
 [owned session files, allocated ports, and lifetime cleanup](docs/daemon-sessions.md).
 
 
-### 2. Install Frontend Dependencies
+### 2. Prepare ADB and install frontend dependencies
+
+On Linux and macOS, copy `adb` from your installed Android SDK's
+`platform-tools` directory to `src-tauri/bin/adb`. On Windows, copy
+`adb.exe`, `AdbWinApi.dll`, and `AdbWinUsbApi.dll` from the same
+`platform-tools` installation to `src-tauri/bin/`. Tauri picks up the
+Windows resource list automatically.
+
+From the repository root:
+
 ```bash
-cd ..
-npm install
+npm ci
 ```
 
 ### 3. Run the App
