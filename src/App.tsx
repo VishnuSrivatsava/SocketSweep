@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef } from "react";
 import { Channel, invoke } from "@tauri-apps/api/core";
+import { checkAdb, confirmDaemonShutdown, startDaemon, stopDaemon } from "./daemonIpc";
 import { formatBytes } from "./formatBytes";
 import { sameScan, parseNodeDetail } from "./scanView";
 import type { ScanResponse, NodeDetail, DeleteResult } from "./scanView";
@@ -94,12 +95,12 @@ function App() {
     try {
       setStatusText("Checking ADB…");
       addLog("[ADB] Checking version...");
-      const adbVersion = await invoke<string>("check_adb");
+      const adbVersion = await checkAdb();
       addLog(`[ADB] Found: ${adbVersion}`);
 
       setStatusText(rootMode ? "Requesting root access…" : "Pushing daemon to device…");
       addLog(`[ADB] Starting an owned daemon session on ${selectedSerial}...`);
-      await invoke<string>("init_daemon", { serial: selectedSerial, rootMode });
+      await startDaemon(selectedSerial, rootMode);
       initialized = true;
       addLog("[SOCKET] Daemon started and connected via TCP tunnel!");
 
@@ -118,7 +119,7 @@ function App() {
       if (phases) addLog(phases);
     } catch (err: unknown) {
       if (initialized) {
-        try { await invoke<string>("stop_daemon"); } catch { /* show the original connection error */ }
+        try { await stopDaemon(); } catch { /* show the original connection error */ }
       }
       const message = err instanceof Error ? err.message : String(err);
       pushToast(message.split("\n", 1)[0], message === "Scan cancelled" ? "info" : "error");
@@ -151,7 +152,7 @@ function App() {
       addLog(`${message === "Scan cancelled" ? "[SCAN]" : "[ERROR]"} ${message}`);
       // The failed generation is not an authoritative deletion root. Clear
       // old results rather than offering actions backed by an invalid scan.
-      try { await invoke("stop_daemon"); } catch { /* retain the scan error */ }
+      try { await stopDaemon(); } catch { /* retain the scan error */ }
       setScanData(null);
       setPhase("setup");
     } finally {
@@ -169,13 +170,7 @@ function App() {
     setConfirmDelete(null);
     addLog("[SOCKET] Disconnecting daemon...");
     try {
-      const raw = await invoke<string>("stop_daemon");
-      let response;
-      try { response = JSON.parse(raw); }
-      catch { throw new Error("Daemon did not acknowledge shutdown"); }
-      if (response?.status !== "ok" || response?.message !== "shutting down") {
-        throw new Error("Daemon did not acknowledge shutdown");
-      }
+      await confirmDaemonShutdown();
       pushToast("Daemon shutdown acknowledged", "info");
       addLog("[SOCKET] Daemon acknowledged shutdown. App disconnected.");
     } catch (err) {
@@ -238,7 +233,7 @@ function App() {
       addLog(`[ERROR] Delete failed: ${message}`);
       // The daemon may have partially deleted a directory before reporting an
       // error. Discard its snapshot; never offer a blind retry with stale IDs.
-      try { await invoke("stop_daemon"); } catch { /* retain the deletion error */ }
+      try { await stopDaemon(); } catch { /* retain the deletion error */ }
       setPhase("setup");
     } finally {
       actionPending.current = false;
