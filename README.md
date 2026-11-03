@@ -292,7 +292,8 @@ Current startup also requires the rebuilt daemon for
 
 ### 2. Prepare ADB and install frontend dependencies
 
-On Linux and macOS, copy `adb` from your installed Android SDK's
+A fresh checkout requires the host Platform-Tools files before building or
+running Tauri. On Linux and macOS, copy the executable `adb` from your installed Android SDK's
 `platform-tools` directory to `src-tauri/bin/adb`. On Windows, copy
 `adb.exe`, `AdbWinApi.dll`, and `AdbWinUsbApi.dll` from the same
 `platform-tools` installation to `src-tauri/bin/`. Tauri picks up the
