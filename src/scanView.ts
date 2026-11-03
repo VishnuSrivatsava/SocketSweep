@@ -66,6 +66,23 @@ const textBytes = (value: string) => {
 };
 const entryName = (value: unknown): value is string => typeof value === "string" && value !== "" && value !== "." && value !== ".."
   && !value.includes("/") && !value.includes("\0") && textBytes(value) <= 255;
+export interface ScanProgress {
+  scan_id: string;
+  files: number;
+  directories: number;
+  total_size: number;
+  recent_names: string[];
+}
+
+export function parseScanProgress(value: unknown, scanId: string): ScanProgress | null {
+  if (!isRecord(value) || value.scan_id !== scanId || !isCount(value.files)
+    || !isCount(value.directories) || !isCount(value.total_size)
+    || !Array.isArray(value.recent_names) || value.recent_names.length > 5
+    || !value.recent_names.every(entryName)) return null;
+  return { scan_id: scanId, files: value.files, directories: value.directories,
+    total_size: value.total_size, recent_names: value.recent_names };
+}
+
 type NodeContext = Pick<ScanResponse, "root_path" | "read_only" | "total_size">;
 const invalidNode = () => new Error("Scan node response does not match this scan");
 

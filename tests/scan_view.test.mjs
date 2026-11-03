@@ -7,7 +7,7 @@ const source = await readFile(new URL("../src/scanView.ts", import.meta.url), "u
 const { outputText } = ts.transpileModule(source, {
   compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext },
 });
-const { sameScan, viewKey, viewReducer, parseNodeDetail, parseScanSummary, parseDeleteResult, parseScanView } = await import(
+const { sameScan, viewKey, viewReducer, parseNodeDetail, parseScanSummary, parseDeleteResult, parseScanView, parseScanProgress } = await import(
   `data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`
 );
 const scope = { generation: "scan-a", revision: 0 };
@@ -173,5 +173,14 @@ test("folder views reject malformed children, cursor anchors and chart data", ()
     { ...view, chart: [{ ...view.chart[0], size: -1 }] },
   ]) {
     assert.throws(() => parse(invalid), /unexpected view/);
+  }
+});
+
+test("progress accepts only bounded payloads for the channel's scan", () => {
+  const progress = { scan_id: "current", files: 1, directories: 0, total_size: 0, recent_names: [" file "] };
+  assert.deepEqual(parseScanProgress(progress, "current"), progress);
+  for (const value of [null, { ...progress, scan_id: "old" }, { ...progress, files: -1 },
+    { ...progress, recent_names: [null] }, { ...progress, recent_names: Array(6).fill("file") }]) {
+    assert.equal(parseScanProgress(value, "current"), null);
   }
 });
