@@ -10,6 +10,8 @@
   let scanRoot = "/fixture";
   let delayedZoom = true;
   let delayedDetail = true;
+  let holdDetail = false;
+  let releaseDetail;
   let badDetail = null;
   let delayedLargest = true;
   let failLargest = false;
@@ -46,6 +48,10 @@
   let folderChildren;
   const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
   const check = (condition, message) => { if (!condition) throw Error(message); };
+  const pressKey = async key => {
+    const response = await fetch("/keyboard", { method: "POST", body: JSON.stringify({ key }) });
+    check(response.ok, `Trusted keyboard input failed: ${key} (${response.status})`);
+  };
   const node = (id, parent_id, name, size, directory = false) => ({
     id, parent_id, name, size, type: directory ? "directory" : "file", counted: true,
     child_count: directory ? 200 : 0, can_delete: id !== 0 && !readOnly,
@@ -212,6 +218,7 @@
           return JSON.stringify({ ...detail(args.nodeId), path });
         }
         const response = JSON.stringify(detail(args.nodeId));
+        if (holdDetail) { holdDetail = false; return new Promise(resolve => { releaseDetail = () => resolve(response); }); }
         if (delayedDetail) { delayedDetail = false; await pause(300); }
         return response;
       }
@@ -238,7 +245,7 @@
   const report = (passed, error) => {
     const output = document.createElement("pre");
     output.id = "scan-test-report";
-    output.textContent = JSON.stringify({ fixture: "scan-ui", passed, error, ipc_calls: calls.length, checks: passed ? ["offline fonts under CSP", "bounded collapsed discovery diagnostics", "discovery retry recovery", "setup alignment", "result fonts", "file label semantics", "usable file workspace", "collapsible diagnostics", "complete paging", "first-scan comparison", "unchanged comparison after rescan", "deletion delta comparison", "cross-device comparison isolation", "bounded file-type totals", "file-type retry and malformed response", "file-type generation and deletion revision", "file-type coverage and empty scan", "bounded largest files", "late largest response", "largest query retry", "malformed largest response recovery", "largest ID-only deletion", "largest read-only guards", "largest folder navigation without rescanning", "bounded search results", "late search response", "search retry and malformed response", "search ID-only deletion", "read-only search deletion disabled", "late zoom", "Other tile", "stale confirmation", "exact confirmation whitespace", "reachable long-path confirmation", "ID-only deletion", "revision refresh", "partial failure", "read-only", "acknowledged shutdown", "unconfirmed shutdown", "reconnect", "stop action ordering", "duplicate rescan guard", "rescan failure recovery", "rescan cancellation recovery", "toast dismissal integration", "bounded diagnostic integration"] : undefined });
+    output.textContent = JSON.stringify({ fixture: "scan-ui", passed, error, ipc_calls: calls.length, checks: passed ? ["offline fonts under CSP", "bounded collapsed discovery diagnostics", "discovery retry recovery", "setup alignment", "result fonts", "file label semantics", "usable file workspace", "collapsible diagnostics", "complete paging", "first-scan comparison", "unchanged comparison after rescan", "deletion delta comparison", "cross-device comparison isolation", "bounded file-type totals", "file-type retry and malformed response", "file-type generation and deletion revision", "file-type coverage and empty scan", "bounded largest files", "late largest response", "largest query retry", "malformed largest response recovery", "largest ID-only deletion", "largest read-only guards", "largest folder navigation without rescanning", "bounded search results", "late search response", "search retry and malformed response", "search ID-only deletion", "read-only search deletion disabled", "late zoom", "Other tile", "stale confirmation", "exact confirmation whitespace", "reachable long-path confirmation", "native modal keyboard focus and cancellation", "ID-only deletion", "revision refresh", "partial failure", "read-only", "acknowledged shutdown", "unconfirmed shutdown", "reconnect", "stop action ordering", "duplicate rescan guard", "rescan failure recovery", "rescan cancellation recovery", "toast dismissal integration", "bounded diagnostic integration"] : undefined });
     document.body.append(output);
     void fetch("/report", { method: "POST", body: output.textContent }).then(() => {
       if (passed) location.replace("/tests/toast_lifecycle_fixture.html");
@@ -519,7 +526,41 @@
       && !row.textContent.includes(" file-0 ") && !row.textContent.includes(" file-1 "));
     const targetLabel = target.querySelector('[aria-label^="Delete "]').getAttribute("aria-label");
     const deletesBeforeSearch = calls.filter(call => call.command === "delete_item").length;
-    target.querySelector('[aria-label^="Delete "]').click();
+    const trigger = target.querySelector('[aria-label^="Delete "]');
+    trigger.focus();
+    check(document.activeElement === trigger, "Search delete trigger cannot receive focus");
+    holdDetail = true;
+    const pendingConfirmation = pressKey("Enter");
+    await waitFor(() => releaseDetail, "Delete detail request did not start");
+    const rescanTrigger = document.querySelector("#btn-rescan");
+    rescanTrigger.focus();
+    check(document.activeElement === rescanTrigger, "Focus did not move during the detail request");
+    releaseDetail();
+    await pendingConfirmation;
+    await waitFor(() => button("NUKE IT"), "Keyboard did not open search confirmation");
+    const dialog = document.querySelector("dialog");
+    check(dialog?.matches(":modal"), "Confirmation is not a native modal dialog");
+    check(document.getElementById(dialog.getAttribute("aria-labelledby"))?.textContent === "Delete Item?", "Dialog has no accessible name");
+    check(document.activeElement === button("Cancel"), "Confirmation did not focus the safe Cancel action");
+    document.querySelector("#btn-rescan").focus();
+    check(dialog.contains(document.activeElement), "Background stole modal focus");
+    for (const key of ["Tab", "Shift+Tab"]) {
+      for (let index = 0; index < 4; index++) {
+        const previousFocus = document.activeElement;
+        await pressKey(key);
+        check(dialog.contains(document.activeElement) && document.activeElement !== previousFocus,
+          `${key} did not move focus within the confirmation`);
+      }
+    }
+    await pressKey("Escape");
+    await waitFor(() => !document.querySelector("dialog") && document.activeElement === trigger, "Escape did not cancel and restore trigger focus");
+    check(calls.filter(call => call.command === "delete_item").length === deletesBeforeSearch, "Escape issued a delete");
+    await pressKey("Enter");
+    await waitFor(() => document.activeElement === button("Cancel"), "Reopened confirmation lost safe focus");
+    await pressKey("Enter");
+    await waitFor(() => !document.querySelector("dialog") && document.activeElement === trigger, "Cancel did not restore trigger focus");
+    check(calls.filter(call => call.command === "delete_item").length === deletesBeforeSearch, "Default Enter issued a delete");
+    trigger.click();
     await waitFor(() => button("NUKE IT"), "Search confirmation missing");
     button("NUKE IT").click();
     await waitFor(() => !document.querySelector(`[aria-label="${targetLabel}"]`), "Deleted search row survived revision refresh");

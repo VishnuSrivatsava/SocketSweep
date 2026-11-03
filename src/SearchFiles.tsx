@@ -9,7 +9,7 @@ export function SearchFiles({ scope, busy, onZoom, onNuke }: {
   scope: ScanResponse;
   busy: boolean;
   onZoom: (id: number) => void;
-  onNuke: (id: number) => void;
+  onNuke: (id: number, trigger: HTMLButtonElement) => void;
 }) {
   const { generation, revision, root_path, read_only, total_size } = scope;
   const [input, setInput] = useState("");
@@ -76,7 +76,7 @@ export function SearchFiles({ scope, busy, onZoom, onNuke }: {
           <button disabled={busy || node.parent_id === null}
             onClick={() => onZoom(node.type === "directory" ? node.id : node.parent_id!)}
             className="text-accent-400 hover:underline">Show folder</button>
-          <button aria-label={`Delete ${node.name}`} disabled={busy || !node.can_delete} onClick={() => onNuke(node.id)}
+          <button aria-label={`Delete ${node.name}`} disabled={busy || !node.can_delete} onClick={event => onNuke(node.id, event.currentTarget)}
             className="text-red-400 hover:underline disabled:text-zinc-600">Delete</button>
         </div>
       </li>)}

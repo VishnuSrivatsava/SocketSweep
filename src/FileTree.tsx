@@ -72,7 +72,7 @@ export function FileTreeNode({ node, scope, parentSize, depth, onNuke, onZoom, e
   scope: ScanResponse;
   parentSize: number;
   depth: number;
-  onNuke: (nodeId: number) => void;
+  onNuke: (nodeId: number, trigger: HTMLButtonElement) => void;
   onZoom: (nodeId: number) => void;
   expanded: Set<number>;
   toggle: (nodeId: number) => void;
@@ -104,7 +104,7 @@ export function FileTreeNode({ node, scope, parentSize, depth, onNuke, onZoom, e
           className="opacity-0 group-hover:opacity-100 focus:opacity-100 mr-2 px-2 py-1 rounded text-[10px] uppercase font-bold bg-accent-500/10 text-accent-400 border border-accent-500/20">Zoom</button>}
         <SizeBar ratio={ratio} />
         <span className="w-20 text-right text-xs font-mono text-zinc-500 flex-shrink-0">{formatBytes(node.size)}</span>
-        {depth > 0 && node.can_delete && <button disabled={busy} onClick={() => onNuke(node.id)}
+        {depth > 0 && node.can_delete && <button disabled={busy} onClick={event => onNuke(node.id, event.currentTarget)}
           title={`Delete ${node.name}`} aria-label={`Delete ${node.name}`}
           className="btn-nuke opacity-0 group-hover:opacity-100 focus:opacity-100 ml-1 px-2 py-1 rounded-md bg-danger-600/20 border border-danger-500/30 text-danger-400 hover:bg-danger-500/30 text-[10px] uppercase font-bold flex items-center gap-1">
           <IconNuke /><span className="hidden sm:inline">Delete</span>

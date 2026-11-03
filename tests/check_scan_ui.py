@@ -112,10 +112,25 @@ def main():
             activity.record(self.command, self.path, code)
         def do_POST(self):
             length = int(self.headers.get('Content-Length', '0'))
-            if self.path != '/report' or not 0 < length < 64 * 1024:
+            if self.path not in ('/report', '/keyboard') or not 0 < length < 64 * 1024:
                 self.send_error(400)
                 return
             value = json.loads(self.rfile.read(length))
+            if self.path == '/keyboard':
+                if not isinstance(value, dict) or value.get('key') not in ('Enter', 'Tab', 'Shift+Tab', 'Escape'):
+                    self.send_error(400)
+                    return
+                try:
+                    # Node 20 exposes its built-in WebSocket under this flag.
+                    subprocess.run(['node', '--experimental-websocket', str(REPO / 'tests/browser_keys.mjs'),
+                                    str(work / 'profile/DevToolsActivePort'), value['key']],
+                                   capture_output=True, text=True, check=True, timeout=5)
+                except (subprocess.SubprocessError, OSError) as error:
+                    self.send_error(500, str(error)[:256])
+                    return
+                self.send_response(200)
+                self.end_headers()
+                return
             self.send_response(200)
             self.end_headers()
             reports.put(value)
@@ -154,7 +169,7 @@ def main():
         threading.Thread(target=server.serve_forever, daemon=True).start()
         try:
             with (work / 'chrome.log').open('w+b') as log:
-                process = subprocess.Popen([chrome, '--headless', '--disable-gpu', '--no-first-run',
+                process = subprocess.Popen([chrome, '--headless', '--disable-gpu', '--no-first-run', '--remote-debugging-port=0',
                     '--use-mock-keychain', '--password-store=basic', '--enable-logging=stderr',
                     '--disable-background-networking', '--disable-extensions',
                     '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1',
