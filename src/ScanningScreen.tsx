@@ -1,15 +1,8 @@
 import { formatBytes } from "./formatBytes";
+import type { ScanProgress } from "./useScanRequest";
 
 function formatNumber(n: number): string {
   return n.toLocaleString("en-US");
-}
-
-export interface ScanProgress {
-  scan_id: string;
-  files: number;
-  directories: number;
-  total_size: number;
-  recent_names: string[];
 }
 
 export function ScanningScreen({ statusText, progress, onCancel, cancelling }: {

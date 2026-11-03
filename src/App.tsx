@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef } from "react";
-import { Channel, invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
 import { checkAdb, confirmDaemonShutdown, startDaemon, stopDaemon } from "./daemonIpc";
 import { formatBytes } from "./formatBytes";
 import { sameScan, parseNodeDetail } from "./scanView";
@@ -11,7 +11,7 @@ import { TerminalLog } from "./TerminalLog";
 import { appendLog, emptyLogHistory } from "./logHistory";
 import { useDevices } from "./useDevices";
 import { ScanningScreen } from "./ScanningScreen";
-import type { ScanProgress } from "./ScanningScreen";
+import { useScanRequest } from "./useScanRequest";
 import { SetupScreen } from "./SetupScreen";
 import { ResultScreen } from "./ResultScreen";
 import "./App.css";
@@ -39,11 +39,9 @@ function App() {
   const actionPending = useRef(false);
   const confirmationRequest = useRef(0);
   const [confirmDelete, setConfirmDelete] = useState<(NodeDetail & { trigger: HTMLButtonElement }) | null>(null);
-  const [scanProgress, setScanProgress] = useState<ScanProgress | null>(null);
-  const [cancelling, setCancelling] = useState(false);
-  const activeScan = useRef<string | null>(null);
   const [statusText, setStatusText] = useState("Initializing…");
   const { toasts, pushToast, dismissToast, removeToast } = useToasts();
+  const { scanProgress, cancelling, runScan, cancelScan } = useScanRequest(pushToast);
   const [logs, setLogs] = useState(emptyLogHistory);
 
   const addLog = useCallback((msg: string) => {
@@ -51,39 +49,12 @@ function App() {
     setLogs((prev) => appendLog(prev, entry));
   }, []);
 
-  const requestScan = useCallback(async (path: string): Promise<ScanResponse> => {
+  const requestScan = useCallback((path: string) => {
     snapshot.current = null;
     confirmationRequest.current += 1;
     setConfirmDelete(null);
-    const scanId = crypto.randomUUID();
-    activeScan.current = scanId;
-    setScanProgress(null);
-    setCancelling(false);
-    const onProgress = new Channel<ScanProgress>();
-    onProgress.onmessage = (progress) => {
-      if (activeScan.current === scanId && progress.scan_id === scanId) setScanProgress(progress);
-      void invoke("acknowledge_scan_progress", { scanId: progress.scan_id }).catch(() => {
-        // The completed/cancelled scan may already have released its channel.
-      });
-    };
-    try {
-      const raw = await invoke<string>("run_scan", { path, scanId, onProgress });
-      const parsed: ScanResponse = JSON.parse(raw);
-      if (parsed.status !== "ok") throw new Error("Scan returned non-ok status");
-      return parsed;
-    } finally {
-      if (activeScan.current === scanId) activeScan.current = null;
-      setCancelling(false);
-    }
-  }, []);
-
-  const handleCancelScan = useCallback(async () => {
-    const scanId = activeScan.current;
-    if (!scanId) return;
-    setCancelling(true);
-    try { await invoke("cancel_scan", { scanId }); }
-    catch (err) { pushToast(String(err), "error"); setCancelling(false); }
-  }, [pushToast]);
+    return runScan(path);
+  }, [runScan]);
 
   // ── Connect flow ────────────────────────────────────────────────────────
   const handleConnect = useCallback(async () => {
@@ -257,7 +228,7 @@ function App() {
             deviceSelection={deviceSelection}
           />
         )}
-        {phase === "scanning" && <ScanningScreen statusText={statusText} progress={scanProgress} onCancel={handleCancelScan} cancelling={cancelling} />}
+        {phase === "scanning" && <ScanningScreen statusText={statusText} progress={scanProgress} onCancel={cancelScan} cancelling={cancelling} />}
         {phase === "result" && scanData && (
           <ResultScreen
             key={scanData.generation}
