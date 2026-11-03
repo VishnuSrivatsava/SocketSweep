@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from "react";
 import { Channel, invoke } from "@tauri-apps/api/core";
+import { parseScanSummary } from "./scanView";
 import type { ScanResponse } from "./scanView";
 
 export interface ScanProgress {
@@ -29,9 +30,7 @@ export function useScanRequest(onError: (message: string) => void) {
     };
     try {
       const raw = await invoke<string>("run_scan", { path, scanId, onProgress });
-      const parsed: ScanResponse = JSON.parse(raw);
-      if (parsed.status !== "ok") throw new Error("Scan returned non-ok status");
-      return parsed;
+      return parseScanSummary(JSON.parse(raw));
     } finally {
       if (activeScan.current === scanId) activeScan.current = null;
       setCancelling(false);

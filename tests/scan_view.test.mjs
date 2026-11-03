@@ -7,7 +7,7 @@ const source = await readFile(new URL("../src/scanView.ts", import.meta.url), "u
 const { outputText } = ts.transpileModule(source, {
   compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext },
 });
-const { sameScan, viewKey, viewReducer, parseNodeDetail } = await import(
+const { sameScan, viewKey, viewReducer, parseNodeDetail, parseScanSummary, parseDeleteResult } = await import(
   `data:text/javascript;base64,${Buffer.from(outputText).toString("base64")}`
 );
 const scope = { generation: "scan-a", revision: 0 };
@@ -134,4 +134,26 @@ test("node detail rejects misleading paths and unsafe deletion flags", () => {
   assert.throws(() => parseDetail(detail(), { ...detailScope, read_only: true }));
   const readOnly = detail(); readOnly.node.can_delete = false;
   assert.deepEqual(parseDetail(readOnly, { ...detailScope, read_only: true }), readOnly);
+});
+
+test("scan and deletion summaries validate before becoming the active snapshot", () => {
+  const summary = {
+    ...scope, status: "ok", root_path: "/", read_only: true,
+    total_size: 0, total_files: 0, total_dirs: 1, errors: 0, skipped: 0, scan_time_ms: 0,
+    root: { id: 0, parent_id: null, name: "/", type: "directory", size: 0,
+      counted: true, child_count: 0, can_delete: false },
+  };
+  assert.deepEqual(parseScanSummary(summary), summary);
+  for (const invalid of [
+    null, { ...summary, total_files: "0" }, { ...summary, revision: -1 },
+    { ...summary, root: { ...summary.root, can_delete: true } },
+    { ...summary, total_size: 1 }, { ...summary, send_ms: null },
+  ]) {
+    assert.throws(() => parseScanSummary(invalid));
+  }
+
+  const deletion = { summary, message: "Deleted", removed: { files: 1, dirs: 0, size: 0 } };
+  assert.deepEqual(parseDeleteResult(deletion), deletion);
+  assert.throws(() => parseDeleteResult({ ...deletion, removed: { ...deletion.removed, files: -1 } }));
+  assert.throws(() => parseDeleteResult({ ...deletion, summary: {} }));
 });
