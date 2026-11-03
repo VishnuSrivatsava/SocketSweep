@@ -90,65 +90,8 @@ jobs:
           sudo -n env CXX=g++ python3 -m unittest discover -s tests -p test_root_scan.py -v
           sudo -n env CXX=g++ python3 -m unittest discover -s tests -p test_owned_session.py -v
 
-      # ── Cross-compile C++ daemon for Android aarch64 ──────────────────────
-      # The daemon always targets Android ARM64, regardless of host OS.
-      # Uses the pre-installed Android NDK on GitHub Actions runners.
-      - name: Cross-compile C++ daemon (Unix)
-        if: runner.os != 'Windows'
-        run: |
-          NDK="${ANDROID_NDK_LATEST_HOME:-$ANDROID_NDK_HOME}"
-          TOOLCHAIN=$(ls -d "$NDK/toolchains/llvm/prebuilt/"*/ | head -1)
-          CC="${TOOLCHAIN}bin/aarch64-linux-android31-clang++"
-          mkdir -p daemon-symbols
-
-          echo "NDK: $NDK"
-          echo "Compiler: $CC"
-
-          "$CC" \
-            -std=c++17 -O2 -pthread -Wall -Wextra -Wpedantic \
-            -fno-exceptions -fno-rtti -DNDEBUG \
-            -static-libstdc++ \
-            -g -Wl,--build-id=sha1 \
-            -o daemon-symbols/socketsweep_daemon engine/daemon.cpp
-
-          "${TOOLCHAIN}bin/llvm-strip" --strip-all \
-            -o src-tauri/bin/daemon daemon-symbols/socketsweep_daemon
-          python3 tests/check_daemon_symbols.py \
-            --tools "${TOOLCHAIN}bin" --platform "${{ matrix.platform }}" \
-            --commit "$GITHUB_SHA"
-
-          file src-tauri/bin/daemon
-          echo "✓ C++ daemon cross-compiled for Android aarch64"
-
-      - name: Cross-compile C++ daemon (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $NDK = $env:ANDROID_NDK_LATEST_HOME
-          $Prebuilt = Get-ChildItem "$NDK\toolchains\llvm\prebuilt" -Directory | Select-Object -First 1
-          $CC = Join-Path $Prebuilt.FullName "bin\aarch64-linux-android31-clang++.cmd"
-          $Strip = Join-Path $Prebuilt.FullName "bin\llvm-strip.exe"
-          New-Item -ItemType Directory -Path daemon-symbols | Out-Null
-
-          Write-Host "NDK: $NDK"
-          Write-Host "Compiler: $CC"
-
-          & $CC `
-            -std=c++17 -O2 -pthread -Wall -Wextra -Wpedantic `
-            -fno-exceptions -fno-rtti -DNDEBUG `
-            -static-libstdc++ `
-            -g "-Wl,--build-id=sha1" `
-            -o daemon-symbols/socketsweep_daemon engine/daemon.cpp
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-          & $Strip --strip-all -o src-tauri/bin/daemon daemon-symbols/socketsweep_daemon
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python tests/check_daemon_symbols.py `
-            --tools (Join-Path $Prebuilt.FullName "bin") --platform "${{ matrix.platform }}" `
-            --commit $env:GITHUB_SHA
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-          Write-Host "✓ C++ daemon cross-compiled for Android aarch64"
+      - name: Cross-compile C++ daemon
+        run: ${{ runner.os == 'Windows' && 'python' || 'python3' }} engine/build_daemon.py --platform "${{ matrix.platform }}" --commit "${{ github.sha }}"
 
       # Keep symbols outside Tauri resources. Each host build can use a
       # different NDK; the manifest identifies its exact stripped daemon.
