@@ -1,15 +1,7 @@
 import { useCallback, useRef, useState } from "react";
 import { Channel, invoke } from "@tauri-apps/api/core";
-import { parseScanSummary } from "./scanView";
-import type { ScanResponse } from "./scanView";
-
-export interface ScanProgress {
-  scan_id: string;
-  files: number;
-  directories: number;
-  total_size: number;
-  recent_names: string[];
-}
+import { parseScanProgress, parseScanSummary } from "./scanView";
+import type { ScanProgress, ScanResponse } from "./scanView";
 
 export function useScanRequest(onError: (message: string) => void) {
   const [scanProgress, setScanProgress] = useState<ScanProgress | null>(null);
@@ -21,11 +13,13 @@ export function useScanRequest(onError: (message: string) => void) {
     activeScan.current = scanId;
     setScanProgress(null);
     setCancelling(false);
-    const onProgress = new Channel<ScanProgress>();
+    const onProgress = new Channel<unknown>();
     onProgress.onmessage = (progress) => {
-      if (activeScan.current === scanId && progress.scan_id === scanId) setScanProgress(progress);
-      void invoke("acknowledge_scan_progress", { scanId: progress.scan_id }).catch(() => {
-        // The completed/cancelled scan may already have released its channel.
+      const parsed = parseScanProgress(progress, scanId);
+      if (activeScan.current === scanId && parsed) setScanProgress(parsed);
+      // Release backpressure for this channel even if its payload was ignored.
+      void invoke("acknowledge_scan_progress", { scanId }).catch(() => {
+        // The scan may have already finished.
       });
     };
     try {

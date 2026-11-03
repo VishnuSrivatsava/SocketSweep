@@ -1,5 +1,5 @@
 import { formatBytes } from "./formatBytes";
-import type { ScanProgress } from "./useScanRequest";
+import type { ScanProgress } from "./scanView";
 
 function formatNumber(n: number): string {
   return n.toLocaleString("en-US");
