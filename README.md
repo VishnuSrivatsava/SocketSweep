@@ -311,6 +311,9 @@ npm run tauri dev
 ```
 *Ensure your Android device is plugged in via USB and **USB Debugging** is enabled.*
 
+Tagged builds use the `vX.Y.Z` Git tag as the release version. CI applies
+that version to the frontend package and Tauri configuration before packaging.
+
 ### 4. Run regression tests
 
 ```bash
