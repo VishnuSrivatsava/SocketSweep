@@ -593,6 +593,15 @@
     await pause(30);
     check(calls.filter(item => item.command === "get_scan_view").length === before, "Other tile zoomed");
 
+    const mapFolder = document.querySelector('svg [role="button"][aria-label^="large-folder"]');
+    check(mapFolder, "Storage map folder is not keyboard accessible");
+    mapFolder.focus();
+    check(document.activeElement === mapFolder, "Storage map folder did not receive focus");
+    await pressKey("Enter");
+    await waitFor(() => button("← Back to Root") && rows().length === 129, "Keyboard map zoom failed");
+    button("← Back to Root").click();
+    await waitFor(() => !button("← Back to Root") && rows().some(row => row.textContent.includes("large-folder")), "Map zoom did not return to root");
+
     for (const invalidPath of ["object", "outside"]) {
       badDetail = invalidPath;
       const toastsBeforeBadDetail = document.querySelectorAll("#toast-container > div").length;
