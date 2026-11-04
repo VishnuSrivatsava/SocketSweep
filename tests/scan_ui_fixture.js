@@ -734,7 +734,8 @@
     coverageSkipped = 0;
     stopOutcome = "acknowledged";
     selectDevice("phone-one");
-    await pause(20);
+    await waitFor(() => picker().value === "phone-one" && document.querySelector("#btn-connect:enabled"),
+      "Connect did not become ready for phone-one");
     document.querySelector("#btn-connect").click();
     await waitFor(() => rows().length === 129, "Explicit device switch did not scan");
     check(activeDevice === "phone-one" && scope().generation !== previousGeneration && document.querySelector("#connected-device").textContent.includes("phone-one"), "Device switch reused old results/identity");
@@ -747,7 +748,8 @@
     await waitFor(() => document.querySelector("#btn-connect") && !document.querySelector("#btn-connect").disabled, "Stop with a pending confirmation did not finish");
     check(!button("NUKE IT") && picker().value === "phone-one", "Stop retained confirmation or forgot selection");
     selectDevice("phone-two");
-    await pause(20);
+    await waitFor(() => picker().value === "phone-two" && document.querySelector("#btn-connect:enabled"),
+      "Connect did not become ready for phone-two");
     document.querySelector("#btn-connect").click();
     await waitFor(() => rows().length === 129, "Switch back to the second phone failed");
     check(activeDevice === "phone-two" && !button("NUKE IT") && calls.filter(call => call.command === "delete_item").length === deleteCallsBeforeSwitch, "An old confirmation crossed device sessions");
