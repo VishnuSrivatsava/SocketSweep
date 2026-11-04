@@ -623,10 +623,11 @@
 
     for (const invalidPath of ["object", "outside"]) {
       badDetail = invalidPath;
-      const toastsBeforeBadDetail = document.querySelectorAll("#toast-container > div").length;
+      const toastsBeforeBadDetail = new Set(document.querySelectorAll("#toast-container > div"));
       const deletesBeforeBadDetail = calls.filter(call => call.command === "delete_item").length;
       document.querySelector('[aria-label="Delete  file-0 "]').click();
-      await waitFor(() => !document.querySelector("#btn-rescan") || button("NUKE IT") || document.querySelectorAll("#toast-container > div").length > toastsBeforeBadDetail, "Malformed confirmation was not reported");
+      await waitFor(() => !document.querySelector("#btn-rescan") || button("NUKE IT") || [...document.querySelectorAll('#toast-container [role="alert"]')].some(toast =>
+        !toastsBeforeBadDetail.has(toast) && toast.textContent.includes("Scan node response does not match this scan")), "Malformed confirmation was not reported");
       check(document.querySelector("#btn-rescan") && !button("NUKE IT"), "Malformed confirmation crashed results or opened a delete dialog");
       check(calls.filter(call => call.command === "delete_item").length === deletesBeforeBadDetail, "Malformed confirmation issued a delete");
     }
