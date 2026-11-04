@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
-import { Treemap, ResponsiveContainer, Tooltip as RechartsTooltip } from "recharts";
-import type { TreemapNode } from "recharts";
+import { StorageMap } from "./StorageMap";
 import { formatBytes } from "./formatBytes";
 import type { ScanResponse } from "./scanView";
 import { useScanView } from "./useScanView";
@@ -22,42 +21,6 @@ function StatCard({ label, value, accent = false }: { label: string; value: stri
     </div>
   );
 }
-
-// ── Custom Treemap Content ──────────────────────────────────────────────────
-
-const TreemapContent = (props: TreemapNode & { bgColors: string[] }) => {
-  const { x, y, width, height, index, name, value, bgColors } = props;
-  if (width < 30 || height < 30) return null;
-  const bgColor = bgColors ? bgColors[index % bgColors.length] : "#0f172a";
-
-  return (
-    <g>
-      <rect
-        x={x}
-        y={y}
-        width={width}
-        height={height}
-        style={{
-          fill: bgColor,
-          stroke: "#ffffff20",
-          strokeWidth: 1,
-        }}
-      />
-      {width > 50 && height > 30 && name && (
-        <text x={x + 6} y={y + 18} fill="#fff" fontSize={11} className="font-sans font-medium pointer-events-none drop-shadow-md truncate max-w-full">
-          {name}
-        </text>
-      )}
-      {width > 50 && height > 45 && value !== undefined && (
-        <text x={x + 6} y={y + 32} fill="#94a3b8" fontSize={9} className="font-mono pointer-events-none">
-          {formatBytes(value)}
-        </text>
-      )}
-    </g>
-  );
-};
-
-// ── Result Screen ───────────────────────────────────────────────────────────
 
 export function ResultScreen({
   data,
@@ -93,12 +56,6 @@ export function ResultScreen({
     if (view.error === "Scan node is no longer available") onZoom(data.root.id);
   }, [view.error, data.root.id]);
 
-  const bgColors = [
-    "#0d9488", "#0284c7", "#4f46e5", "#7c3aed", 
-    "#c026d3", "#e11d48", "#ea580c", "#ca8a04",
-  ];
-
-  const treemapData = (page?.chart ?? []).map(tile => ({ ...tile, nodeId: tile.node_id }));
   const breadcrumbs = page?.breadcrumbs ?? [];
 
   return (
@@ -179,39 +136,8 @@ export function ResultScreen({
           className={`px-3 py-2 rounded-lg text-xs ${mode === "search" ? "bg-zinc-700 text-white" : "bg-zinc-900 text-zinc-400"}`}>Search</button>
       </div>
       {mode === "types" ? <FileTypes scope={data} busy={busy} /> : mode === "largest" ? <LargestFiles scope={data} busy={busy} onZoom={onZoom} onNuke={onNuke} /> : mode === "search" ? <SearchFiles scope={data} busy={busy} onZoom={onZoom} onNuke={onNuke} /> : <div className="flex-1 min-h-0 grid grid-rows-[7rem_minmax(0,1fr)] md:grid-rows-1 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)] gap-3 px-4 pb-3">
-      {/* Treemap */}
       <div className="min-h-0 min-w-0">
-        <div className="glass-card rounded-xl p-2 w-full h-full relative group">
-          <ResponsiveContainer width="100%" height="100%">
-            <Treemap
-              data={treemapData}
-              dataKey="size"
-              aspectRatio={4 / 3}
-              stroke="#fff"
-              content={node => <TreemapContent {...node} bgColors={bgColors} />}
-              isAnimationActive={false}
-              onClick={(e) => {
-                if (!busy && typeof e?.nodeId === "number") onZoom(e.nodeId);
-              }}
-            >
-              <RechartsTooltip 
-                content={({ active, payload }) => {
-                  if (active && payload && payload.length) {
-                    const p = payload[0].payload;
-                    return (
-                      <div className="bg-zinc-900 border border-zinc-800 p-2 rounded shadow-xl text-xs z-50">
-                        <p className="font-semibold text-zinc-200">{p.name}</p>
-                        <p className="text-zinc-400 font-mono mt-1">{formatBytes(p.size)}</p>
-                        {p.node_id !== null && <p className="text-zinc-600 mt-1">Click to Zoom</p>}
-                      </div>
-                    );
-                  }
-                  return null;
-                }}
-              />
-            </Treemap>
-          </ResponsiveContainer>
-        </div>
+        <StorageMap page={page} busy={busy} onZoom={onZoom} />
       </div>
 
       {/* File tree */}
