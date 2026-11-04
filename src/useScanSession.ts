@@ -21,7 +21,7 @@ type AppPhase = "setup" | "connecting" | "scanning" | "result";
 
 export function useScanSession(pushToast: PushToast, addLog: (message: string) => void) {
   const [phase, setPhase] = useState<AppPhase>("setup");
-  const deviceSelection = useDevices(phase === "setup");
+  const deviceSelection = useDevices(phase === "setup", addLog);
   const { serial: selectedSerial, ready: deviceReady } = deviceSelection;
   const [rootMode, setRootMode] = useState(false);
   const [rootPath, setRootPath] = useState("/data");

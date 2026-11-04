@@ -317,6 +317,8 @@
     listedDevices = [...readyDevices].reverse();
     await refreshDevices();
     check(picker().value === "phone-two" && !connect.disabled, "Reordered/reconnected devices lost selection");
+    await waitFor(() => /Discovery \(refresh, 2 ready of 4\): response \d+ ms, picker effect \d+ ms/.test(document.querySelector("#terminal-log").textContent),
+      "Discovery diagnostics did not include timings and readiness");
     // The display is only a snapshot. Native startup must reject a selected
     // device that vanished after this refresh, without choosing the first one.
     listedDevices = [readyDevices[0]];
