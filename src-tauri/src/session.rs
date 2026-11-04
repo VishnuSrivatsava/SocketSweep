@@ -435,10 +435,6 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         use std::sync::OnceLock;
 
-        fn quote(path: &Path) -> String {
-            format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
-        }
-
         fn daemon() -> &'static Path {
             static BINARY: OnceLock<PathBuf> = OnceLock::new();
             BINARY.get_or_init(|| {
@@ -505,16 +501,9 @@ mod tests {
                     .unwrap()
                     .join("tests/fake_session_adb.py");
                 let executable = base.join("fake-adb");
-                fs::write(
-                    &executable,
-                    format!(
-                        "#!/bin/sh\nexec python3 {} {} \"$@\"\n",
-                        quote(&helper),
-                        quote(&file)
-                    ),
-                )
-                .unwrap();
-                fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+                // Use a checked-in executable. A concurrent fork can inherit
+                // an open writer for a freshly generated script on Linux.
+                std::os::unix::fs::symlink(helper, &executable).unwrap();
                 executable
             }
             fn rows(&self) -> Vec<Vec<String>> {

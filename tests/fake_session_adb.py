@@ -14,8 +14,8 @@ import subprocess
 import sys
 import time
 
-config = json.loads(Path(sys.argv[1]).read_text())
-args = sys.argv[2:]
+config = json.loads(Path(sys.argv[0]).with_name("config.json").read_text())
+args = sys.argv[1:]
 if args not in (["devices", "-l"], ["version"]):
     assert args[:2] == ["-s", config["serial"]], args
     args = args[2:]
