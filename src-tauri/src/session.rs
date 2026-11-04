@@ -785,6 +785,27 @@ mod tests {
         }
 
         #[test]
+        fn failed_forward_removal_still_stops_the_owned_daemon_and_removes_its_files() {
+            let device = Device::new();
+            let adb = device.client("remove-failure", "same");
+            let (mut session, _) =
+                Session::start(adb.clone(), daemon(), "same".into(), false).unwrap();
+            let address = session.connection.address;
+            let forwards = device.rows();
+            fail(&adb, "remove-forward");
+
+            let errors = session.cleanup();
+            assert_eq!(errors.len(), 1, "{errors:?}");
+            assert!(errors[0].contains("Injected remove-forward failure"), "{errors:?}");
+            assert_eq!(device.rows(), forwards);
+            assert_eq!(device.directories(), 0);
+            assert!(
+                std::net::TcpStream::connect_timeout(&address, Duration::from_millis(200)).is_err()
+            );
+            assert!(session.cleanup().is_empty());
+        }
+
+        #[test]
         fn cleanup_preserves_a_forward_that_was_rebound_to_a_foreign_endpoint() {
             let device = Device::new();
             let (mut session, _) = Session::start(
@@ -796,13 +817,15 @@ mod tests {
             .unwrap();
             let mut rows = device.rows();
             let local = format!("tcp:{}", session.connection.address.port());
-            rows.iter_mut().find(|row| row[1] == local).unwrap()[2] = "tcp:9999".into();
+            let foreign_port = if session.device_port == Some(9999) { 9998 } else { 9999 };
+            rows.iter_mut().find(|row| row[1] == local).unwrap()[2] = format!("tcp:{foreign_port}");
             fs::write(
                 device.root.join("forwards.json"),
                 serde_json::to_vec(&rows).unwrap(),
             )
             .unwrap();
-            assert!(session.cleanup().is_empty());
+            let errors = session.cleanup();
+            assert!(errors.is_empty(), "{errors:?}");
             assert_eq!(device.rows(), rows);
             assert_eq!(device.directories(), 0);
         }

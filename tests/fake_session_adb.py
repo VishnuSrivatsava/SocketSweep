@@ -89,6 +89,7 @@ elif args[0] == "forward":
             for row in rows:
                 print(" ".join(row))
         elif args[1] == "--remove":
+            fail("remove-forward")
             rows = [row for row in rows if not (row[0] == config["serial"] and row[1] == args[2])]
             registry.write_text(json.dumps(rows))
         else:
