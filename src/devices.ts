@@ -5,6 +5,20 @@ export interface AndroidDevice {
   model: string | null;
 }
 
+export function parseDeviceList(value: unknown): AndroidDevice[] {
+  const invalid = () => new Error("Invalid device discovery response");
+  if (!Array.isArray(value)) throw invalid();
+  const serials = new Set<string>();
+  return value.map((device: unknown) => {
+    if (typeof device !== "object" || device === null || Array.isArray(device)) throw invalid();
+    const { serial, state, model } = device as Record<string, unknown>;
+    if (typeof serial !== "string" || !serial || serials.has(serial)
+      || typeof state !== "string" || !state || (model !== null && typeof model !== "string")) throw invalid();
+    serials.add(serial);
+    return { serial, state, model };
+  });
+}
+
 export function preserveDeviceSelection(current: string, devices: AndroidDevice[]): string {
   if (current) return current;
   const ready = devices.filter(device => device.state === "device");

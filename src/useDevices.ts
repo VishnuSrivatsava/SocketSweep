@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { deviceDiscoveryMessage, preserveDeviceSelection } from "./devices";
+import { deviceDiscoveryMessage, parseDeviceList, preserveDeviceSelection } from "./devices";
 import { boundDiagnostic } from "./logHistory";
 import type { AndroidDevice } from "./devices";
 
@@ -18,7 +18,8 @@ export function useDevices(enabled: boolean) {
     try {
       // StrictMode replays setup effects while their IPC is still pending.
       // Share only that in-flight command; settled lists are never cached.
-      const result = await (pending.current ??= invoke<AndroidDevice[]>("list_devices")
+      const result = await (pending.current ??= invoke<unknown>("list_devices")
+        .then(parseDeviceList)
         .finally(() => { pending.current = null; }));
       if (id !== request.current) return;
       setDevices(result);

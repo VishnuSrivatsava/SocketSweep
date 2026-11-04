@@ -309,6 +309,10 @@
     diagnostics.querySelector("summary").click();
     check(!diagnostics.open && diagnostics.getBoundingClientRect().height <= closedHeight + 1, "Collapsed diagnostics still occupied the screen");
     discoveryError = false;
+    listedDevices = [null];
+    await refreshDevices();
+    check(picker().value === "phone-two" && connect.disabled && status.textContent.includes("Couldn't check connected devices"),
+      "Malformed device discovery did not preserve the selection and disable Connect");
     listedDevices = [...readyDevices].reverse();
     await refreshDevices();
     check(picker().value === "phone-two" && !connect.disabled, "Reordered/reconnected devices lost selection");
