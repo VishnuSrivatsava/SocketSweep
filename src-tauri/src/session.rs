@@ -188,6 +188,10 @@ impl Session {
         if !supports_shell_v2(&self.adb(&["features"], None, deadline)?) {
             return Err("The connected device must support ADB shell v2 for owned sessions".into());
         }
+        let abis = self.adb(&["shell", "getprop ro.product.cpu.abilist"], None, deadline)?;
+        if !abis.trim().split(',').any(|abi| abi.trim() == "arm64-v8a") {
+            return Err("This build requires an Android device that supports the arm64-v8a ABI.".into());
+        }
         self.privilege = select_privilege(root_mode, |args| self.adb(args, None, deadline))?;
         // The directory is shell-owned even for su launches, so adb push can
         // write into it. mkdir must succeed exclusively before cleanup owns it.
@@ -524,6 +528,20 @@ mod tests {
         fn ping(session: &Session) -> String {
             let c = session.connection();
             crate::daemon_command_at(c.address, "PING", &c.token, Duration::from_secs(2)).unwrap()
+        }
+
+        #[test]
+        fn unsupported_device_abi_fails_before_creating_session_resources() {
+            let device = Device::new();
+            let adb = device.client("x86", "emulator");
+            fs::write(adb.parent().unwrap().join("abis.txt"), "x86_64,x86\r\n").unwrap();
+            let error = Session::start(adb.clone(), daemon(), "emulator".into(), true)
+                .err().expect("unsupported ABI accepted");
+            assert!(error.contains("arm64-v8a"), "{error}");
+            let calls = fs::read_to_string(adb.parent().unwrap().join("calls.jsonl")).unwrap();
+            assert!(!calls.contains("mkdir") && !calls.contains("push") && !calls.contains("su -c"));
+            assert_eq!(device.directories(), 0);
+            assert_eq!(device.rows().len(), 1);
         }
 
         #[test]
