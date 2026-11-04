@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { parseLargestFiles } from "./largestFilesSummary";
+import { getLargestFiles } from "./scanIpc";
 import type { LargestResponse } from "./largestFilesSummary";
 import type { ScanResponse } from "./scanView";
 import { formatBytes } from "./formatBytes";
@@ -18,8 +17,7 @@ export function LargestFiles({ scope, busy, onZoom, onNuke }: {
   const [state, setState] = useState<{ key: string; data?: LargestResponse; error?: string }>({ key: "" });
   useEffect(() => {
     let current = true;
-    void invoke<string>("get_largest_files", { generation, revision, limit }).then(raw => {
-      const data = parseLargestFiles(raw, { generation, revision, root_path, read_only, total_files, total_size }, limit);
+    void getLargestFiles({ generation, revision, root_path, read_only, total_files, total_size }, limit).then(data => {
       if (current) setState({ key, data });
     }).catch(error => {
       if (current) setState({ key, error: String(error) });

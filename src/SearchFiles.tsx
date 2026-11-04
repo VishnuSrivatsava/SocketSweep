@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { parseSearchResults } from "./searchResults";
+import { getSearchResults } from "./scanIpc";
 import type { SearchResponse } from "./searchResults";
 import type { ScanResponse } from "./scanView";
 import { formatBytes } from "./formatBytes";
@@ -26,8 +25,7 @@ export function SearchFiles({ scope, busy, onZoom, onNuke }: {
   useEffect(() => {
     if (!query) return;
     let current = true;
-    void invoke<string>("get_search_results", { generation, revision, query, skip }).then(raw => {
-      const data = parseSearchResults(raw, { generation, revision, root_path, read_only, total_size }, query, skip);
+    void getSearchResults({ generation, revision, root_path, read_only, total_size }, query, skip).then(data => {
       if (current) setState({ key, data });
     }).catch(error => {
       if (current) setState({ key, error: String(error) });
