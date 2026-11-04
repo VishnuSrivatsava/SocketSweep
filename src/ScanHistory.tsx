@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { parseScanComparison } from "./scanComparison";
+import { getScanComparison } from "./scanIpc";
 import type { ScanComparison } from "./scanComparison";
 import type { ScanResponse } from "./scanView";
 import { formatBytes } from "./formatBytes";
@@ -22,8 +21,7 @@ export function ScanHistory({ scope }: { scope: ScanResponse }) {
   const [state, setState] = useState<{ key: string; data?: ScanComparison; error?: string }>({ key: "" });
   useEffect(() => {
     let current = true;
-    void invoke<string>("get_scan_comparison", { generation, revision }).then(raw => {
-      const data = parseScanComparison(raw, { generation, revision, total_files, total_dirs, total_size });
+    void getScanComparison({ generation, revision, total_files, total_dirs, total_size }).then(data => {
       if (current) setState({ key, data });
     }).catch(() => {
       // The comparison is context, not a scan result; a failed query must not

@@ -1,6 +1,6 @@
 import { useEffect, useReducer, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { parseScanView, viewKey, viewReducer } from "./scanView";
+import { getScanView } from "./scanIpc";
+import { viewKey, viewReducer } from "./scanView";
 import type { PageCursor, ScanScope } from "./scanView";
 
 export function useScanView(scope: ScanScope, nodeId: number, enabled: boolean) {
@@ -21,10 +21,7 @@ export function useScanView(scope: ScanScope, nodeId: number, enabled: boolean) 
     dispatch({ type: "start", request: id, key });
     const queryCursor = cursorDirection !== undefined && cursorNodeId !== undefined
       ? { direction: cursorDirection, node_id: cursorNodeId } : null;
-    void invoke<string>("get_scan_view", {
-      generation, revision, nodeId, cursor: queryCursor,
-    }).then(raw => {
-      const page = parseScanView(raw, { generation, revision }, nodeId);
+    void getScanView({ generation, revision }, nodeId, queryCursor).then(page => {
       if (current) dispatch({ type: "success", request: id, page });
     }).catch(error => {
       if (current) dispatch({ type: "error", request: id, error: String(error) });

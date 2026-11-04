@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { FILE_TYPES, FILE_TYPE_LABELS, parseFileTypes } from "./fileTypeSummary";
+import { getFileTypes } from "./scanIpc";
+import { FILE_TYPES, FILE_TYPE_LABELS } from "./fileTypeSummary";
 import type { FileTypesResponse } from "./fileTypeSummary";
 import type { ScanResponse } from "./scanView";
 import { formatBytes } from "./formatBytes";
@@ -12,8 +12,7 @@ export function FileTypes({ scope, busy }: { scope: ScanResponse; busy: boolean 
   const [state, setState] = useState<{ key: string; data?: FileTypesResponse; error?: string }>({ key: "" });
   useEffect(() => {
     let current = true;
-    void invoke<string>("get_file_types", { generation, revision }).then(raw => {
-      const data = parseFileTypes(raw, { generation, revision, total_files, total_size });
+    void getFileTypes({ generation, revision, total_files, total_size }).then(data => {
       if (current) setState({ key, data });
     }).catch(error => {
       if (current) setState({ key, error: String(error) });

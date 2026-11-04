@@ -1,8 +1,8 @@
 import { useState, useCallback, useRef } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { deleteScanNode, getScanNode } from "./scanIpc";
 import { checkAdb, confirmDaemonShutdown, startDaemon, stopDaemon } from "./daemonIpc";
 import { formatBytes } from "./formatBytes";
-import { sameScan, parseNodeDetail, parseDeleteResult } from "./scanView";
+import { sameScan } from "./scanView";
 import type { ScanResponse, NodeDetail } from "./scanView";
 import { DeleteConfirmation } from "./DeleteConfirmation";
 import { ToastContainer } from "./ToastContainer";
@@ -162,8 +162,7 @@ function App() {
     if (!scope || scope.read_only || actionPending.current) return;
     const request = ++confirmationRequest.current;
     try {
-      const raw = await invoke<string>("get_scan_node", { generation: scope.generation, revision: scope.revision, nodeId });
-      const detail = parseNodeDetail(raw, scope, nodeId);
+      const detail = await getScanNode(scope, nodeId);
       if (request === confirmationRequest.current && !actionPending.current && sameScan(snapshot.current, scope) && detail.node.can_delete) {
         setConfirmDelete({ ...detail, trigger });
       }
@@ -181,14 +180,8 @@ function App() {
     setBusy(true);
     addLog(`[DELETE] Requesting deletion of ${target.path}...`);
     try {
-      const raw = await invoke<string>("delete_item", {
-        generation: target.generation, revision: target.revision, nodeId: target.node.id,
-      });
+      const result = await deleteScanNode(target, target.node.id);
       if (!sameScan(snapshot.current, target)) return;
-      const result = parseDeleteResult(JSON.parse(raw));
-      if (result.summary.generation !== target.generation || result.summary.revision !== target.revision + 1) {
-        throw new Error("Deletion returned an unexpected scan snapshot");
-      }
       snapshot.current = result.summary;
       setScanData(result.summary);
       pushToast(`Successfully deleted ${target.node.name}`, "success");

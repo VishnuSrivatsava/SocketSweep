@@ -59,7 +59,7 @@
   const whitespaceName = " file-3  double\t  ";
   const reset = () => {
     folderChildren = Array.from({ length: 200 }, (_, i) => node(i + 1001, 1, `nested-${i}`, 1));
-    rootChildren = [node(1, 0, "large-folder", 200, true), ...Array.from({ length: 270 }, (_, i) => node(i + 2, 0, i === 3 ? whitespaceName : ` file-${i} `, 1))];
+    rootChildren = [node(1, 0, "large-folder", 200, true), ...Array.from({ length: 536 }, (_, i) => node(i + 2, 0, i === 3 ? whitespaceName : ` file-${i} `, 1))];
     if (emptyScan) { rootChildren = []; folderChildren = []; }
     unavailable = false;
     revision = 0;
@@ -242,10 +242,11 @@
   const rows = () => [...document.querySelectorAll(".file-row")];
   const zoomFolder = () => [...rows().find(item => item.textContent.includes("large-folder")).querySelectorAll("button")]
     .find(item => item.textContent.trim() === "Zoom").click();
+  let widePaging;
   const report = (passed, error) => {
     const output = document.createElement("pre");
     output.id = "scan-test-report";
-    output.textContent = JSON.stringify({ fixture: "scan-ui", passed, error, ipc_calls: calls.length, checks: passed ? ["offline fonts under CSP", "bounded collapsed discovery diagnostics", "discovery retry recovery", "setup alignment", "result fonts", "file label semantics", "usable file workspace", "collapsible diagnostics", "complete paging", "first-scan comparison", "unchanged comparison after rescan", "deletion delta comparison", "cross-device comparison isolation", "bounded file-type totals", "file-type retry and malformed response", "file-type generation and deletion revision", "file-type coverage and empty scan", "bounded largest files", "late largest response", "largest query retry", "malformed largest response recovery", "largest ID-only deletion", "largest read-only guards", "largest folder navigation without rescanning", "bounded search results", "late search response", "search retry and malformed response", "search ID-only deletion", "read-only search deletion disabled", "late zoom", "Other tile", "stale confirmation", "exact confirmation whitespace", "reachable long-path confirmation", "native modal keyboard focus and cancellation", "ID-only deletion", "revision refresh", "partial failure", "read-only", "acknowledged shutdown", "unconfirmed shutdown", "reconnect", "stop action ordering", "duplicate rescan guard", "rescan failure recovery", "rescan cancellation recovery", "toast dismissal integration", "bounded diagnostic integration"] : undefined });
+    output.textContent = JSON.stringify({ fixture: "scan-ui", passed, error, ipc_calls: calls.length, wide_paging: widePaging, checks: passed ? ["offline fonts under CSP", "bounded collapsed discovery diagnostics", "discovery retry recovery", "setup alignment", "result fonts", "file label semantics", "usable file workspace", "collapsible diagnostics", "complete paging", "first-scan comparison", "unchanged comparison after rescan", "deletion delta comparison", "cross-device comparison isolation", "bounded file-type totals", "file-type retry and malformed response", "file-type generation and deletion revision", "file-type coverage and empty scan", "bounded largest files", "late largest response", "largest query retry", "malformed largest response recovery", "largest ID-only deletion", "largest read-only guards", "largest folder navigation without rescanning", "bounded search results", "late search response", "search retry and malformed response", "search ID-only deletion", "read-only search deletion disabled", "late zoom", "Other tile", "stale confirmation", "exact confirmation whitespace", "reachable long-path confirmation", "native modal keyboard focus and cancellation", "ID-only deletion", "revision refresh", "partial failure", "read-only", "acknowledged shutdown", "unconfirmed shutdown", "reconnect", "stop action ordering", "duplicate rescan guard", "rescan failure recovery", "rescan cancellation recovery", "toast dismissal integration", "bounded diagnostic integration"] : undefined });
     document.body.append(output);
     void fetch("/report", { method: "POST", body: output.textContent }).then(() => {
       if (passed) location.replace("/tests/toast_lifecycle_fixture.html");
@@ -342,7 +343,7 @@
     const mono = document.querySelector(".font-mono");
     check(mono && getComputedStyle(mono).fontFamily.includes("JetBrains Mono"), "Result does not use JetBrains Mono");
     check(document.documentElement.scrollWidth <= innerWidth, "Results overflow horizontally");
-    check(document.body.textContent.includes("128 entries on this page of 271"), "Missing full entry count");
+    check(document.body.textContent.includes("128 entries on this page of 537"), "Missing full entry count");
     check(!rows().find(item => item.textContent.includes("file-0")).querySelector("button:disabled"), "File label became an unavailable control");
     const deletesBeforeWhitespace = calls.filter(call => call.command === "delete_item").length;
     const whitespaceDelete = [...document.querySelectorAll('button[aria-label^="Delete "]')]
@@ -406,7 +407,7 @@
     await waitFor(typesReady, "File-type summary missing after rescan");
     oldTypes();
     await pause(30);
-    checkTypes(470);
+    checkTypes(736);
     check(!typesPanel().querySelector('[role="alert"]'), "Late file-type response crossed generations");
     const typeScanCount = calls.filter(item => item.command === "run_scan").length;
     for (const invalid of [false, true]) {
@@ -415,10 +416,10 @@
       if (invalid) invalidTypes = true; else failTypes = true;
       button("File types").click();
       await waitFor(() => typesPanel()?.querySelector('[role="alert"]'), "Invalid file-type summary did not fail");
-      check(!typesPanel().textContent.includes("470 scanned files"), "File-type failure retained old totals");
+      check(!typesPanel().textContent.includes("736 scanned files"), "File-type failure retained old totals");
       button("Retry").click();
       await waitFor(typesReady, "File-type retry failed");
-      checkTypes(470);
+      checkTypes(736);
     }
     check(calls.filter(item => item.command === "run_scan").length === typeScanCount, "File-type browsing rescanned the phone");
     button("Storage map").click();
@@ -455,16 +456,34 @@
     button("Show folder").click();
     await waitFor(() => rows().length === 129, "Show folder did not restore map");
     check(calls.filter(item => item.command === "run_scan").length === scanCount + 1, "Largest-files browsing rescanned the phone");
-    const firstNames = rows().map(item => item.textContent);
-    button("Next").click();
-    await waitFor(() => rows().some(item => item.textContent.includes("file-127")), "Next page missing");
-    button("Next").click();
-    await waitFor(() => rows().length === 16, "Final 15 children missing");
-    button("Previous").click();
-    await waitFor(() => rows().length === 129, "Previous page missing");
-    button("Previous").click();
-    await waitFor(() => rows().some(item => item.textContent.includes("large-folder")), "First page missing");
-    check(JSON.stringify(rows().map(item => item.textContent)) === JSON.stringify(firstNames), "Paging changed ordering");
+    const visibleNames = () => rows().slice(1).map(row =>
+      row.querySelector('[aria-label^="Delete "]')?.getAttribute("aria-label").slice("Delete ".length));
+    const expectedNames = rootChildren.map(child => child.name);
+    const expectedPages = [];
+    for (let offset = 0; offset < expectedNames.length; offset += 128) {
+      expectedPages.push(expectedNames.slice(offset, offset + 128));
+    }
+    const pageMatches = expected => JSON.stringify(visibleNames()) === JSON.stringify(expected);
+    check(pageMatches(expectedPages[0]), "First page changed entry order");
+    const focusTarget = rows()[1].querySelector('[aria-label^="Delete "]');
+    focusTarget.focus();
+    const pagingViewport = focusTarget.closest("section");
+    pagingViewport.scrollTop = pagingViewport.scrollHeight;
+    check(pagingViewport.scrollTop > 0, "Wide page could not scroll");
+    check(document.activeElement === focusTarget, "Scrolling dropped keyboard focus");
+    const pageTimes = [];
+    const visitPage = async (direction, expected) => {
+      const started = performance.now();
+      button(direction).click();
+      await waitFor(() => pageMatches(expected), `${direction} page omitted, duplicated or reordered entries`);
+      pageTimes.push(performance.now() - started);
+      check(rows().length <= 129, "Page exceeded the rendered-row bound");
+    };
+    for (const page of expectedPages.slice(1)) await visitPage("Next", page);
+    check(!button("Next"), "Final page had an unexpected continuation");
+    for (const page of expectedPages.slice(0, -1).reverse()) await visitPage("Previous", page);
+    check(!button("Previous"), "First page had an unexpected previous cursor");
+    widePaging = { entries: expectedNames.length, max_rows: 129, transition_ms: pageTimes.map(ms => Math.round(ms)) };
 
     // Search: bounded pages, a superseded held response, retry, malformed
     // recovery, and ID-only deletion. No rescan is ever allowed here.
@@ -637,7 +656,7 @@
     check(!largestRows().some(row => row.textContent.includes("/fixture/ file-0 ")), "Deleted largest file survived revision");
     button("File types").click();
     await waitFor(typesReady, "File types did not refresh after deletion");
-    checkTypes(469);
+    checkTypes(735);
     button("Largest files").click();
     await waitFor(() => largestRows().length === 25, "Largest files missing after type refresh");
     const nested = largestRows().find(row => row.textContent.includes("/large-folder/"));
@@ -681,7 +700,7 @@
     await waitFor(() => rows().length === 129, "Read-only map missing after search");
     button("File types").click();
     await waitFor(typesReady, "Read-only file types missing");
-    checkTypes(470);
+    checkTypes(736);
     check(typesPanel().textContent.includes("2 access errors") && typesPanel().textContent.includes("3 excluded or duplicate entries") && typesPanel().textContent.includes("/fixture"), "File-type coverage context missing");
     button("Storage map").click();
     await waitFor(() => rows().length === 129, "Read-only map missing");
