@@ -25,6 +25,9 @@ dist-ssr
 
 # SocketSweep custom ignores
 engine/daemon
+/engine/daemon-armeabi-v7a
+/engine/daemon-x86
+/engine/daemon-x86_64
 /src-tauri/bin/adb
 /src-tauri/bin/adb.exe
 /src-tauri/bin/AdbWinApi.dll

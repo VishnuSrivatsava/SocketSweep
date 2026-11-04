@@ -266,6 +266,11 @@ configured path fails explicitly rather than selecting a different toolchain.
 copies it into `src-tauri/bin/daemon`, which Tauri bundles. Rebuild after changing
 the daemon so local development uses the current protocol (v3).*
 
+For cross-compilation experiments, pass `--abi armeabi-v7a`, `--abi x86`,
+or `--abi x86_64` to the build command. These builds write
+`engine/daemon-<abi>` for Android API 31. The desktop app still bundles
+and runs the ARM64 daemon.
+
 Ordinary storage scans use a bounded pool of four workers. For daemon-level
 comparisons, append `--threads N` (1–8) after `PORT TOKEN_FILE`; one worker
 provides a serial reference. The pending directory queue holds at most 64 jobs
