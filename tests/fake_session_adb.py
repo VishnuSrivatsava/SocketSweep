@@ -54,6 +54,9 @@ elif args[0] == "shell":
         command = shlex.split(command)[2]
     if command == "getprop ro.product.model":
         print("Host fixture")
+    elif command == "getprop ro.product.cpu.abilist":
+        abis = base / "abis.txt"
+        print(abis.read_text() if abis.exists() else "arm64-v8a,armeabi-v7a")
     elif command == "getprop ro.build.version.sdk":
         print("fixture")
     elif command == "id -u":
