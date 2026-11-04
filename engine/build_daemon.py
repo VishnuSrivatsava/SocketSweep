@@ -1,4 +1,4 @@
-"""Build the Android ARM64 daemon with an installed Android NDK."""
+"""Build the Android daemon with an installed Android NDK."""
 
 import argparse
 import os
@@ -16,7 +16,15 @@ HOSTS = {
 }
 
 
-def toolchain():
+TARGETS = {
+    "arm64-v8a": "aarch64-linux-android",
+    "armeabi-v7a": "armv7a-linux-androideabi",
+    "x86_64": "x86_64-linux-android",
+    "x86": "i686-linux-android",
+}
+
+
+def toolchain(abi):
     host = HOSTS.get(sys.platform)
     if host is None:
         raise ValueError(f"Unsupported build host: {sys.platform}")
@@ -24,7 +32,7 @@ def toolchain():
         "NDK", "ANDROID_NDK_LATEST_HOME", "ANDROID_NDK_HOME"
     ) if os.environ.get(name)), None)
     suffix = ".cmd" if sys.platform == "win32" else ""
-    compiler_name = f"aarch64-linux-android31-clang++{suffix}"
+    compiler_name = f"{TARGETS[abi]}31-clang++{suffix}"
     if override:
         candidates = [Path(override)]
     else:
@@ -47,11 +55,13 @@ def toolchain():
     raise ValueError("Android NDK not found. Set NDK, ANDROID_NDK_LATEST_HOME, or ANDROID_NDK_HOME.")
 
 
-def build(platform, commit):
-    compiler = toolchain()
-    bundle = REPO / "src-tauri/bin/daemon"
+def build(platform, commit, abi):
+    compiler = toolchain(abi)
     local = REPO / "engine/daemon"
-    for output in (bundle,) if platform else (bundle, local):
+    experimental = abi != "arm64-v8a"
+    bundle = local.with_name(f"daemon-{abi}") if experimental else REPO / "src-tauri/bin/daemon"
+    outputs = (bundle,) if platform or experimental else (bundle, local)
+    for output in outputs:
         if output.exists() and not output.is_file():
             raise ValueError(f"Output path is not a regular file: {output}")
     print(f"[build] Compiler: {compiler}", flush=True)
@@ -63,6 +73,8 @@ def build(platform, commit):
             "-Wpedantic", "-fno-exceptions", "-fno-rtti", "-DNDEBUG",
             "-static-libstdc++",
         ]
+        if abi in ("armeabi-v7a", "x86"):
+            args.append("-D_FILE_OFFSET_BITS=64")
         if platform:
             symbols = REPO / "daemon-symbols/socketsweep_daemon"
             symbols.parent.mkdir(exist_ok=True)
@@ -74,10 +86,11 @@ def build(platform, commit):
             subprocess.run([str(strip), "--strip-all", "-o", str(staged), str(symbols)], check=True)
         else:
             subprocess.run([*args, "-s", "-o", str(staged), str(REPO / "engine/daemon.cpp")], check=True)
-            with TemporaryDirectory(prefix=".daemon-build-", dir=local.parent) as local_stage:
-                local_copy = Path(local_stage) / "daemon"
-                shutil.copy2(staged, local_copy)
-                local_copy.replace(local)
+            if not experimental:
+                with TemporaryDirectory(prefix=".daemon-build-", dir=local.parent) as local_stage:
+                    local_copy = Path(local_stage) / "daemon"
+                    shutil.copy2(staged, local_copy)
+                    local_copy.replace(local)
         staged.replace(bundle)
     if platform:
         subprocess.run([
@@ -91,11 +104,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--platform", choices=("linux", "macos", "windows"))
     parser.add_argument("--commit", help="Commit for the CI symbol manifest")
+    parser.add_argument("--abi", choices=TARGETS, default="arm64-v8a")
     args = parser.parse_args()
     if bool(args.platform) != bool(args.commit):
         parser.error("--platform and --commit must be passed together")
+    if args.platform and args.abi != "arm64-v8a":
+        parser.error("CI packaging currently supports arm64-v8a only")
     try:
-        build(args.platform, args.commit)
+        build(args.platform, args.commit, args.abi)
     except (ValueError, OSError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"ERROR: {error}\n")
 
