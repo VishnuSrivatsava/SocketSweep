@@ -116,11 +116,14 @@ def result(manifest, workload, copy, seconds, backend, compression):
         raise ValueError("Transfer seconds must be finite and positive")
     start = time.perf_counter()
     count, size = verify_copy(manifest, workload, copy)
+    rate = size / MIB / seconds
+    if not math.isfinite(rate):
+        raise ValueError("Transfer duration is too small to report finite throughput")
     return {"fixture": manifest["fixture"], "workload": workload,
             "backend": backend, "compression": compression, "verified": True,
             "files": count, "bytes": size, "transfer_seconds": seconds,
             "verification_seconds": time.perf_counter() - start,
-            "mib_per_second": size / MIB / seconds}
+            "mib_per_second": rate}
 
 
 def pull(workspace, serial, workload, output, compression="none", adb="adb"):

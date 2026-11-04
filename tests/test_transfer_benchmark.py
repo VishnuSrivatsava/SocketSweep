@@ -160,6 +160,8 @@ class TransferBenchmarkTests(unittest.TestCase):
         for seconds in (0, -1, float("nan"), float("inf")):
             with self.assertRaises(ValueError):
                 benchmark.result(self.manifest, "large", self.source / "large", seconds, "mtp", "unknown")
+        with self.assertRaisesRegex(ValueError, "finite throughput"):
+            benchmark.result(self.manifest, "large", self.source / "large", 1e-320, "mtp", "unknown")
         report = benchmark.result(self.manifest, "large", self.source / "large", 2, "mtp", "unknown")
         self.assertEqual(report["mib_per_second"], 0.5)
 
