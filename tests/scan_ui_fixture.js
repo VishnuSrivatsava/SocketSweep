@@ -20,6 +20,10 @@
   let resolveSearch;
   let failSearch = false;
   let malformedSearch = false;
+  let holdApps = false;
+  let resolveApps;
+  let failApps = false;
+  let invalidApps = false;
   let holdTypes = false;
   let resolveTypes;
   let failTypes = false;
@@ -146,6 +150,29 @@
       }
       check(!unavailable, "Snapshot unavailable");
       check(args.generation === scope().generation && args.revision === revision, "Stale mock snapshot");
+      if (command === "get_app_usage") {
+        if (failApps) { failApps = false; throw "Fixture package query failure"; }
+        const stats = summary();
+        const all = emptyScan ? [] : Array.from({ length: 205 }, (_, id) => ({
+          package_id: `com.fixture${String(id).padStart(3, "0")}`,
+          scanned_size: id === 0 ? 0 : 1, locations: 1,
+        }));
+        const end = Math.min(args.skip + 100, all.length);
+        const response = {
+          ...scope(), total_size: stats.total_size, errors: stats.errors, skipped: stats.skipped,
+          total_packages: all.length, attributed_size: emptyScan ? 0 : 204,
+          unattributed_size: stats.total_size - (emptyScan ? 0 : 204),
+          skip: args.skip, next_skip: end < all.length ? end : null,
+          packages: all.slice(args.skip, end),
+        };
+        if (invalidApps) { invalidApps = false; response.packages = null; }
+        if (holdApps) {
+          holdApps = false;
+          response.packages[0].package_id += "Old";
+          return new Promise(resolve => { resolveApps = () => resolve(JSON.stringify(response)); });
+        }
+        return JSON.stringify(response);
+      }
       if (command === "get_file_types") {
         if (failTypes) { failTypes = false; throw "Fixture file-type query failure"; }
         const stats = summary();
@@ -246,7 +273,7 @@
   const report = (passed, error) => {
     const output = document.createElement("pre");
     output.id = "scan-test-report";
-    output.textContent = JSON.stringify({ fixture: "scan-ui", passed, error, ipc_calls: calls.length, wide_paging: widePaging, checks: passed ? ["offline fonts under CSP", "bounded collapsed discovery diagnostics", "discovery retry recovery", "setup alignment", "result fonts", "file label semantics", "usable file workspace", "collapsible diagnostics", "complete paging", "first-scan comparison", "unchanged comparison after rescan", "deletion delta comparison", "cross-device comparison isolation", "bounded file-type totals", "file-type retry and malformed response", "file-type generation and deletion revision", "file-type coverage and empty scan", "bounded largest files", "late largest response", "largest query retry", "malformed largest response recovery", "largest ID-only deletion", "largest read-only guards", "largest folder navigation without rescanning", "bounded search results", "late search response", "search retry and malformed response", "search ID-only deletion", "read-only search deletion disabled", "late zoom", "Other tile", "stale confirmation", "exact confirmation whitespace", "reachable long-path confirmation", "native modal keyboard focus and cancellation", "ID-only deletion", "revision refresh", "partial failure", "read-only", "acknowledged shutdown", "unconfirmed shutdown", "reconnect", "stop action ordering", "duplicate rescan guard", "rescan failure recovery", "rescan cancellation recovery", "toast dismissal integration", "bounded diagnostic integration"] : undefined });
+    output.textContent = JSON.stringify({ fixture: "scan-ui", passed, error, ipc_calls: calls.length, wide_paging: widePaging, checks: passed ? ["offline fonts under CSP", "bounded collapsed discovery diagnostics", "discovery retry recovery", "setup alignment", "result fonts", "file label semantics", "usable file workspace", "collapsible diagnostics", "complete paging", "first-scan comparison", "unchanged comparison after rescan", "deletion delta comparison", "cross-device comparison isolation", "bounded package-folder paging and coverage", "package query retries and stale replies", "bounded file-type totals", "file-type retry and malformed response", "file-type generation and deletion revision", "file-type coverage and empty scan", "bounded largest files", "late largest response", "largest query retry", "malformed largest response recovery", "largest ID-only deletion", "largest read-only guards", "largest folder navigation without rescanning", "bounded search results", "late search response", "search retry and malformed response", "search ID-only deletion", "read-only search deletion disabled", "late zoom", "Other tile", "stale confirmation", "exact confirmation whitespace", "reachable long-path confirmation", "native modal keyboard focus and cancellation", "ID-only deletion", "revision refresh", "partial failure", "read-only", "acknowledged shutdown", "unconfirmed shutdown", "reconnect", "stop action ordering", "duplicate rescan guard", "rescan failure recovery", "rescan cancellation recovery", "toast dismissal integration", "bounded diagnostic integration"] : undefined });
     document.body.append(output);
     void fetch("/report", { method: "POST", body: output.textContent }).then(() => {
       if (passed) location.replace("/tests/toast_lifecycle_fixture.html");
@@ -385,6 +412,42 @@
     fileViewport.scrollTop = 200;
     check(fileViewport.scrollTop > scrollBefore, "File list does not scroll independently");
     fileViewport.scrollTop = 0;
+    const appsPanel = () => document.querySelector('section[aria-label="Package-folder usage"]');
+    const appRows = () => [...document.querySelectorAll(".app-usage-row")];
+    holdApps = true;
+    button("Package folders").click();
+    await waitFor(() => resolveApps, "Pending package query missing");
+    const oldApps = resolveApps;
+    button("Storage map").click();
+    await waitFor(() => rows().length === 129, "Map missing after package query");
+    button("Package folders").click();
+    await waitFor(() => appRows().length === 100, "Package first page missing");
+    oldApps();
+    await pause(30);
+    check(!appsPanel().textContent.includes("Old"), "Late package response replaced the current page");
+    check(document.documentElement.scrollWidth <= innerWidth, "Package view overflowed horizontally");
+    check(appsPanel().textContent.includes("Full app totals remain unknown") && appsPanel().textContent.includes("Missing and unreadable"),
+      "Package coverage was presented as complete");
+    check(appRows()[0].textContent.includes("0.0 B") || appRows()[0].textContent.includes("0 B"), "Zero scanned bytes were lost");
+    button("Next").click();
+    await waitFor(() => appRows()[0]?.textContent.includes("com.fixture100"), "Second package page missing");
+    button("Next").click();
+    await waitFor(() => appRows().length === 5, "Last package page missing");
+    button("Previous").click();
+    await waitFor(() => appRows()[0]?.textContent.includes("com.fixture100"), "Previous package page missing");
+    check(!appsPanel().querySelector('[aria-label^="Delete "]'), "Package summary exposed a deletion target");
+    for (const failure of ["error", "malformed"]) {
+      button("Storage map").click();
+      await waitFor(() => rows().length === 129, "Map missing before package retry");
+      if (failure === "error") failApps = true; else invalidApps = true;
+      button("Package folders").click();
+      await waitFor(() => appsPanel()?.querySelector('[role="alert"]'), "Bad package response was not reported");
+      check(appRows().length === 0, "Bad package response retained rows");
+      button("Retry").click();
+      await waitFor(() => appRows().length === 100, "Package retry failed");
+    }
+    button("Storage map").click();
+    await waitFor(() => rows().length === 129, "Map missing after package folders");
     const scanCount = calls.filter(item => item.command === "run_scan").length;
     const typesPanel = () => document.querySelector('section[aria-label="File types"]');
     const typesReady = () => typesPanel()?.querySelector('table[aria-busy="false"]') && !typesPanel().querySelector('[role="alert"]');
@@ -660,6 +723,10 @@
     button("File types").click();
     await waitFor(typesReady, "File types did not refresh after deletion");
     checkTypes(735);
+    button("Package folders").click();
+    await waitFor(() => appRows().length === 100, "Package view missing after deletion");
+    check(calls.filter(call => call.command === "get_app_usage").at(-1).args.revision === revision,
+      "Package query used a stale deletion revision");
     button("Largest files").click();
     await waitFor(() => largestRows().length === 25, "Largest files missing after type refresh");
     const nested = largestRows().find(row => row.textContent.includes("/large-folder/"));
@@ -691,6 +758,10 @@
     check(document.body.textContent.includes("Deletion disabled"), "Read-only banner missing");
     await waitFor(() => document.querySelector("#scan-history")?.textContent.includes("comparison unavailable"), "Partial scan claimed a history comparison");
     check(!document.querySelector('[aria-label^="Delete "]'), "Read-only deletion enabled");
+    button("Package folders").click();
+    await waitFor(() => appRows().length === 100, "Read-only package view missing");
+    check(appsPanel().textContent.includes("2 access errors") && !appsPanel().querySelector('[aria-label^="Delete "]'),
+      "Read-only package coverage or controls are incorrect");
     button("Largest files").click();
     await waitFor(() => largestRows().length === 25, "Read-only largest files missing");
     check([...document.querySelectorAll('.largest-file-row button[aria-label^="Delete "]')].every(item => item.disabled), "Read-only largest deletion enabled");
@@ -766,6 +837,11 @@
     await waitFor(typesReady, "Empty file-type summary missing");
     checkTypes(0);
     check(typesPanel().textContent.includes("No counted files") && !typesPanel().textContent.includes("NaN") && !typesPanel().textContent.includes("Infinity"), "Empty file-type view is misleading");
+    button("Package folders").click();
+    await waitFor(() => appsPanel()?.textContent.includes("No package folders were recognized"),
+      "Empty package view did not retain unknown-coverage wording");
+    check(appRows().length === 0 && appsPanel().textContent.includes("Full app totals remain unknown"),
+      "Empty package view claimed complete app usage");
     // Exercise the actual App callbacks: duplicate/sibling actions must not
     // queue behind a rescan, and its guard must release on every outcome.
     for (const outcome of ["failure", "cancel"]) {

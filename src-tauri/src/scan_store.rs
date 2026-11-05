@@ -3,7 +3,7 @@
 use crate::scan_stream::{Kind, Node, Response, NONE};
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
-use std::collections::{BTreeSet, BinaryHeap};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 use std::io::Write;
 use std::ops::Bound::{Excluded, Unbounded};
 use std::sync::Arc;
@@ -67,6 +67,26 @@ impl FileType {
             _ => Self::Other,
         }
     }
+}
+
+// Directory names identify package folders, including leftovers from removed
+// apps. They are never treated as verified installed-app labels.
+fn package_folder(path: &str) -> bool {
+    let parts: Vec<_> = path.strip_prefix('/').unwrap_or("").split('/').collect();
+    let numeric = |value: &str| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit());
+    let package = match parts.as_slice() {
+        ["sdcard", "Android", "data" | "obb" | "media", package] => *package,
+        ["storage", "emulated", user, "Android", "data" | "obb" | "media", package]
+        | ["data", "media", user, "Android", "data" | "obb" | "media", package]
+            if numeric(user) => *package,
+        ["data", "user" | "user_de", user, package] if numeric(user) => *package,
+        ["data", "data", package] => *package,
+        _ => return false,
+    };
+    package.contains('.') && package.split('.').all(|part| {
+        part.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+            && part.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    })
 }
 
 pub struct Catalog {
@@ -503,6 +523,50 @@ impl Catalog {
         Ok(())
     }
 
+    pub fn app_usage_json(&self, generation: &str, revision: u32, skip: usize) -> Result<String, String> {
+        self.scope(generation, revision)?;
+        let mut packages: BTreeMap<Arc<str>, (u64, usize)> = BTreeMap::new();
+        let mut collect = |id, node: &Node| -> Result<(), String> {
+            if node.kind == Kind::Directory && node.counted && package_folder(&self.path(id)) {
+                let usage = packages.entry(node.name.clone()).or_default();
+                usage.0 = usage.0.checked_add(node.size).ok_or("Package byte count overflow")?;
+                usage.1 += 1;
+            }
+            Ok(())
+        };
+        collect(0, &self.response.nodes[0])?;
+        self.visit_entries(|id, node| { collect(id, node)?; Ok(true) })?;
+        if skip > 0 && skip >= packages.len() {
+            return Err("Package page is no longer available".into());
+        }
+        let attributed_size = packages.values().try_fold(0u64, |sum, usage| {
+            sum.checked_add(usage.0).ok_or("Package byte count overflow")
+        })?;
+        let unattributed_size = self.response.total_size.checked_sub(attributed_size)
+            .ok_or("Package bytes exceed this scan")?;
+        #[derive(Serialize)]
+        struct Package<'a> { package_id: &'a str, scanned_size: u64, locations: usize }
+        #[derive(Serialize)]
+        struct Usage<'a> {
+            generation: &'a str, revision: u32, total_size: u64,
+            attributed_size: u64, unattributed_size: u64, total_packages: usize,
+            errors: u64, skipped: u64, skip: usize, next_skip: Option<usize>,
+            packages: Vec<Package<'a>>,
+        }
+        let rows: Vec<_> = packages.iter().skip(skip).take(100)
+            .map(|(id, &(scanned_size, locations))| Package {
+                package_id: id.as_ref(), scanned_size, locations,
+            }).collect();
+        let next = skip + rows.len();
+        json(&Usage {
+            generation: &self.generation, revision: self.revision,
+            total_size: self.response.total_size, attributed_size, unattributed_size,
+            total_packages: packages.len(), errors: self.response.errors,
+            skipped: self.response.skipped, skip,
+            next_skip: (next < packages.len()).then_some(next), packages: rows,
+        })
+    }
+
     pub fn file_types_json(&self, generation: &str, revision: u32) -> Result<String, String> {
         self.scope(generation, revision)?;
         #[derive(Serialize)]
@@ -831,6 +895,116 @@ mod tests {
     }
     fn success() -> Result<String, String> {
         Ok(r#"{"status":"ok","message":"Deleted fixture entry"}"#.into())
+    }
+
+    fn app_fixture(scan_root: &str, leaves: &[(&str, &str, u64, bool)]) -> Response {
+        let mut paths = BTreeMap::new();
+        for &(path, kind, size, counted) in leaves {
+            let mut parent = path;
+            while let Some((prefix, _)) = parent.rsplit_once('/') {
+                paths.entry(prefix.to_string()).or_insert(("directory", 0, true));
+                parent = prefix;
+            }
+            paths.insert(path.to_string(), (kind, size, counted));
+        }
+        let mut ids = BTreeMap::new();
+        ids.insert("", 0);
+        let mut entries = vec![root()];
+        for (path, &(kind, size, counted)) in &paths {
+            let (parent, name) = path.rsplit_once('/').unwrap_or(("", path));
+            let id = entries.len();
+            entries.push(entry(id, Some(ids[parent]), name, kind, size, counted));
+            ids.insert(path, id);
+        }
+        let mut response = fixture(&entries, false);
+        response.root = scan_root.into();
+        response.nodes[0].name = scan_root.rsplit('/').next().filter(|name| !name.is_empty())
+            .unwrap_or("/").into();
+        response
+    }
+
+    #[test]
+    fn package_folders_reconcile_shared_roots_and_unknown_coverage() {
+        for path in ["/sdcard", "/storage/emulated/10", "/data/media/0"] {
+            let mut response = app_fixture(path, &[
+                ("Android/data/com.example/files/photo", "file", 7, true),
+                ("Android/obb/com.example/asset", "file", 3, true),
+                ("Android/media/com.denied", "directory", 0, true),
+                ("Android/data/unrelated/file", "file", 5, true),
+            ]);
+            response.errors = 1;
+            let store = Catalog::new(response, "generation-a".into());
+            let usage = value(store.app_usage_json("generation-a", 0, 0));
+            assert_eq!(usage["total_size"], 15);
+            assert_eq!(usage["attributed_size"], 10);
+            assert_eq!(usage["unattributed_size"], 5);
+            assert_eq!(usage["errors"], 1);
+            assert_eq!(usage["packages"], json!([
+                {"package_id":"com.denied", "scanned_size":0, "locations":1},
+                {"package_id":"com.example", "scanned_size":10, "locations":2},
+            ]));
+        }
+    }
+
+    #[test]
+    fn package_folders_handle_data_full_root_aliases_and_narrow_roots() {
+        for scan_root in ["/data", "/"] {
+            let prefix = if scan_root == "/" { "data/" } else { "" };
+            let leaves = [
+                (format!("{prefix}user/0/com.example/file"), "file", 7, true),
+                (format!("{prefix}user_de/0/com.example/file"), "file", 3, true),
+                (format!("{prefix}media/0/Android/data/com.example/file"), "file", 2, true),
+                (format!("{prefix}data/com.example"), "directory", 0, false),
+                (format!("{prefix}arbitrary/com.fake/file"), "file", 13, true),
+            ];
+            let leaves: Vec<_> = leaves.iter().map(|(path, kind, size, counted)| (path.as_str(), *kind, *size, *counted)).collect();
+            let mut response = app_fixture(scan_root, &leaves);
+            response.read_only = true;
+            let store = Catalog::new(response, "generation-a".into());
+            let usage = value(store.app_usage_json("generation-a", 0, 0));
+            assert_eq!(usage["attributed_size"], 12);
+            assert_eq!(usage["unattributed_size"], 13);
+            assert_eq!(usage["packages"][0]["locations"], 3);
+        }
+        let store = Catalog::new(app_fixture("/data/user/0/com.example", &[
+            ("files/photo", "file", 7, true),
+        ]), "generation-a".into());
+        assert_eq!(value(store.app_usage_json("generation-a", 0, 0))["attributed_size"], 7);
+        let store = Catalog::new(app_fixture("/unrelated", &[
+            ("Android/data/com.example/file", "file", 7, true),
+        ]), "generation-a".into());
+        assert_eq!(value(store.app_usage_json("generation-a", 0, 0))["attributed_size"], 0);
+    }
+
+    #[test]
+    fn package_pages_are_complete_and_follow_deletion_revisions() {
+        let leaves: Vec<_> = (0..205).map(|id| (format!("com.app{id:03}/file"), "file", 1, true)).collect();
+        let leaves: Vec<_> = leaves.iter().map(|(path, kind, size, counted)| (path.as_str(), *kind, *size, *counted)).collect();
+        let store = Catalog::new(app_fixture("/sdcard/Android/data", &leaves), "generation-a".into());
+        let mut names = Vec::new();
+        let mut skip = 0;
+        loop {
+            let page = value(store.app_usage_json("generation-a", 0, skip));
+            let rows = page["packages"].as_array().unwrap();
+            assert!(rows.len() <= 100);
+            names.extend(rows.iter().map(|row| row["package_id"].as_str().unwrap().to_string()));
+            match page["next_skip"].as_u64() {
+                Some(next) => skip = next as usize,
+                None => break,
+            }
+        }
+        assert_eq!(names, (0..205).map(|id| format!("com.app{id:03}")).collect::<Vec<_>>());
+        assert!(store.app_usage_json("generation-a", 0, 205).is_err());
+        assert!(store.app_usage_json("old", 0, 0).is_err());
+        let plan = store.prepare_delete("generation-a", 0, 1).unwrap();
+        let mut store = Some(store);
+        finish_delete(&mut store, &plan, success()).unwrap();
+        let store = store.unwrap();
+        assert!(store.app_usage_json("generation-a", 0, 0).is_err());
+        let page = value(store.app_usage_json("generation-a", 1, 0));
+        assert_eq!(page["total_packages"], 204);
+        assert_eq!(page["attributed_size"], 204);
+        assert_eq!(page["packages"][0]["package_id"], "com.app001");
     }
 
     #[test]

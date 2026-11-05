@@ -4,6 +4,7 @@ import type { PageCursor, ScanScope } from "./scanView";
 import { parseLargestFiles } from "./largestFilesSummary";
 import { parseSearchResults } from "./searchResults";
 import { parseFileTypes } from "./fileTypeSummary";
+import { parseAppUsage } from "./appUsageSummary";
 import { parseScanComparison } from "./scanComparison";
 
 export async function getLargestFiles(scope: Parameters<typeof parseLargestFiles>[1], limit: number) {
@@ -43,4 +44,10 @@ export async function deleteScanNode(scope: ScanScope, nodeId: number) {
     throw new Error("Deletion returned an unexpected scan snapshot");
   }
   return result;
+}
+
+
+export async function getAppUsage(scope: Parameters<typeof parseAppUsage>[1], skip: number) {
+  const raw = await invoke<string>("get_app_usage", { generation: scope.generation, revision: scope.revision, skip });
+  return parseAppUsage(raw, scope, skip);
 }

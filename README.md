@@ -105,6 +105,9 @@ from the completed scan. See [classification rules and coverage](docs/file-types
 In development builds, **Search** finds entry names across the completed scan
 with bounded, fully paginated results. See [matching rules and bounds](docs/search.md).
 
+The Package folders view groups scanned app-related folders by package ID.
+See [coverage and recognized paths](docs/package-folders.md) for its limits.
+
 Verified scans without access errors are recorded locally when history storage
 is available. The results header compares compatible scans of the same device,
 folder and access mode; failed or cancelled scans never become baselines. See

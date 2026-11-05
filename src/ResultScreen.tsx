@@ -7,6 +7,7 @@ import { FileTreeNode, QueryError } from "./FileTree";
 import { LargestFiles } from "./LargestFiles";
 import { SearchFiles } from "./SearchFiles";
 import { FileTypes } from "./FileTypes";
+import { AppUsage } from "./AppUsage";
 import { ScanHistory } from "./ScanHistory";
 
 // ── Stat Card ───────────────────────────────────────────────────────────────
@@ -39,7 +40,7 @@ export function ResultScreen({
 }) {
   const [zoomId, setZoomId] = useState(data.root.id);
   const [expanded, setExpanded] = useState(() => new Set([data.root.id]));
-  const [mode, setMode] = useState<"map" | "largest" | "types" | "search">("map");
+  const [mode, setMode] = useState<"map" | "largest" | "types" | "search" | "apps">("map");
   const view = useScanView(data, zoomId, mode === "map");
   const page = view.page;
   const onZoom = (id: number) => {
@@ -125,7 +126,7 @@ export function ResultScreen({
         <StatCard label="Scan Time" value={`${data.scan_time_ms}ms`} />
       </div>
 
-      <div className="flex gap-2 px-4 pb-2 shrink-0" role="group" aria-label="Scan view">
+      <div className="flex gap-2 px-4 pb-2 shrink-0 overflow-x-auto" role="group" aria-label="Scan view">
         <button aria-pressed={mode === "map"} disabled={busy} onClick={() => setMode("map")}
           className={`px-3 py-2 rounded-lg text-xs ${mode === "map" ? "bg-zinc-700 text-white" : "bg-zinc-900 text-zinc-400"}`}>Storage map</button>
         <button aria-pressed={mode === "largest"} disabled={busy} onClick={() => setMode("largest")}
@@ -134,8 +135,10 @@ export function ResultScreen({
           className={`px-3 py-2 rounded-lg text-xs ${mode === "types" ? "bg-zinc-700 text-white" : "bg-zinc-900 text-zinc-400"}`}>File types</button>
         <button aria-pressed={mode === "search"} disabled={busy} onClick={() => setMode("search")}
           className={`px-3 py-2 rounded-lg text-xs ${mode === "search" ? "bg-zinc-700 text-white" : "bg-zinc-900 text-zinc-400"}`}>Search</button>
+        <button aria-pressed={mode === "apps"} disabled={busy} onClick={() => setMode("apps")}
+          className={`px-3 py-2 rounded-lg text-xs whitespace-nowrap ${mode === "apps" ? "bg-zinc-700 text-white" : "bg-zinc-900 text-zinc-400"}`}>Package folders</button>
       </div>
-      {mode === "types" ? <FileTypes scope={data} busy={busy} /> : mode === "largest" ? <LargestFiles scope={data} busy={busy} onZoom={onZoom} onNuke={onNuke} /> : mode === "search" ? <SearchFiles scope={data} busy={busy} onZoom={onZoom} onNuke={onNuke} /> : <div className="flex-1 min-h-0 grid grid-rows-[7rem_minmax(0,1fr)] md:grid-rows-1 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)] gap-3 px-4 pb-3">
+      {mode === "apps" ? <AppUsage key={data.revision} scope={data} busy={busy} /> : mode === "types" ? <FileTypes scope={data} busy={busy} /> : mode === "largest" ? <LargestFiles scope={data} busy={busy} onZoom={onZoom} onNuke={onNuke} /> : mode === "search" ? <SearchFiles scope={data} busy={busy} onZoom={onZoom} onNuke={onNuke} /> : <div className="flex-1 min-h-0 grid grid-rows-[7rem_minmax(0,1fr)] md:grid-rows-1 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)] gap-3 px-4 pb-3">
       <div className="min-h-0 min-w-0">
         <StorageMap page={page} busy={busy} onZoom={onZoom} />
       </div>
