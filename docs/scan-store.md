@@ -15,10 +15,19 @@ previous/next cursors. Directory indexes sort by size descending, name, then
 stable ID. Cursor seeks use `BTreeSet` ranges instead of walking earlier pages.
 All entries remain reachable; there is no silent 500-entry cutoff.
 
-The chart contains the largest 64 positive children plus an exact **Other**
-remainder. Other has no node ID and cannot zoom or delete. Recharts remains in
-use; #31 covers its separate SVG replacement. #30 still covers virtualized
-rows and broader navigation work.
+The SVG chart contains the largest 64 positive children plus an exact **Other**
+remainder. Other has no node ID and cannot zoom or delete.
+
+Expanded trees with more than 1,024 rows use TanStack Virtual to mount viewport
+rows plus ten rows of overscan on each side. Directory queries live separately
+from rendered rows, so scrolling preserves requests, pages and error/retry state.
+The active entry and focused controls stay mounted, including deletion-dialog
+triggers. Small trees render directly. Paging remains complete in both modes.
+
+Arrow keys move between logical entries and expand/collapse folders. Home/End
+reach the first/last entry; Tab reaches the active entry's actions. Keyboard
+jumps scroll the target into view. Existing snapshot checks and read-only
+deletion restrictions apply before rendering and before any mutation.
 
 ## Snapshot and deletion invariants
 
@@ -82,6 +91,15 @@ paging, delayed zoom, the Other tile, stale confirmation after rescan, ID-only
 deletion, revision refresh, partial-error recovery and read-only controls. It
 never launches Tauri or contacts ADB. Linux CI runs it after the desktop build;
 all three desktop targets run Rust and Node tests.
+
+The expanded-tree fixture represents 16,513 logical entries (128 folders with
+128 files each). Before windowing it mounted all 16,513 rows; afterward it
+mounted 25 rows at the default display setting. One local expansion measured
+104 ms versus about 1.3 s in the baseline. These are mocked Chromium UI timings,
+not device scan benchmarks or native-WebView guarantees. Checks cover scrolling
+focus, keyboard jumps, collapse and exact confirmation-trigger restoration,
+and run at all three CI display settings. TanStack adds approximately 39 KB
+of production JavaScript (12 KB compressed) in this build.
 
 The UI harness logs its selected browser/version. Missing-report failures include
 the expected fixture, browser exit status, elapsed time, first/latest HTTP

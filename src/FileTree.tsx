@@ -1,4 +1,6 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
+import type { Range } from "@tanstack/react-virtual";
 import { formatBytes } from "./formatBytes";
 import { viewKey } from "./scanView";
 import type { ScanNode, ScanResponse } from "./scanView";
@@ -67,7 +69,10 @@ function LoadingEntries() {
   return visible ? <p role="status" className="px-4 py-2 text-xs text-zinc-500">Loading entries…</p> : null;
 }
 
-export function FileTreeNode({ node, scope, parentSize, depth, onNuke, onZoom, expanded, toggle, busy, rootView }: {
+type DirectoryView = ReturnType<typeof useScanView>;
+type RegisterView = (key: string, view: DirectoryView) => () => void;
+
+interface TreeProps {
   node: ScanNode;
   scope: ScanResponse;
   parentSize: number;
@@ -77,52 +82,219 @@ export function FileTreeNode({ node, scope, parentSize, depth, onNuke, onZoom, e
   expanded: Set<number>;
   toggle: (nodeId: number) => void;
   busy: boolean;
-  rootView?: ReturnType<typeof useScanView>;
-}) {
-  const open = expanded.has(node.id);
-  const isDir = node.type === "directory";
-  const query = useScanView(scope, node.id, depth > 0 && isDir && open && node.child_count > 0);
-  const view = rootView ?? query;
-  const page = view.page;
-  const loading = open && node.child_count > 0 && !page && !view.error;
-  const ratio = parentSize > 0 ? node.size / parentSize : 0;
-  const label = <>
-          <span className="w-4 flex-shrink-0 flex items-center justify-center">
-            {isDir ? <IconChevron open={open} className="text-zinc-500" /> : <span className="w-3" />}
-          </span>
-          <span className={isDir ? "text-accent-400" : "text-zinc-500"}>{isDir ? <IconFolder /> : <IconFile />}</span>
-          <span className={`truncate text-sm ${isDir ? "text-zinc-200 font-medium" : "text-zinc-400"}`}>{node.name}</span>
-  </>;
-  return (
-    <div>
-      <div className="file-row flex items-center gap-2 px-3 py-1.5 rounded-md group select-none"
-        style={{ paddingLeft: `${12 + depth * 16}px` }}>
-        {isDir ? <button className="flex items-center gap-2 min-w-0 flex-1 text-left" disabled={busy}
-          aria-expanded={open} aria-busy={loading} onClick={() => toggle(node.id)}>{label}</button>
-          : <span className="flex items-center gap-2 min-w-0 flex-1 text-left">{label}</span>}
-        {isDir && <button disabled={busy} onClick={() => onZoom(node.id)}
-          className="opacity-0 group-hover:opacity-100 focus:opacity-100 mr-2 px-2 py-1 rounded text-[10px] uppercase font-bold bg-accent-500/10 text-accent-400 border border-accent-500/20">Zoom</button>}
-        <SizeBar ratio={ratio} />
-        <span className="w-20 text-right text-xs font-mono text-zinc-500 flex-shrink-0">{formatBytes(node.size)}</span>
-        {depth > 0 && node.can_delete && <button disabled={busy} onClick={event => onNuke(node.id, event.currentTarget)}
-          title={`Delete ${node.name}`} aria-label={`Delete ${node.name}`}
-          className="btn-nuke opacity-0 group-hover:opacity-100 focus:opacity-100 ml-1 px-2 py-1 rounded-md bg-danger-600/20 border border-danger-500/30 text-danger-400 hover:bg-danger-500/30 text-[10px] uppercase font-bold flex items-center gap-1">
-          <IconNuke /><span className="hidden sm:inline">Delete</span>
-        </button>}
-      </div>
-      {isDir && open && node.child_count > 0 && <div>
-        {loading && <LoadingEntries key={viewKey(scope, node.id, null)} />}
-        {view.error && <QueryError error={view.error} retry={view.retry} />}
-        {page?.children.map(child => <FileTreeNode key={child.id} node={child} scope={scope} parentSize={node.size}
-          depth={depth + 1} onNuke={onNuke} onZoom={onZoom} expanded={expanded} toggle={toggle} busy={busy} />)}
-        {page && (page.previous_cursor || page.next_cursor) && <nav aria-label={`Pages in ${node.name}`}
-          className="flex items-center gap-3 py-2 text-xs text-zinc-400" style={{ paddingLeft: `${28 + depth * 16}px` }}>
-          <button disabled={!page.previous_cursor || busy} onClick={() => view.go(page.previous_cursor)} className="px-2 py-1 bg-zinc-800 rounded disabled:opacity-30">Previous</button>
-          <span>{page.children.length} entries on this page of {node.child_count.toLocaleString("en-US")}</span>
-          <button disabled={!page.next_cursor || busy} onClick={() => view.go(page.next_cursor)} className="px-2 py-1 bg-zinc-800 rounded disabled:opacity-30">Next</button>
-        </nav>}
-      </div>}
-    </div>
-  );
+  rootView?: DirectoryView;
 }
 
+interface NodeRow {
+  kind: "node";
+  key: string;
+  node: ScanNode;
+  depth: number;
+  parentSize: number;
+  loading: boolean;
+}
+interface DetailRow {
+  kind: "detail";
+  key: string;
+  node: ScanNode;
+  depth: number;
+  view?: DirectoryView;
+}
+type TreeRow = NodeRow | DetailRow;
+
+// Only directories own query hooks. File rows are lightweight records until
+// they enter the viewport; scrolling never tears down a directory request.
+function DirectoryQuery({ node, scope, expanded, register, rootView }: {
+  node: ScanNode;
+  scope: ScanResponse;
+  expanded: Set<number>;
+  register: RegisterView;
+  rootView?: DirectoryView;
+}) {
+  const open = expanded.has(node.id);
+  const query = useScanView(scope, node.id, !rootView && open && node.child_count > 0);
+  const { page, error, go, retry } = rootView ?? query;
+  const key = viewKey(scope, node.id, null);
+  useLayoutEffect(() => register(key, { page, error, go, retry }), [register, key, page, error, go, retry]);
+  return open ? page?.children.filter(child => child.type === "directory").map(child =>
+    <DirectoryQuery key={child.id} node={child} scope={scope} expanded={expanded} register={register} />) : null;
+}
+
+function FileRow({ row, open, busy, active, onNuke, onZoom, toggle }: {
+  row: NodeRow;
+  open: boolean;
+  busy: boolean;
+  active: boolean;
+  onNuke: TreeProps["onNuke"];
+  onZoom: TreeProps["onZoom"];
+  toggle: TreeProps["toggle"];
+}) {
+  const { node, depth, parentSize, loading } = row;
+  const isDir = node.type === "directory";
+  const label = <>
+    <span className="w-4 flex-shrink-0 flex items-center justify-center">
+      {isDir ? <IconChevron open={open} className="text-zinc-500" /> : <span className="w-3" />}
+    </span>
+    <span className={isDir ? "text-accent-400" : "text-zinc-500"}>{isDir ? <IconFolder /> : <IconFile />}</span>
+    <span className={`truncate text-sm ${isDir ? "text-zinc-200 font-medium" : "text-zinc-400"}`}>{node.name}</span>
+  </>;
+  return <div className="file-row h-10 flex items-center gap-2 px-3 py-1.5 rounded-md group select-none"
+    style={{ paddingLeft: `${12 + depth * 16}px` }}>
+    {isDir ? <button className="flex items-center gap-2 min-w-0 flex-1 text-left" disabled={busy}
+      tabIndex={active ? 0 : -1} aria-expanded={open} aria-busy={loading} onClick={() => toggle(node.id)}>{label}</button>
+      : <span className="flex items-center gap-2 min-w-0 flex-1 text-left">{label}</span>}
+    {isDir && <button disabled={busy} tabIndex={active ? 0 : -1} onClick={() => onZoom(node.id)}
+      className="opacity-0 group-hover:opacity-100 focus:opacity-100 mr-2 px-2 py-1 rounded text-[10px] uppercase font-bold bg-accent-500/10 text-accent-400 border border-accent-500/20">Zoom</button>}
+    <SizeBar ratio={parentSize > 0 ? node.size / parentSize : 0} />
+    <span className="w-20 text-right text-xs font-mono text-zinc-500 flex-shrink-0">{formatBytes(node.size)}</span>
+    {depth > 0 && node.can_delete && <button disabled={busy} tabIndex={active ? 0 : -1} onClick={event => onNuke(node.id, event.currentTarget)}
+      title={`Delete ${node.name}`} aria-label={`Delete ${node.name}`}
+      className="btn-nuke opacity-0 group-hover:opacity-100 focus:opacity-100 ml-1 px-2 py-1 rounded-md bg-danger-600/20 border border-danger-500/30 text-danger-400 hover:bg-danger-500/30 text-[10px] uppercase font-bold flex items-center gap-1">
+      <IconNuke /><span className="hidden sm:inline">Delete</span>
+    </button>}
+  </div>;
+}
+
+export function FileTreeNode({ node, scope, parentSize, depth, onNuke, onZoom, expanded, toggle, busy, rootView }: TreeProps) {
+  const [views, setViews] = useState(() => new Map<string, DirectoryView>());
+  const register = useCallback<RegisterView>((key, view) => {
+    setViews(previous => new Map(previous).set(key, view));
+    return () => setViews(previous => {
+      if (!previous.has(key)) return previous;
+      const next = new Map(previous);
+      next.delete(key);
+      return next;
+    });
+  }, []);
+  const rows = useMemo(() => {
+    const result: TreeRow[] = [];
+    const visit = (current: ScanNode, level: number, size: number) => {
+      const key = viewKey(scope, current.id, null);
+      const view = current.id === node.id && rootView ? rootView : views.get(key);
+      const open = expanded.has(current.id);
+      const loading = open && current.child_count > 0 && !view?.page && !view?.error;
+      result.push({ kind: "node", key: `node-${current.id}`, node: current, depth: level, parentSize: size, loading });
+      if (current.type !== "directory" || !open || current.child_count === 0) return;
+      if (view?.page) {
+        for (const child of view.page.children) visit(child, level + 1, current.size);
+      }
+      if (loading || view?.error || view?.page?.previous_cursor || view?.page?.next_cursor) {
+        result.push({ kind: "detail", key: `detail-${key}`, node: current, depth: level, view });
+      }
+    };
+    visit(node, depth, parentSize);
+    return result;
+  }, [node, scope, parentSize, depth, expanded, views, rootView]);
+  const nodeRows = useMemo(() => rows.filter((row): row is NodeRow => row.kind === "node"), [rows]);
+  const [activeId, setActiveId] = useState(node.id);
+  const [focusedKey, setFocusedKey] = useState<string | null>(null);
+  const active = nodeRows.find(row => row.node.id === activeId)?.node.id ?? node.id;
+  const pinnedIndex = rows.findIndex(row => row.kind === "node" && row.node.id === active);
+  const focusedIndex = rows.findIndex(row => row.key === focusedKey);
+  const [tree, setTree] = useState<HTMLDivElement | null>(null);
+  const [margin, setMargin] = useState(0);
+  const pendingFocus = useRef<number | null>(null);
+  const hintId = useId();
+  const virtual = rows.length > 1024;
+  const rangeExtractor = useCallback((range: Range) => {
+    const indexes = defaultRangeExtractor(range);
+    return [...new Set([...indexes, pinnedIndex, focusedIndex].filter(index => index >= 0))].sort((a, b) => a - b);
+  }, [pinnedIndex, focusedIndex]);
+  const getItemKey = useCallback((index: number) => rows[index].key, [rows]);
+  const virtualizer = useVirtualizer({
+    count: rows.length,
+    enabled: virtual,
+    getScrollElement: () => tree?.closest("section") ?? tree?.parentElement ?? null,
+    estimateSize: () => 40,
+    overscan: 10,
+    getItemKey,
+    rangeExtractor,
+    scrollMargin: margin,
+  });
+  useLayoutEffect(() => {
+    const viewport = tree?.closest("section") ?? tree?.parentElement;
+    if (!tree || !viewport) return;
+    const update = () => setMargin(tree.getBoundingClientRect().top - viewport.getBoundingClientRect().top + viewport.scrollTop);
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(viewport);
+    return () => observer.disconnect();
+  }, [tree]);
+  useLayoutEffect(() => {
+    if (pendingFocus.current === null) return;
+    const element = tree?.querySelector<HTMLElement>(`[data-tree-node="${pendingFocus.current}"]`);
+    if (element) {
+      element.focus({ preventScroll: virtual });
+      pendingFocus.current = null;
+    }
+  });
+  const focusNode = (id: number) => {
+    const index = rows.findIndex(row => row.kind === "node" && row.node.id === id);
+    if (index < 0) return;
+    pendingFocus.current = id;
+    setActiveId(id);
+    if (virtual) virtualizer.scrollToIndex(index, { align: "auto" });
+  };
+  const items = virtual ? virtualizer.getVirtualItems() : rows.map((row, index) => ({ key: row.key, index, start: 0 }));
+  return <>
+    <DirectoryQuery node={node} scope={scope} expanded={expanded} register={register} rootView={rootView} />
+    <p id={hintId} className="sr-only">Use arrow keys to move between entries, expand or collapse folders. Home and End move to the first and last entry. Tab reaches actions for the focused entry.</p>
+    <div ref={setTree} role="tree" aria-label="Scanned files" aria-describedby={hintId} data-logical-rows={nodeRows.length}
+      className="relative" style={virtual ? { height: virtualizer.getTotalSize() } : undefined}>
+      {items.map(item => {
+        const row = rows[item.index];
+        if (!row) return null;
+        return <div key={item.key} data-index={item.index} ref={virtual ? virtualizer.measureElement : undefined}
+          data-tree-node={row.kind === "node" ? row.node.id : undefined}
+          role={row.kind === "node" ? "treeitem" : undefined}
+          aria-level={row.kind === "node" ? row.depth + 1 : undefined}
+          aria-label={row.kind === "node" ? `${row.node.name} · ${formatBytes(row.node.size)}` : undefined}
+          aria-expanded={row.kind === "node" && row.node.type === "directory" ? expanded.has(row.node.id) : undefined}
+          tabIndex={row.kind === "node" ? row.node.id === active ? 0 : -1 : undefined}
+          className="focus-visible:outline-2 focus-visible:outline-accent-400 rounded-md"
+          style={virtual ? { position: "absolute", top: 0, left: 0, width: "100%", transform: `translateY(${item.start - margin}px)` } : undefined}
+          onFocusCapture={() => {
+            setFocusedKey(row.key);
+            if (row.kind === "node") setActiveId(row.node.id);
+          }}
+          onKeyDown={row.kind === "node" ? event => {
+            if (busy || event.altKey || event.ctrlKey || event.metaKey) return;
+            const index = nodeRows.findIndex(entry => entry.node.id === row.node.id);
+            let target: number | undefined;
+            switch (event.key) {
+              case "ArrowDown": target = nodeRows[index + 1]?.node.id; break;
+              case "ArrowUp": target = nodeRows[index - 1]?.node.id; break;
+              case "Home": target = nodeRows[0]?.node.id; break;
+              case "End": target = nodeRows[nodeRows.length - 1]?.node.id; break;
+              case "ArrowRight":
+                if (row.node.type === "directory" && !expanded.has(row.node.id)) toggle(row.node.id);
+                else if (nodeRows[index + 1]?.node.parent_id === row.node.id) target = nodeRows[index + 1].node.id;
+                break;
+              case "ArrowLeft":
+                if (row.node.type === "directory" && expanded.has(row.node.id)) toggle(row.node.id);
+                else target = row.node.parent_id ?? undefined;
+                break;
+              case "Enter":
+              case " ":
+                if (event.target !== event.currentTarget || row.node.type !== "directory") return;
+                toggle(row.node.id);
+                break;
+              default: return;
+            }
+            event.preventDefault();
+            if (target !== undefined) focusNode(target);
+          } : undefined}>
+          {row.kind === "node" ? <FileRow row={row} open={expanded.has(row.node.id)} busy={busy} active={row.node.id === active}
+            onNuke={onNuke} onZoom={onZoom} toggle={toggle} />
+            : row.view?.error ? <QueryError error={row.view.error} retry={row.view.retry} />
+            : row.view?.page ? <nav aria-label={`Pages in ${row.node.name}`} className="flex items-center gap-3 py-2 text-xs text-zinc-400"
+              style={{ paddingLeft: `${28 + row.depth * 16}px` }}>
+              <button disabled={!row.view.page.previous_cursor || busy} onClick={() => row.view?.go(row.view.page!.previous_cursor)} className="px-2 py-1 bg-zinc-800 rounded disabled:opacity-30">Previous</button>
+              <span>{row.view.page.children.length} entries on this page of {row.node.child_count.toLocaleString("en-US")}</span>
+              <button disabled={!row.view.page.next_cursor || busy} onClick={() => row.view?.go(row.view.page!.next_cursor)} className="px-2 py-1 bg-zinc-800 rounded disabled:opacity-30">Next</button>
+            </nav> : <LoadingEntries />}
+        </div>;
+      })}
+    </div>
+  </>;
+}
