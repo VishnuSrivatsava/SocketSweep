@@ -28,6 +28,8 @@
   let resolveTypes;
   let failTypes = false;
   let invalidTypes = false;
+  let wideFolders = false;
+  let expandedTree;
   let emptyScan = false;
   let coverageErrors = 0;
   let coverageSkipped = 0;
@@ -64,6 +66,13 @@
   const reset = () => {
     folderChildren = Array.from({ length: 200 }, (_, i) => node(i + 1001, 1, `nested-${i}`, 1));
     rootChildren = [node(1, 0, "large-folder", 200, true), ...Array.from({ length: 536 }, (_, i) => node(i + 2, 0, i === 3 ? whitespaceName : ` file-${i} `, 1))];
+    if (wideFolders) {
+      rootChildren = Array.from({ length: 128 }, (_, index) => ({
+        ...node(index + 1, 0, `wide-${String(index + 1).padStart(3, "0")}`, 128, true),
+        child_count: 128,
+      }));
+      folderChildren = [];
+    }
     if (emptyScan) { rootChildren = []; folderChildren = []; }
     unavailable = false;
     revision = 0;
@@ -72,7 +81,7 @@
   const scope = () => ({ generation: `fixture-${generation}`, revision });
   const summary = () => ({
     ...scope(), status: "ok", root_path: scanRoot, root: { ...node(0, null, "fixture", rootChildren.reduce((sum, item) => sum + item.size, 0), true), child_count: rootChildren.length },
-    total_files: rootChildren.filter(item => item.type === "file").length + folderChildren.length, total_dirs: 1 + rootChildren.filter(item => item.type === "directory").length,
+    total_files: wideFolders ? 128 * 128 : rootChildren.filter(item => item.type === "file").length + folderChildren.length, total_dirs: 1 + rootChildren.filter(item => item.type === "directory").length,
     total_size: rootChildren.reduce((sum, item) => sum + item.size, 0), errors: coverageErrors, skipped: coverageSkipped, scan_time_ms: 1, read_only: readOnly,
   });
   const detail = id => {
@@ -82,7 +91,10 @@
   };
   const view = args => {
     const directory = args.nodeId === 0 ? summary().root : detail(args.nodeId).node;
-    const all = args.nodeId === 0 ? rootChildren : args.nodeId === 1 ? folderChildren : [];
+    const all = args.nodeId === 0 ? rootChildren : wideFolders
+      ? Array.from({ length: 128 }, (_, index) =>
+        node(1000 + (args.nodeId - 1) * 128 + index, args.nodeId, `entry-${args.nodeId}-${index}`, 1))
+      : args.nodeId === 1 ? folderChildren : [];
     let offset = 0;
     if (args.cursor) {
       const position = all.findIndex(item => item.id === args.cursor.node_id);
@@ -261,8 +273,8 @@
       throw Error(`Unexpected IPC ${command}`);
     },
   };
-  const waitFor = async (predicate, message) => {
-    const end = Date.now() + 3000;
+  const waitFor = async (predicate, message, timeout = 3000) => {
+    const end = Date.now() + timeout;
     while (!predicate()) { if (Date.now() > end) throw Error(message); await pause(20); }
   };
   const button = text => [...document.querySelectorAll("button")].find(item => item.textContent.trim() === text && !item.disabled);
@@ -273,7 +285,7 @@
   const report = (passed, error) => {
     const output = document.createElement("pre");
     output.id = "scan-test-report";
-    output.textContent = JSON.stringify({ fixture: "scan-ui", passed, error, ipc_calls: calls.length, wide_paging: widePaging, checks: passed ? ["offline fonts under CSP", "bounded collapsed discovery diagnostics", "discovery retry recovery", "setup alignment", "result fonts", "file label semantics", "usable file workspace", "collapsible diagnostics", "complete paging", "first-scan comparison", "unchanged comparison after rescan", "deletion delta comparison", "cross-device comparison isolation", "bounded package-folder paging and coverage", "package query retries and stale replies", "bounded file-type totals", "file-type retry and malformed response", "file-type generation and deletion revision", "file-type coverage and empty scan", "bounded largest files", "late largest response", "largest query retry", "malformed largest response recovery", "largest ID-only deletion", "largest read-only guards", "largest folder navigation without rescanning", "bounded search results", "late search response", "search retry and malformed response", "search ID-only deletion", "read-only search deletion disabled", "late zoom", "Other tile", "stale confirmation", "exact confirmation whitespace", "reachable long-path confirmation", "native modal keyboard focus and cancellation", "ID-only deletion", "revision refresh", "partial failure", "read-only", "acknowledged shutdown", "unconfirmed shutdown", "reconnect", "stop action ordering", "duplicate rescan guard", "rescan failure recovery", "rescan cancellation recovery", "toast dismissal integration", "bounded diagnostic integration"] : undefined });
+    output.textContent = JSON.stringify({ fixture: "scan-ui", passed, error, ipc_calls: calls.length, wide_paging: widePaging, expanded_tree: expandedTree, checks: passed ? ["offline fonts under CSP", "bounded collapsed discovery diagnostics", "discovery retry recovery", "setup alignment", "result fonts", "file label semantics", "usable file workspace", "collapsible diagnostics", "complete paging", "expanded-tree row growth and keyboard focus", "first-scan comparison", "unchanged comparison after rescan", "deletion delta comparison", "cross-device comparison isolation", "bounded package-folder paging and coverage", "package query retries and stale replies", "bounded file-type totals", "file-type retry and malformed response", "file-type generation and deletion revision", "file-type coverage and empty scan", "bounded largest files", "late largest response", "largest query retry", "malformed largest response recovery", "largest ID-only deletion", "largest read-only guards", "largest folder navigation without rescanning", "bounded search results", "late search response", "search retry and malformed response", "search ID-only deletion", "read-only search deletion disabled", "late zoom", "Other tile", "stale confirmation", "exact confirmation whitespace", "reachable long-path confirmation", "native modal keyboard focus and cancellation", "ID-only deletion", "revision refresh", "partial failure", "read-only", "acknowledged shutdown", "unconfirmed shutdown", "reconnect", "stop action ordering", "duplicate rescan guard", "rescan failure recovery", "rescan cancellation recovery", "toast dismissal integration", "bounded diagnostic integration"] : undefined });
     document.body.append(output);
     void fetch("/report", { method: "POST", body: output.textContent }).then(() => {
       if (passed) location.replace("/tests/toast_lifecycle_fixture.html");
@@ -901,6 +913,48 @@
     button("Cancel").click();
     await waitFor(() => !button("NUKE IT"), "Long-path confirmation did not cancel");
     check(calls.filter(call => call.command === "delete_item").length === deletesBeforeLongPath, "Long-path cancellation issued a delete");
+    // Paging bounds each directory, while expanded siblings can accumulate.
+    wideFolders = true;
+    scanRoot = "/fixture";
+    const viewportSettled = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    document.querySelector("#btn-rescan").click();
+    await waitFor(() => rows().length === 129 && document.querySelector('[aria-label="Delete wide-128"]'),
+      "Wide-folder baseline did not load");
+    const expanders = () => [...document.querySelectorAll('.file-row button[aria-expanded]')].slice(1);
+    check(expanders().length === 128, "Wide-folder baseline lost directory entries");
+    const expansionStarted = performance.now();
+    for (const toggle of expanders()) toggle.click();
+    await waitFor(() => rows().length === 1 + 128 + 128 * 128, "Expanded folders omitted entries", 10000);
+    await viewportSettled();
+    const expansionMs = performance.now() - expansionStarted;
+    const mountedRows = rows().length;
+    const focused = document.querySelector('[aria-label="Delete entry-1-0"]');
+    focused.focus();
+    check(document.activeElement === focused, "Expanded file action could not receive keyboard focus");
+    const viewport = focused.closest("section");
+    const scrollStarted = performance.now();
+    viewport.scrollTop = viewport.scrollHeight;
+    await viewportSettled();
+    const scrollMs = performance.now() - scrollStarted;
+    check(viewport.scrollTop > 0 && document.activeElement === focused, "Expanded-tree scrolling dropped keyboard focus");
+    const last = document.querySelector('[aria-label="Delete entry-128-127"]');
+    check(last, "Final expanded entry missing");
+    last.focus();
+    await viewportSettled();
+    check(document.activeElement === last, "Final expanded entry could not receive keyboard focus");
+    const finalRowBounds = last.getBoundingClientRect();
+    const viewportBounds = viewport.getBoundingClientRect();
+    check(finalRowBounds.top >= viewportBounds.top && finalRowBounds.bottom <= viewportBounds.bottom,
+      "Final expanded entry could not be scrolled into view");
+    const collapseStarted = performance.now();
+    for (const toggle of expanders()) toggle.click();
+    await waitFor(() => rows().length === 129, "Collapsed folders retained descendants", 10000);
+    await viewportSettled();
+    expandedTree = {
+      directories: 128, entries_per_directory: 128, mounted_rows: mountedRows,
+      collapsed_rows: rows().length, expansion_ms: Math.round(expansionMs),
+      scroll_ms: Math.round(scrollMs), collapse_ms: Math.round(performance.now() - collapseStarted),
+    };
     check(violations.length === 0, `CSP blocked resources: ${violations.join(", ")}`);
     const fonts = performance.getEntriesByType("resource").filter(entry => entry.name.includes(".woff2"));
     check(fonts.length === 13 && fonts.every(entry => new URL(entry.name).origin === location.origin), "Fonts are missing or fetched off-site");
