@@ -84,16 +84,22 @@
     total_files: wideFolders ? 128 * 128 : rootChildren.filter(item => item.type === "file").length + folderChildren.length, total_dirs: 1 + rootChildren.filter(item => item.type === "directory").length,
     total_size: rootChildren.reduce((sum, item) => sum + item.size, 0), errors: coverageErrors, skipped: coverageSkipped, scan_time_ms: 1, read_only: readOnly,
   });
+  const wideEntries = parent => Array.from({ length: 128 }, (_, index) =>
+    node(1000 + (parent - 1) * 128 + index, parent, `entry-${parent}-${index}`, 1));
   const detail = id => {
-    const target = id === 0 ? summary().root : [...rootChildren, ...folderChildren].find(item => item.id === id);
+    const target = id === 0 ? summary().root : wideFolders && id >= 1000
+      ? wideEntries(Math.floor((id - 1000) / 128) + 1).find(item => item.id === id)
+      : [...rootChildren, ...folderChildren].find(item => item.id === id);
     check(target, "Unknown mock node");
-    return { ...scope(), node: target, path: `${scanRoot}/${target.parent_id === 1 ? "large-folder/" : ""}${target.name}` };
+    const parent = wideFolders && target.parent_id > 0
+      ? rootChildren.find(item => item.id === target.parent_id).name + "/"
+      : target.parent_id === 1 ? "large-folder/" : "";
+    return { ...scope(), node: target, path: `${scanRoot}/${parent}${target.name}` };
   };
   const view = args => {
     const directory = args.nodeId === 0 ? summary().root : detail(args.nodeId).node;
     const all = args.nodeId === 0 ? rootChildren : wideFolders
-      ? Array.from({ length: 128 }, (_, index) =>
-        node(1000 + (args.nodeId - 1) * 128 + index, args.nodeId, `entry-${args.nodeId}-${index}`, 1))
+      ? wideEntries(args.nodeId)
       : args.nodeId === 1 ? folderChildren : [];
     let offset = 0;
     if (args.cursor) {
@@ -924,10 +930,12 @@
     check(expanders().length === 128, "Wide-folder baseline lost directory entries");
     const expansionStarted = performance.now();
     for (const toggle of expanders()) toggle.click();
-    await waitFor(() => rows().length === 1 + 128 + 128 * 128, "Expanded folders omitted entries", 10000);
+    const logicalRows = () => Number(document.querySelector('[role="tree"]').dataset.logicalRows);
+    await waitFor(() => logicalRows() === 1 + 128 + 128 * 128, "Expanded folders omitted logical entries", 10000);
     await viewportSettled();
     const expansionMs = performance.now() - expansionStarted;
     const mountedRows = rows().length;
+    check(mountedRows < 100, `Expanded tree mounted ${mountedRows} rows`);
     const focused = document.querySelector('[aria-label="Delete entry-1-0"]');
     focused.focus();
     check(document.activeElement === focused, "Expanded file action could not receive keyboard focus");
@@ -937,8 +945,9 @@
     await viewportSettled();
     const scrollMs = performance.now() - scrollStarted;
     check(viewport.scrollTop > 0 && document.activeElement === focused, "Expanded-tree scrolling dropped keyboard focus");
+    await waitFor(() => document.querySelector('[aria-label="Delete entry-128-127"]'), "Final virtual entry missing");
+    check(rows().length < 100, "Scrolling grew the mounted-row bound");
     const last = document.querySelector('[aria-label="Delete entry-128-127"]');
-    check(last, "Final expanded entry missing");
     last.focus();
     await viewportSettled();
     check(document.activeElement === last, "Final expanded entry could not receive keyboard focus");
@@ -946,14 +955,36 @@
     const viewportBounds = viewport.getBoundingClientRect();
     check(finalRowBounds.top >= viewportBounds.top && finalRowBounds.bottom <= viewportBounds.bottom,
       "Final expanded entry could not be scrolled into view");
+    await pressKey("Home");
+    await waitFor(() => document.activeElement?.dataset.treeNode === "0", "Home did not focus the first tree entry");
+    await pressKey("ArrowDown");
+    await waitFor(() => document.activeElement?.dataset.treeNode === "1", "ArrowDown did not focus the folder");
+    await pressKey("ArrowLeft");
+    await waitFor(() => logicalRows() === 1 + 128 + 127 * 128, "ArrowLeft did not collapse the focused folder");
+    await pressKey("ArrowRight");
+    await waitFor(() => logicalRows() === 1 + 128 + 128 * 128, "ArrowRight did not restore the focused folder");
+    await pressKey("End");
+    await waitFor(() => document.activeElement?.dataset.treeNode === "17383", "End did not reach the last logical entry");
+    await pressKey("Tab");
+    const deleteTrigger = document.querySelector('[aria-label="Delete entry-128-127"]');
+    check(document.activeElement === deleteTrigger, "Last virtual entry action was unreachable by Tab");
+    await pressKey("Enter");
+    await waitFor(() => document.querySelector("dialog")?.matches(":modal"), "Virtual entry did not open confirmation");
+    await pressKey("Escape");
+    await waitFor(() => !document.querySelector("dialog") && document.activeElement === deleteTrigger,
+      "Virtualized confirmation did not restore its trigger");
+    await pressKey("Home");
+    await waitFor(() => document.activeElement?.dataset.treeNode === "0", "Home did not restore root focus");
     const collapseStarted = performance.now();
-    for (const toggle of expanders()) toggle.click();
-    await waitFor(() => rows().length === 129, "Collapsed folders retained descendants", 10000);
+    await pressKey("ArrowLeft");
+    await waitFor(() => logicalRows() === 1 && rows().length === 1, "Root collapse retained virtual descendants");
     await viewportSettled();
+    check(document.activeElement?.dataset.treeNode === "0", "Root collapse dropped keyboard focus");
     expandedTree = {
-      directories: 128, entries_per_directory: 128, mounted_rows: mountedRows,
-      collapsed_rows: rows().length, expansion_ms: Math.round(expansionMs),
-      scroll_ms: Math.round(scrollMs), collapse_ms: Math.round(performance.now() - collapseStarted),
+      directories: 128, entries_per_directory: 128, logical_rows: 1 + 128 + 128 * 128,
+      mounted_rows: mountedRows, collapsed_rows: rows().length,
+      expansion_ms: Math.round(expansionMs), scroll_ms: Math.round(scrollMs),
+      root_collapse_ms: Math.round(performance.now() - collapseStarted),
     };
     check(violations.length === 0, `CSP blocked resources: ${violations.join(", ")}`);
     const fonts = performance.getEntriesByType("resource").filter(entry => entry.name.includes(".woff2"));

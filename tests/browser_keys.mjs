@@ -6,6 +6,12 @@ const keys = {
   Tab: { key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 },
   "Shift+Tab": { key: "Tab", code: "Tab", windowsVirtualKeyCode: 9, modifiers: 8 },
   Escape: { key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 },
+  Home: { key: "Home", code: "Home", windowsVirtualKeyCode: 36 },
+  End: { key: "End", code: "End", windowsVirtualKeyCode: 35 },
+  ArrowUp: { key: "ArrowUp", code: "ArrowUp", windowsVirtualKeyCode: 38 },
+  ArrowDown: { key: "ArrowDown", code: "ArrowDown", windowsVirtualKeyCode: 40 },
+  ArrowLeft: { key: "ArrowLeft", code: "ArrowLeft", windowsVirtualKeyCode: 37 },
+  ArrowRight: { key: "ArrowRight", code: "ArrowRight", windowsVirtualKeyCode: 39 },
 };
 const key = keys[process.argv[3]];
 if (!key) throw Error("Unsupported fixture key");

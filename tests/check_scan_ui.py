@@ -117,7 +117,9 @@ def main():
                 return
             value = json.loads(self.rfile.read(length))
             if self.path == '/keyboard':
-                if not isinstance(value, dict) or value.get('key') not in ('Enter', 'Tab', 'Shift+Tab', 'Escape'):
+                if not isinstance(value, dict) or value.get('key') not in (
+                        'Enter', 'Tab', 'Shift+Tab', 'Escape', 'Home', 'End',
+                        'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'):
                     self.send_error(400)
                     return
                 try:
