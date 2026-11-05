@@ -89,3 +89,9 @@ write `src-tauri/bin/daemon-<abi>`, with debug files under `daemon-symbols/<abi>
 The checker validates the requested ELF class and machine as well as matching
 build IDs, code bytes, and source lookup. Verification finishes before publishing
 the stripped binary. CI cross-builds and verifies all four ABIs. Desktop installers bundle all four stripped binaries. The selected device’s ABI list determines which binary is pushed.
+
+Linux packages store the Android ELF resources in
+`/usr/share/SocketSweep/bin/`. This keeps AppImage dependency discovery from
+treating x86 Android binaries as host Linux shared libraries. The native ADB
+resource stays under `/usr/lib/SocketSweep/bin/`. Linux debug builds resolve
+the daemon files directly from the development checkout.

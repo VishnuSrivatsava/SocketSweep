@@ -1,0 +1,33 @@
+{
+  "bundle": {
+    "resources": [
+      "bin/adb"
+    ],
+    "linux": {
+      "deb": {
+        "files": {
+          "/usr/share/SocketSweep/bin/daemon": "bin/daemon",
+          "/usr/share/SocketSweep/bin/daemon-armeabi-v7a": "bin/daemon-armeabi-v7a",
+          "/usr/share/SocketSweep/bin/daemon-x86": "bin/daemon-x86",
+          "/usr/share/SocketSweep/bin/daemon-x86_64": "bin/daemon-x86_64"
+        }
+      },
+      "rpm": {
+        "files": {
+          "/usr/share/SocketSweep/bin/daemon": "bin/daemon",
+          "/usr/share/SocketSweep/bin/daemon-armeabi-v7a": "bin/daemon-armeabi-v7a",
+          "/usr/share/SocketSweep/bin/daemon-x86": "bin/daemon-x86",
+          "/usr/share/SocketSweep/bin/daemon-x86_64": "bin/daemon-x86_64"
+        }
+      },
+      "appimage": {
+        "files": {
+          "/usr/share/SocketSweep/bin/daemon": "bin/daemon",
+          "/usr/share/SocketSweep/bin/daemon-armeabi-v7a": "bin/daemon-armeabi-v7a",
+          "/usr/share/SocketSweep/bin/daemon-x86": "bin/daemon-x86",
+          "/usr/share/SocketSweep/bin/daemon-x86_64": "bin/daemon-x86_64"
+        }
+      }
+    }
+  }
+}
