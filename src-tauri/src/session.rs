@@ -154,7 +154,7 @@ impl Session {
         serial: String,
         root_mode: bool,
     ) -> Result<(Self, String), String> {
-        Self::start_configured(adb, daemon, serial, root_mode, None)
+        Self::start_configured(adb, daemon, serial, root_mode, None, None)
     }
 
     #[cfg(test)]
@@ -163,11 +163,15 @@ impl Session {
         daemon: &Path,
         serial: String,
         workers: u8,
+        abi: &str,
     ) -> Result<(Self, String), String> {
         if !(1..=8).contains(&workers) {
             return Err("Benchmark workers must be between 1 and 8".into());
         }
-        Self::start_configured(adb, daemon, serial, false, Some(workers))
+        if !matches!(abi, "arm64-v8a" | "armeabi-v7a" | "x86" | "x86_64") {
+            return Err("Unsupported benchmark daemon ABI".into());
+        }
+        Self::start_configured(adb, daemon, serial, false, Some(workers), Some(abi))
     }
 
     fn start_configured(
@@ -176,9 +180,10 @@ impl Session {
         serial: String,
         root_mode: bool,
         workers: Option<u8>,
+        exact_abi: Option<&str>,
     ) -> Result<(Self, String), String> {
         let mut session = Self::new(adb, serial)?;
-        let result = session.start_inner(daemon, root_mode, workers);
+        let result = session.start_inner(daemon, root_mode, workers, exact_abi);
         match result {
             Ok(response) => Ok((session, response)),
             Err(error) => {
@@ -200,13 +205,21 @@ impl Session {
         daemon: &Path,
         root_mode: bool,
         workers: Option<u8>,
+        exact_abi: Option<&str>,
     ) -> Result<String, String> {
         let deadline = Instant::now() + START_TIMEOUT;
         if !supports_shell_v2(&self.adb(&["features"], None, deadline)?) {
             return Err("The connected device must support ADB shell v2 for owned sessions".into());
         }
         let abis = self.adb(&["shell", "getprop ro.product.cpu.abilist"], None, deadline)?;
-        let daemon = bundled_daemon(daemon, &abis)?;
+        let daemon = if let Some(abi) = exact_abi {
+            if !abis.trim().split(',').any(|entry| entry.trim() == abi) {
+                return Err(format!("The selected device does not support benchmark daemon ABI {abi}"));
+            }
+            daemon.to_path_buf()
+        } else {
+            bundled_daemon(daemon, &abis)?
+        };
         self.privilege = select_privilege(root_mode, |args| self.adb(args, None, deadline))?;
         // The directory is shell-owned even for su launches, so adb push can
         // write into it. mkdir must succeed exclusively before cleanup owns it.
@@ -408,7 +421,7 @@ mod tests {
     fn benchmark_rejects_invalid_worker_counts_before_launch() {
         for workers in [0, 9, u8::MAX] {
             let error = Session::start_benchmark(
-                PathBuf::from("missing-adb"), Path::new("missing-daemon"), "fixture".into(), workers,
+                PathBuf::from("missing-adb"), Path::new("missing-daemon"), "fixture".into(), workers, "arm64-v8a",
             ).err().unwrap();
             assert!(error.contains("between 1 and 8"), "{error}");
         }
@@ -641,6 +654,36 @@ mod tests {
         }
 
         #[test]
+        fn benchmark_keeps_the_exact_artifact_instead_of_selecting_a_sibling() {
+            let device = Device::new();
+            let adb = device.client("exact-artifact", "selected");
+            let base = adb.parent().unwrap();
+            fs::write(base.join("abis.txt"), "arm64-v8a,x86_64,x86").unwrap();
+            let snapshot = base.join("immutable-snapshot");
+            std::os::unix::fs::symlink(daemon(), &snapshot).unwrap();
+            fs::write(base.join("daemon-x86"), b"wrong artifact").unwrap();
+
+            let (mut session, _) =
+                Session::start_benchmark(adb.clone(), &snapshot, "selected".into(), 4, "x86")
+                    .unwrap();
+            assert!(ping(&session).contains("\"status\":\"ok\""));
+            let calls = fs::read_to_string(base.join("calls.jsonl")).unwrap();
+            let push = calls.lines()
+                .map(|line| serde_json::from_str::<Vec<String>>(line).unwrap())
+                .find(|args| args[0] == "push").unwrap();
+            assert_eq!(Path::new(&push[1]), snapshot);
+            let errors = session.cleanup();
+            assert!(errors.is_empty(), "{errors:?}");
+
+            fs::write(base.join("abis.txt"), "arm64-v8a").unwrap();
+            let error = Session::start_benchmark(adb, &snapshot, "selected".into(), 4, "x86")
+                .err().expect("incompatible benchmark ABI accepted");
+            assert!(error.contains("does not support benchmark daemon ABI"), "{error}");
+            assert_eq!(device.directories(), 0);
+            assert_eq!(device.rows().len(), 1);
+        }
+
+        #[test]
         fn benchmark_uses_real_streams_requested_workers_and_owned_cleanup() {
             // A UID-0 host deliberately forces the daemon into serial mode.
             if Command::new("id").arg("-u").output().unwrap().stdout == b"0\n" {
@@ -654,7 +697,7 @@ mod tests {
             let output = device.root.join("results");
             fs::create_dir(&output).unwrap();
             let result = crate::scan_benchmark::run(
-                adb.clone(), daemon().into(), "benchmark-device".into(), storage.to_str().unwrap(),
+                adb.clone(), daemon().into(), "arm64-v8a", "benchmark-device".into(), storage.to_str().unwrap(),
                 &output, &crate::scan_benchmark::Cancellation::default(),
             ).unwrap();
             assert_eq!(result["verified"], true);
@@ -675,7 +718,7 @@ mod tests {
             fs::create_dir(&failure_output).unwrap();
             let missing = storage.join("missing");
             assert!(crate::scan_benchmark::run(
-                adb, daemon().into(), "benchmark-device".into(), missing.to_str().unwrap(),
+                adb, daemon().into(), "arm64-v8a", "benchmark-device".into(), missing.to_str().unwrap(),
                 &failure_output, &crate::scan_benchmark::Cancellation::default(),
             ).is_err());
             assert_eq!(device.directories(), 0);
