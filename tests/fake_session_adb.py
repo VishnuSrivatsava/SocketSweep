@@ -58,7 +58,9 @@ elif args[0] == "shell":
         abis = base / "abis.txt"
         print(abis.read_text() if abis.exists() else "arm64-v8a,armeabi-v7a")
     elif command == "getprop ro.build.version.sdk":
-        print("fixture")
+        fail("sdk")
+        sdk = base / "sdk.txt"
+        print(sdk.read_text() if sdk.exists() else "31")
     elif command == "id -u":
         print("0" if elevated and failure != "root" else "2000")
     elif args[1] == "-T":

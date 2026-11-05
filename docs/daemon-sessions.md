@@ -34,6 +34,13 @@ Setup offers [explicit device selection](device-selection.md). Startup checks
 that the chosen serial is still ready before creating new session resources;
 it never falls back to another serial.
 
+Before selecting an ABI or requesting root access, startup reads the selected
+device's `ro.build.version.sdk`. Bundled daemons require API 31 (Android 12).
+Older versions receive an explicit compatibility error; missing or malformed
+SDK values fail without guessing. Both cases stop before creating device files,
+uploading a binary or allocating a forward. The query shares the startup budget
+and applies to benchmark sessions too.
+
 The foreground daemon is launched through **`adb shell -T`**, with an owned stdin
 pipe held open by the Rust session. `--session-ready` also enables its lifetime
 watcher. EOF/error on that input exits only that process, including when a TCP
