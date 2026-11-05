@@ -255,7 +255,8 @@ jobs:
           fi
           assert_mode 755 "$APPDIR/usr/lib/SocketSweep/bin/adb"
           for daemon in daemon daemon-armeabi-v7a daemon-x86 daemon-x86_64; do
-            assert_mode 755 "$APPDIR/usr/share/SocketSweep/bin/$daemon"
+            assert_mode 644 "$APPDIR/usr/share/SocketSweep/bin/$daemon"
+            cmp "src-tauri/bin/$daemon" "$APPDIR/usr/share/SocketSweep/bin/$daemon"
           done
 
           # Download appimagetool for repacking — pinned to 1.9.1 and
