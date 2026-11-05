@@ -9,7 +9,15 @@ import re
 import subprocess
 
 
-def check(tools, binary, symbols, commit, platform):
+TARGETS = {
+    "arm64-v8a": ("ELF64", "AArch64", "aarch64-linux-android31"),
+    "armeabi-v7a": ("ELF32", "ARM", "armv7a-linux-androideabi31"),
+    "x86": ("ELF32", "Intel 80386", "i686-linux-android31"),
+    "x86_64": ("ELF64", "Advanced Micro Devices X86-64", "x86_64-linux-android31"),
+}
+
+
+def check(tools, binary, symbols, commit, platform, abi="arm64-v8a"):
     def run(tool, *args):
         executable = tools / (tool + (".exe" if os.name == "nt" else ""))
         return subprocess.check_output([str(executable), *map(str, args)],
@@ -20,10 +28,13 @@ def check(tools, binary, symbols, commit, platform):
             raise ValueError(message)
 
     require(re.fullmatch(r"[0-9a-f]{40}", commit), "Expected a full commit SHA")
+    elf_class, machine, target = TARGETS[abi]
     ids = []
     for path in (binary, symbols):
         header = run("llvm-readelf", "--file-header", path)
-        require("AArch64" in header and "ELF64" in header, "Expected Android ARM64 ELF")
+        require(re.search(rf"^\s*Class:\s+{re.escape(elf_class)}\s*$", header, re.MULTILINE)
+                and re.search(rf"^\s*Machine:\s+{re.escape(machine)}\s*$", header, re.MULTILINE),
+                f"Expected Android {abi} ELF")
         match = re.search(r"Build ID: ([0-9a-f]+)", run("llvm-readelf", "--notes", path))
         require(match is not None, f"Missing build ID: {path}")
         ids.append(match.group(1))
@@ -44,7 +55,7 @@ def check(tools, binary, symbols, commit, platform):
     location = run("llvm-symbolizer", "--no-inlines", f"--obj={symbols}", address)
     require("main" in location.splitlines() and re.search(r"daemon\.cpp:[1-9][0-9]*:", location),
             "Symbol lookup did not resolve main to daemon.cpp")
-    metadata = {"commit": commit, "platform": platform, "target": "aarch64-linux-android31",
+    metadata = {"commit": commit, "platform": platform, "target": target,
                 "workflow_run_id": os.environ.get("GITHUB_RUN_ID"),
                 "workflow_run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
                 "build_id": ids[0], "stripped_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
@@ -63,9 +74,10 @@ def main():
     parser.add_argument("--symbols", type=Path, default=Path("daemon-symbols/socketsweep_daemon"))
     parser.add_argument("--commit", required=True)
     parser.add_argument("--platform", choices=("linux", "macos", "windows"), required=True)
+    parser.add_argument("--abi", choices=TARGETS, default="arm64-v8a")
     args = parser.parse_args()
     try:
-        check(args.tools, args.binary, args.symbols, args.commit, args.platform)
+        check(args.tools, args.binary, args.symbols, args.commit, args.platform, args.abi)
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         parser.exit(1, f"Daemon symbol verification failed: {error}\n")
 

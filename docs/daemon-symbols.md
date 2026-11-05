@@ -73,3 +73,11 @@ These are host-side ELF checks: they neither run the Android daemon nor require
 a crash, ADB, a connected phone, or the desktop app. Local `engine/build.sh`
 continues its existing stripped build behavior; its broader build/provisioning
 work remains tracked in [#41](https://github.com/VishnuSrivatsava/SocketSweep/issues/41).
+
+
+The build entry point also accepts `--abi armeabi-v7a`, `--abi x86`, or
+`--abi x86_64` with `--platform` and `--commit`. These experimental builds
+write `engine/daemon-<abi>`, with debug files under `daemon-symbols/<abi>/`.
+The checker validates the requested ELF class and machine as well as matching
+build IDs, code bytes, and source lookup. Verification finishes before publishing
+the stripped binary. The desktop release workflow continues to build ARM64.
