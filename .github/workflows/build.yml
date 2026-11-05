@@ -168,7 +168,7 @@ jobs:
       # compiles the Rust bridge, and packages everything into native
       # platform installers (.dmg / .deb / .AppImage / .msi / .exe).
       - name: Build Tauri app
-        run: npm run tauri build
+        run: npm run tauri -- build --verbose
 
       - name: Test Rust bridge
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
