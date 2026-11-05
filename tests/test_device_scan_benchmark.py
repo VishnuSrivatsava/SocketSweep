@@ -10,6 +10,9 @@ from unittest.mock import patch
 import benchmark_device_scan as benchmark
 
 
+FIXTURE = b"\x7fELF\x02\x01" + bytes(12) + (183).to_bytes(2, "little") + b"immutable fixture"
+
+
 class DeviceScanBenchmarkTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -18,7 +21,7 @@ class DeviceScanBenchmarkTests(unittest.TestCase):
         self.adb = self.root / "fake-adb"
         self.adb.touch()
         self.daemon = self.root / "fake-daemon"
-        self.daemon.write_bytes(b"immutable fixture")
+        self.daemon.write_bytes(FIXTURE)
         self.output = self.root / "results"
 
     def run_benchmark(self, **kwargs):
@@ -53,9 +56,10 @@ class DeviceScanBenchmarkTests(unittest.TestCase):
             self.assertEqual(env["SOCKETSWEEP_DEVICE_BENCH"], "1")
             self.assertEqual(env["SOCKETSWEEP_BENCH_SERIAL"], "explicit-device")
             self.assertEqual(env["SOCKETSWEEP_BENCH_ROOT"], "/sdcard")
+            self.assertEqual(env["SOCKETSWEEP_BENCH_ABI"], "arm64-v8a")
             artifact = Path(env["SOCKETSWEEP_BENCH_DAEMON"])
             self.assertNotEqual(artifact, self.daemon)
-            self.assertEqual(artifact.read_bytes(), b"immutable fixture")
+            self.assertEqual(artifact.read_bytes(), FIXTURE)
             self.daemon.write_bytes(b"new build")
             report = {"verified": True, "medians": [{"workers": 1, "scan_ms": 1, "stream_wall_ms": 2}]}
             (self.output / "measurements.json").write_text(json.dumps(report), encoding="utf-8")
@@ -68,7 +72,24 @@ class DeviceScanBenchmarkTests(unittest.TestCase):
             self.run_benchmark(root="/sdcard///")
         self.assertTrue(child.stdin.closed)
         result = json.loads((self.output / "result.json").read_text())
-        self.assertEqual(result["daemon_sha256"], hashlib.sha256(b"immutable fixture").hexdigest())
+        self.assertEqual(result["daemon_abi"], "arm64-v8a")
+        self.assertEqual(result["daemon_sha256"], hashlib.sha256(FIXTURE).hexdigest())
+
+    def test_elf_architecture_is_read_from_bytes_and_bad_snapshots_never_launch(self):
+        for elf_class, machine, expected in [
+            (1, 40, "armeabi-v7a"), (1, 3, "x86"), (2, 62, "x86_64"),
+        ]:
+            self.daemon.write_bytes(b"\x7fELF" + bytes([elf_class, 1]) + bytes(12) + machine.to_bytes(2, "little"))
+            self.assertEqual(benchmark.daemon_abi(self.daemon), expected)
+        for index, invalid in enumerate([b"bad", b"\x7fELF" + bytes(16),
+                                        b"\x7fELF\x02\x01" + bytes(12) + (40).to_bytes(2, "little")]):
+            self.daemon.write_bytes(invalid)
+            self.output = self.root / f"invalid-{index}"
+            with patch.object(benchmark.subprocess, "Popen") as launch:
+                with self.assertRaises(ValueError):
+                    self.run_benchmark()
+                launch.assert_not_called()
+                self.assertFalse((self.output / "result.json").exists())
 
     def test_failed_or_unverified_run_has_no_result(self):
         from unittest.mock import Mock

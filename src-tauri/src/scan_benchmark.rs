@@ -165,6 +165,7 @@ fn median(values: &mut [f64]) -> f64 {
 pub(super) fn run(
     adb: PathBuf,
     daemon: PathBuf,
+    abi: &str,
     serial: String,
     root: &str,
     output: &std::path::Path,
@@ -195,7 +196,7 @@ pub(super) fn run(
             cancel.check()?;
             eprintln!("Preparing {workers}-worker session...");
             let (session, _) =
-                session::Session::start_benchmark(adb.clone(), &daemon, serial.clone(), workers)?;
+                session::Session::start_benchmark(adb.clone(), &daemon, serial.clone(), workers, abi)?;
             if session.connection().read_only {
                 return Err("Benchmark requires a non-root ADB shell; root scans cannot compare parallel workers".into());
             }
@@ -297,6 +298,7 @@ fn connected_device() {
     let result = run(
         PathBuf::from(env("SOCKETSWEEP_BENCH_ADB")),
         PathBuf::from(env("SOCKETSWEEP_BENCH_DAEMON")),
+        &env("SOCKETSWEEP_BENCH_ABI"),
         env("SOCKETSWEEP_BENCH_SERIAL"),
         &env("SOCKETSWEEP_BENCH_ROOT"),
         &output,

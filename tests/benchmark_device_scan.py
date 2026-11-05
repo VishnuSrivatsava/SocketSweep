@@ -26,6 +26,22 @@ def digest(path):
     return result.hexdigest()
 
 
+def daemon_abi(path):
+    with path.open("rb") as stream:
+        header = stream.read(20)
+    if len(header) != 20 or header[:4] != b"\x7fELF" or header[5] != 1:
+        raise ValueError("Benchmark daemon must be a little-endian Android ELF binary")
+    abi = {
+        (2, 183): "arm64-v8a",
+        (1, 40): "armeabi-v7a",
+        (1, 3): "x86",
+        (2, 62): "x86_64",
+    }.get((header[4], int.from_bytes(header[18:20], "little")))
+    if abi is None:
+        raise ValueError("Unsupported benchmark daemon ELF architecture")
+    return abi
+
+
 def benchmark(serial, root="/sdcard", output=None, adb=None, daemon=None):
     if not serial or any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in serial):
         raise ValueError("Choose an explicit device serial without whitespace/control characters")
@@ -47,11 +63,12 @@ def benchmark(serial, root="/sdcard", output=None, adb=None, daemon=None):
         # even if the original build output is replaced during the experiment.
         snapshot = Path(directory) / "daemon"
         shutil.copyfile(daemon, snapshot)
+        abi = daemon_abi(snapshot)
         fingerprint = digest(snapshot)
         env = os.environ.copy()
         env.update(SOCKETSWEEP_DEVICE_BENCH="1", SOCKETSWEEP_BENCH_SERIAL=serial,
                    SOCKETSWEEP_BENCH_ROOT=root.rstrip("/") or "/", SOCKETSWEEP_BENCH_ADB=str(adb),
-                   SOCKETSWEEP_BENCH_DAEMON=str(snapshot), SOCKETSWEEP_BENCH_OUTPUT=str(output))
+                   SOCKETSWEEP_BENCH_DAEMON=str(snapshot), SOCKETSWEEP_BENCH_ABI=abi, SOCKETSWEEP_BENCH_OUTPUT=str(output))
         command = ["cargo", "test", "--release", "--locked", "--manifest-path", str(REPO / "src-tauri/Cargo.toml"),
                    "--lib", TEST, "--", "--ignored", "--exact", "--nocapture"]
         group = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
@@ -84,6 +101,7 @@ def benchmark(serial, root="/sdcard", output=None, adb=None, daemon=None):
         if report.get("verified") is not True:
             raise ValueError("Experiment did not produce verified measurements")
         report["daemon_sha256"] = fingerprint
+        report["daemon_abi"] = abi
         with (output / "result.json").open("x", encoding="utf-8") as stream:
             json.dump(report, stream, indent=2, allow_nan=False)
             stream.write("\n")

@@ -6,8 +6,11 @@ does not change the app's behavior and makes no speedup claim.
 
 ## Run manually
 
-Use the development prerequisites in the README, including a current ARM64
-Android daemon at `src-tauri/bin/daemon` and the bundled host ADB. Stop any active
+Use the development prerequisites in the README, including a current
+Android daemon and the bundled host ADB. The default daemon at
+`src-tauri/bin/daemon` targets ARM64. For another device ABI, use
+`--daemon src-tauri/bin/daemon-x86_64`, `--daemon src-tauri/bin/daemon-x86`,
+or `--daemon src-tauri/bin/daemon-armeabi-v7a` as appropriate. Stop any active
 app scan, connect and authorize the phone, and run from the repository root:
 
 ```sh
@@ -29,7 +32,9 @@ restart ADB, drop caches or modify scanned files.
 
 ## What the experiment verifies
 
-The wrapper snapshots the local daemon and records its SHA-256. Four independent
+The wrapper snapshots the local daemon and records its SHA-256 and ELF ABI.
+Every session uses those exact bytes, including on devices advertising several
+ABIs. An incompatible daemon fails before session resource creation. Four independent
 owned sessions use those same bytes, one each for 1, 2, 4 and 8 workers. They scan
 sequentially; the other daemons are idle. One warm-up per mode precedes five
 measured rounds with mixed order:
