@@ -8,7 +8,7 @@ This addresses [#15](https://github.com/VishnuSrivatsava/SocketSweep/issues/15).
 Each macOS/Linux/Windows job uploads a separate workflow artifact:
 
 ```text
-daemon-symbols-<platform>-aarch64-<full-workflow-commit-SHA>-attempt-<N>
+daemon-symbols-<platform>-android-<full-workflow-commit-SHA>-attempt-<N>
   socketsweep_daemon
   metadata.json
 ```
@@ -80,4 +80,4 @@ The build entry point also accepts `--abi armeabi-v7a`, `--abi x86`, or
 write `engine/daemon-<abi>`, with debug files under `daemon-symbols/<abi>/`.
 The checker validates the requested ELF class and machine as well as matching
 build IDs, code bytes, and source lookup. Verification finishes before publishing
-the stripped binary. The desktop release workflow continues to build ARM64.
+the stripped binary. CI cross-builds and verifies all four ABIs. Desktop installers currently bundle ARM64; the other binaries and their symbols are retained for cross-build validation.

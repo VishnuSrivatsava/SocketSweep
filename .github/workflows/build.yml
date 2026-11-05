@@ -94,15 +94,23 @@ jobs:
           sudo -n env CXX=g++ python3 -m unittest discover -s tests -p test_root_scan.py -v
           sudo -n env CXX=g++ python3 -m unittest discover -s tests -p test_owned_session.py -v
 
-      - name: Cross-compile C++ daemon
-        run: ${{ runner.os == 'Windows' && 'python' || 'python3' }} engine/build_daemon.py --platform "${{ matrix.platform }}" --commit "${{ github.sha }}"
+      - name: Cross-compile C++ daemons
+        shell: python {0}
+        run: |
+          import subprocess
+          import sys
+          for abi in ("arm64-v8a", "armeabi-v7a", "x86", "x86_64"):
+              subprocess.run([
+                  sys.executable, "engine/build_daemon.py", "--abi", abi,
+                  "--platform", "${{ matrix.platform }}", "--commit", "${{ github.sha }}",
+              ], check=True)
 
       # Keep symbols outside Tauri resources. Each host build can use a
       # different NDK; the manifest identifies its exact stripped daemon.
       - name: Upload matching daemon symbols
         uses: actions/upload-artifact@v4
         with:
-          name: daemon-symbols-${{ matrix.platform }}-aarch64-${{ github.sha }}-attempt-${{ github.run_attempt }}
+          name: daemon-symbols-${{ matrix.platform }}-android-${{ github.sha }}-attempt-${{ github.run_attempt }}
           path: daemon-symbols/
           if-no-files-found: error
           retention-days: 90
