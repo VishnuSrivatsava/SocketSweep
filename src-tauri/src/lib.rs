@@ -96,6 +96,23 @@ fn get_bundled_binary(app: &tauri::AppHandle, name: &str) -> Result<std::path::P
         }
     }
 
+    // Android ELF resources must stay out of usr/lib in Linux packages:
+    // linuxdeploy otherwise treats x86 Android libraries as host dependencies.
+    #[cfg(target_os = "linux")]
+    if name == "daemon" {
+        #[cfg(debug_assertions)]
+        {
+            let development = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("bin/daemon");
+            if development.is_file() {
+                return Ok(development);
+            }
+        }
+        let shared = resource_dir.join("../../share/SocketSweep/bin/daemon");
+        if shared.is_file() {
+            return Ok(shared);
+        }
+    }
+
     let path = resource_dir.join("bin").join(name);
     if path.exists() {
         Ok(path)

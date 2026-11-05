@@ -26,7 +26,10 @@
     "targets": "all",
     "resources": [
       "bin/adb",
-      "bin/daemon"
+      "bin/daemon",
+      "bin/daemon-armeabi-v7a",
+      "bin/daemon-x86",
+      "bin/daemon-x86_64"
     ],
     "icon": [
       "icons/32x32.png",

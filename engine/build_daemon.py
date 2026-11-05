@@ -58,9 +58,11 @@ def toolchain(abi):
 def build(platform, commit, abi):
     compiler = toolchain(abi)
     local = REPO / "engine/daemon"
-    experimental = abi != "arm64-v8a"
-    bundle = local.with_name(f"daemon-{abi}") if experimental else REPO / "src-tauri/bin/daemon"
-    outputs = (bundle,) if platform or experimental else (bundle, local)
+    additional_abi = abi != "arm64-v8a"
+    if additional_abi:
+        local = local.with_name(f"daemon-{abi}")
+    bundle = REPO / "src-tauri/bin" / local.name
+    outputs = (bundle,) if platform else (bundle, local)
     for output in outputs:
         if output.exists() and not output.is_file():
             raise ValueError(f"Output path is not a regular file: {output}")
@@ -77,7 +79,7 @@ def build(platform, commit, abi):
             args.append("-D_FILE_OFFSET_BITS=64")
         if platform:
             symbols_dir = REPO / "daemon-symbols"
-            if experimental:
+            if additional_abi:
                 symbols_dir = symbols_dir / abi
             symbols = symbols_dir / "socketsweep_daemon"
             symbols.parent.mkdir(parents=True, exist_ok=True)
@@ -89,11 +91,10 @@ def build(platform, commit, abi):
             subprocess.run([str(strip), "--strip-all", "-o", str(staged), str(symbols)], check=True)
         else:
             subprocess.run([*args, "-s", "-o", str(staged), str(REPO / "engine/daemon.cpp")], check=True)
-            if not experimental:
-                with TemporaryDirectory(prefix=".daemon-build-", dir=local.parent) as local_stage:
-                    local_copy = Path(local_stage) / "daemon"
-                    shutil.copy2(staged, local_copy)
-                    local_copy.replace(local)
+            with TemporaryDirectory(prefix=".daemon-build-", dir=local.parent) as local_stage:
+                local_copy = Path(local_stage) / "daemon"
+                shutil.copy2(staged, local_copy)
+                local_copy.replace(local)
         if platform:
             subprocess.run([
                 sys.executable, str(REPO / "tests/check_daemon_symbols.py"),
@@ -108,12 +109,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--platform", choices=("linux", "macos", "windows"))
     parser.add_argument("--commit", help="Commit for the CI symbol manifest")
-    parser.add_argument("--abi", choices=TARGETS, default="arm64-v8a")
+    parser.add_argument("--abi", choices=TARGETS, help="Build one ABI; default builds all four")
     args = parser.parse_args()
     if bool(args.platform) != bool(args.commit):
         parser.error("--platform and --commit must be passed together")
     try:
-        build(args.platform, args.commit, args.abi)
+        for abi in (args.abi,) if args.abi else TARGETS:
+            build(args.platform, args.commit, abi)
     except (ValueError, OSError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"ERROR: {error}\n")
 
