@@ -29,7 +29,8 @@ reach the first/last entry; Tab reaches the active entry's actions. Keyboard
 jumps scroll the target into view. Existing snapshot checks and read-only
 deletion restrictions apply before rendering and before any mutation.
 Keyboard paging restores focus to the same direction, or the other available
-direction at the first/last page. Query errors focus Retry. Restoration waits
+direction at the first/last page. Failed page queries focus Retry; retries
+without paging controls return focus to the directory row. Restoration waits
 for the matching rendered request and is cancelled when focus moves elsewhere,
 the folder collapses, or the view/snapshot changes.
 

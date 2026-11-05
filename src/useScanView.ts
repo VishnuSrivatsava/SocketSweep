@@ -74,7 +74,11 @@ export function useScanView(scope: ScanScope, nodeId: number, enabled: boolean) 
     );
     const action = state.error ? "retry" : pending.action;
     const target = region?.querySelector<HTMLButtonElement>(`button[data-page-action="${action}"]:enabled`)
-      ?? region?.querySelector<HTMLButtonElement>("button:enabled");
+      ?? region?.querySelector<HTMLButtonElement>("button:enabled")
+      ?? (state.page && !state.page.previous_cursor && !state.page.next_cursor
+        ? pending.container.querySelector<HTMLElement>(`[data-tree-node="${nodeId}"]`)
+          ?? pending.container.querySelector<HTMLElement>('[role="treeitem"][tabindex="0"]')
+        : null);
     if (target) {
       cancelFocus();
       target.focus();

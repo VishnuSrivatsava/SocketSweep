@@ -946,6 +946,12 @@
     await waitFor(typesReady, "Empty file-type summary missing");
     checkTypes(0);
     check(typesPanel().textContent.includes("No counted files") && !typesPanel().textContent.includes("NaN") && !typesPanel().textContent.includes("Infinity"), "Empty file-type view is misleading");
+    failView = true;
+    await activate(button("Storage map"));
+    await waitFor(() => button("Retry"), "Empty-directory query error missing");
+    await activate(button("Retry"));
+    await waitFor(() => rows().length === 1 && document.activeElement?.dataset.treeNode === "0",
+      "Empty-directory retry did not focus its row without paging controls");
     button("Package folders").click();
     await waitFor(() => appsPanel()?.textContent.includes("No package folders were recognized"),
       "Empty package view did not retain unknown-coverage wording");
