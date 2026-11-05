@@ -13,6 +13,8 @@ use std::time::{Duration, Instant};
 
 const START_TIMEOUT: Duration = Duration::from_secs(45);
 const CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
+// All bundled ABI builds use the API-31 NDK target in engine/build_daemon.py.
+const MIN_ANDROID_API: u32 = 31;
 
 #[derive(Clone)]
 pub(super) struct Connection {
@@ -54,6 +56,19 @@ fn remaining(deadline: Instant) -> Result<Duration, String> {
 fn supports_shell_v2(output: &str) -> bool {
     // `adb features` prints one name per line; the ADB wire format uses commas.
     output.lines().any(|feature| feature.trim() == "shell_v2")
+}
+
+fn require_android_api(output: &str) -> Result<(), String> {
+    let sdk = output.trim();
+    let api = sdk.parse::<u32>().ok().filter(|api| {
+        *api > 0 && sdk.bytes().all(|byte| byte.is_ascii_digit())
+    }).ok_or("Cannot determine the selected device's Android API level; expected a positive SDK number.")?;
+    if api < MIN_ANDROID_API {
+        return Err(format!(
+            "SocketSweep requires Android 12 or newer (API {MIN_ANDROID_API}+); the selected device reports API {api}."
+        ));
+    }
+    Ok(())
 }
 
 fn bundled_daemon(arm64: &Path, abis: &str) -> Result<PathBuf, String> {
@@ -211,6 +226,7 @@ impl Session {
         if !supports_shell_v2(&self.adb(&["features"], None, deadline)?) {
             return Err("The connected device must support ADB shell v2 for owned sessions".into());
         }
+        require_android_api(&self.adb(&["shell", "getprop ro.build.version.sdk"], None, deadline)?)?;
         let abis = self.adb(&["shell", "getprop ro.product.cpu.abilist"], None, deadline)?;
         let daemon = if let Some(abi) = exact_abi {
             if !abis.trim().split(',').any(|entry| entry.trim() == abi) {
@@ -452,6 +468,26 @@ mod tests {
     }
 
     #[test]
+    fn android_api_requires_the_bundled_daemons_minimum() {
+        for output in ["31", "32\n", "36\r\n", " 31 \n"] {
+            assert!(require_android_api(output).is_ok(), "rejected {output:?}");
+        }
+        for output in ["1", "29\n", "30\r\n"] {
+            let error = require_android_api(output).unwrap_err();
+            assert!(error.contains("Android 12") && error.contains("API 31+"), "{error}");
+            assert!(error.contains(&format!("reports API {}.", output.trim())), "{error}");
+        }
+    }
+
+    #[test]
+    fn android_api_rejects_missing_or_malformed_sdk_numbers() {
+        for output in ["", " \r\n", "0", "-1", "+31", "31\n32", "31extra", "31.0", "4294967296"] {
+            let error = require_android_api(output).unwrap_err();
+            assert!(error.contains("Cannot determine") && error.contains("API level"), "{error}");
+        }
+    }
+
+    #[test]
     fn forward_cleanup_checks_device_local_and_remote_identity() {
         let list = "one tcp:1001 tcp:2001\none tcp:1002 tcp:2002\ntwo tcp:1003 tcp:2001\none tcp:0 tcp:2001\none localabstract:foreign tcp:2001\nbad line";
         assert_eq!(owned_forwards(list, "one", 1001, 2001), ["tcp:1001"]);
@@ -612,6 +648,29 @@ mod tests {
             assert!(!calls.contains("mkdir") && !calls.contains("push") && !calls.contains("su -c"));
             assert_eq!(device.directories(), 0);
             assert_eq!(device.rows().len(), 1);
+        }
+
+        #[test]
+        fn unsupported_or_unknown_android_api_never_creates_session_resources() {
+            let device = Device::new();
+            for (index, sdk) in ["29", "30\r\n", "", "invalid", "31\n30"].into_iter().enumerate() {
+                for benchmark in [false, true] {
+                    let adb = device.client(&format!("sdk-{index}-{benchmark}"), "selected");
+                    fs::write(adb.parent().unwrap().join("sdk.txt"), sdk).unwrap();
+                    let result = if benchmark {
+                        Session::start_benchmark(adb.clone(), Path::new("missing-daemon"), "selected".into(), 4, "arm64-v8a")
+                    } else {
+                        Session::start(adb.clone(), Path::new("missing-daemon"), "selected".into(), true)
+                    };
+                    let error = result.err().expect("unsupported Android API accepted");
+                    assert!(error.contains("API"), "{error}");
+                    let calls = fs::read_to_string(adb.parent().unwrap().join("calls.jsonl")).unwrap();
+                    let calls: Vec<Vec<String>> = calls.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+                    assert_eq!(calls, [vec!["features"], vec!["shell", "getprop ro.build.version.sdk"]]);
+                    assert_eq!(device.directories(), 0);
+                    assert_eq!(device.rows().len(), 1);
+                }
+            }
         }
 
         #[test]
@@ -794,6 +853,7 @@ mod tests {
             .unwrap();
             for stage in [
                 "features",
+                "sdk",
                 "mkdir",
                 "token",
                 "push",
