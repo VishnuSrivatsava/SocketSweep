@@ -76,8 +76,11 @@ def build(platform, commit, abi):
         if abi in ("armeabi-v7a", "x86"):
             args.append("-D_FILE_OFFSET_BITS=64")
         if platform:
-            symbols = REPO / "daemon-symbols/socketsweep_daemon"
-            symbols.parent.mkdir(exist_ok=True)
+            symbols_dir = REPO / "daemon-symbols"
+            if experimental:
+                symbols_dir = symbols_dir / abi
+            symbols = symbols_dir / "socketsweep_daemon"
+            symbols.parent.mkdir(parents=True, exist_ok=True)
             subprocess.run([
                 *args, "-g", "-Wl,--build-id=sha1", "-o", str(symbols),
                 str(REPO / "engine/daemon.cpp"),
@@ -91,12 +94,13 @@ def build(platform, commit, abi):
                     local_copy = Path(local_stage) / "daemon"
                     shutil.copy2(staged, local_copy)
                     local_copy.replace(local)
+        if platform:
+            subprocess.run([
+                sys.executable, str(REPO / "tests/check_daemon_symbols.py"),
+                "--tools", str(compiler.parent), "--platform", platform, "--commit", commit,
+                "--abi", abi, "--binary", str(staged), "--symbols", str(symbols),
+            ], cwd=REPO, check=True)
         staged.replace(bundle)
-    if platform:
-        subprocess.run([
-            sys.executable, str(REPO / "tests/check_daemon_symbols.py"),
-            "--tools", str(compiler.parent), "--platform", platform, "--commit", commit,
-        ], cwd=REPO, check=True)
     print(f"[build] Updated {bundle}")
 
 
@@ -108,8 +112,6 @@ def main():
     args = parser.parse_args()
     if bool(args.platform) != bool(args.commit):
         parser.error("--platform and --commit must be passed together")
-    if args.platform and args.abi != "arm64-v8a":
-        parser.error("CI packaging currently supports arm64-v8a only")
     try:
         build(args.platform, args.commit, args.abi)
     except (ValueError, OSError, subprocess.CalledProcessError) as error:
