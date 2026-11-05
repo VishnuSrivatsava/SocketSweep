@@ -7,7 +7,7 @@
   <img src="https://img.shields.io/badge/Tauri-v2-FFC131.svg?logo=tauri&logoColor=white" alt="Tauri v2" />
   <img src="https://img.shields.io/badge/React-19-61DAFB.svg?logo=react&logoColor=black" alt="React 19" />
   <img src="https://img.shields.io/badge/C%2B%2B-17-00599C.svg?logo=c%2B%2B&logoColor=white" alt="C++17" />
-  <img src="https://img.shields.io/badge/Rust-1.89+-000000.svg?logo=rust&logoColor=white" alt="Rust" />
+  <img src="https://img.shields.io/badge/Rust-1.90+-000000.svg?logo=rust&logoColor=white" alt="Rust" />
   <br />
   <a href="https://github.com/sponsors/VishnuSrivatsava"><img src="https://img.shields.io/badge/♥_Sponsor-EA4AAA?style=for-the-badge&logo=github-sponsors&logoColor=white" alt="Sponsor" /></a>
 </div>
@@ -243,7 +243,7 @@ sequenceDiagram
 
 ### Prerequisites
 1. **Node.js** (`^20.19.0`, `^22.13.0`, or `>=24`, including frontend lint tooling)
-2. **Rust** (v1.89+ with Cargo; native file locking for scan history)
+2. **Rust** (v1.90+ with Cargo; native file locking for scan history)
 3. **Android NDK** (v26d or newer)
 4. **Android SDK / ADB** installed and added to your system `$PATH`.
 5. **Python 3** for building the daemon.

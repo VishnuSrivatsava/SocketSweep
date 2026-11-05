@@ -216,3 +216,23 @@ still records the GLib 0.18.5 warning and identifies GTK4 as its upgrade path.
 SocketSweep does not copy those suppressions or claim an unsupported GLib
 replacement resolves GTK's copy. This refresh is a dated dependency review,
 not a security certification or a physical-device validation result.
+
+## URL-pattern dependency refresh
+
+Updating `tauri-utils` from 2.9.1 to 2.10.2 moves `urlpattern` from 0.3.0
+to 0.6.0 and removes the five UNIC packages from the lockfile. The utilities
+release requires Rust 1.90, which is now the documented minimum.
+See the [upstream utilities manifest](https://github.com/tauri-apps/tauri/blob/tauri-v2.12.5/crates/tauri-utils/Cargo.toml).
+
+Using cargo-audit 0.22.2 and RustSec database commit
+`965bf9ad083b58e6340d65829d85217b18be9290`, the same-database comparison reports
+zero vulnerability entries before and after. Unmaintained-package warnings
+fall from six to one. The GLib unsoundness warning remains.
+
+The two remaining findings are `proc-macro-error` 1.0.4
+(RUSTSEC-2024-0370) and `glib` 0.18.5 (RUSTSEC-2024-0429).
+The Linux GTK3 dependency still requires the GLib 0.18 series. No advisory
+ignore or replacement crate was added. These remain open under #63.
+
+SocketSweep's capability configuration contains no remote URL patterns.
+Its restrictive local CSP and existing capability declarations are retained.
