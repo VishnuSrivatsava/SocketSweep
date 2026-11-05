@@ -152,7 +152,7 @@ export function ResultScreen({
           </span>
         </div>
         {!page && !view.error && <p role="status" className="px-3 py-2 text-xs text-zinc-500">Loading storage map…</p>}
-        {view.error && <QueryError error={view.error} retry={view.retry} />}
+        {view.error && <div data-directory-query={zoomId} data-directory-request={view.request}><QueryError error={view.error} retry={view.retry} /></div>}
         {page && <FileTreeNode node={page.node} scope={data} parentSize={page.node.size} depth={0}
           onNuke={onNuke} onZoom={onZoom} expanded={expanded} toggle={toggle} busy={busy} rootView={view} />}
 

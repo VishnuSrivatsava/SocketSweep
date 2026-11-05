@@ -52,9 +52,9 @@ function SizeBar({ ratio }: { ratio: number }) {
 
 // ── File Tree Node ──────────────────────────────────────────────────────────
 
-export function QueryError({ error, retry }: { error: string; retry: () => void }) {
+export function QueryError({ error, retry }: { error: string; retry: (trigger: HTMLButtonElement) => void }) {
   return <div role="alert" className="px-4 py-2 text-xs text-red-400">
-    {error} <button onClick={retry} className="underline ml-2">Retry</button>
+    {error} <button data-page-action="retry" onClick={event => retry(event.currentTarget)} className="underline ml-2">Retry</button>
   </div>;
 }
 
@@ -113,9 +113,9 @@ function DirectoryQuery({ node, scope, expanded, register, rootView }: {
 }) {
   const open = expanded.has(node.id);
   const query = useScanView(scope, node.id, !rootView && open && node.child_count > 0);
-  const { page, error, go, retry } = rootView ?? query;
+  const { page, error, go, retry, request } = rootView ?? query;
   const key = viewKey(scope, node.id, null);
-  useLayoutEffect(() => register(key, { page, error, go, retry }), [register, key, page, error, go, retry]);
+  useLayoutEffect(() => register(key, { page, error, go, retry, request }), [register, key, page, error, go, retry, request]);
   return open ? page?.children.filter(child => child.type === "directory").map(child =>
     <DirectoryQuery key={child.id} node={child} scope={scope} expanded={expanded} register={register} />) : null;
 }
@@ -245,6 +245,8 @@ export function FileTreeNode({ node, scope, parentSize, depth, onNuke, onZoom, e
         const row = rows[item.index];
         if (!row) return null;
         return <div key={item.key} data-index={item.index} ref={virtual ? virtualizer.measureElement : undefined}
+          data-directory-query={row.kind === "detail" ? row.node.id : undefined}
+          data-directory-request={row.kind === "detail" ? row.view?.request : undefined}
           data-tree-node={row.kind === "node" ? row.node.id : undefined}
           role={row.kind === "node" ? "treeitem" : undefined}
           aria-level={row.kind === "node" ? row.depth + 1 : undefined}
@@ -289,9 +291,9 @@ export function FileTreeNode({ node, scope, parentSize, depth, onNuke, onZoom, e
             : row.view?.error ? <QueryError error={row.view.error} retry={row.view.retry} />
             : row.view?.page ? <nav aria-label={`Pages in ${row.node.name}`} className="flex items-center gap-3 py-2 text-xs text-zinc-400"
               style={{ paddingLeft: `${28 + row.depth * 16}px` }}>
-              <button disabled={!row.view.page.previous_cursor || busy} onClick={() => row.view?.go(row.view.page!.previous_cursor)} className="px-2 py-1 bg-zinc-800 rounded disabled:opacity-30">Previous</button>
+              <button data-page-action="previous" disabled={!row.view.page.previous_cursor || busy} onClick={event => row.view?.go(row.view.page!.previous_cursor, event.currentTarget)} className="px-2 py-1 bg-zinc-800 rounded disabled:opacity-30">Previous</button>
               <span>{row.view.page.children.length} entries on this page of {row.node.child_count.toLocaleString("en-US")}</span>
-              <button disabled={!row.view.page.next_cursor || busy} onClick={() => row.view?.go(row.view.page!.next_cursor)} className="px-2 py-1 bg-zinc-800 rounded disabled:opacity-30">Next</button>
+              <button data-page-action="next" disabled={!row.view.page.next_cursor || busy} onClick={event => row.view?.go(row.view.page!.next_cursor, event.currentTarget)} className="px-2 py-1 bg-zinc-800 rounded disabled:opacity-30">Next</button>
             </nav> : <LoadingEntries />}
         </div>;
       })}
