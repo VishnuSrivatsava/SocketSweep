@@ -28,6 +28,10 @@ Arrow keys move between logical entries and expand/collapse folders. Home/End
 reach the first/last entry; Tab reaches the active entry's actions. Keyboard
 jumps scroll the target into view. Existing snapshot checks and read-only
 deletion restrictions apply before rendering and before any mutation.
+Keyboard paging restores focus to the same direction, or the other available
+direction at the first/last page. Query errors focus Retry. Restoration waits
+for the matching rendered request and is cancelled when focus moves elsewhere,
+the folder collapses, or the view/snapshot changes.
 
 ## Snapshot and deletion invariants
 

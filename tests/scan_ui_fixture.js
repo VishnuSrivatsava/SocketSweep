@@ -9,6 +9,9 @@
   let readOnly = false;
   let scanRoot = "/fixture";
   let delayedZoom = true;
+  let holdView = false;
+  let releaseView;
+  let failView = false;
   let delayedDetail = true;
   let holdDetail = false;
   let releaseDetail;
@@ -253,6 +256,8 @@
       }
       if (command === "get_scan_view") {
         const response = JSON.stringify(view(args));
+        if (failView) { failView = false; throw Error("Directory page fixture failure"); }
+        if (holdView) { holdView = false; await new Promise(resolve => { releaseView = resolve; }); }
         if (args.nodeId === 1 && delayedZoom) { delayedZoom = false; await pause(300); }
         return response;
       }
@@ -291,7 +296,7 @@
   const report = (passed, error) => {
     const output = document.createElement("pre");
     output.id = "scan-test-report";
-    output.textContent = JSON.stringify({ fixture: "scan-ui", passed, error, ipc_calls: calls.length, wide_paging: widePaging, expanded_tree: expandedTree, checks: passed ? ["offline fonts under CSP", "bounded collapsed discovery diagnostics", "discovery retry recovery", "setup alignment", "result fonts", "file label semantics", "usable file workspace", "collapsible diagnostics", "complete paging", "expanded-tree row growth and keyboard focus", "first-scan comparison", "unchanged comparison after rescan", "deletion delta comparison", "cross-device comparison isolation", "bounded package-folder paging and coverage", "package query retries and stale replies", "bounded file-type totals", "file-type retry and malformed response", "file-type generation and deletion revision", "file-type coverage and empty scan", "bounded largest files", "late largest response", "largest query retry", "malformed largest response recovery", "largest ID-only deletion", "largest read-only guards", "largest folder navigation without rescanning", "bounded search results", "late search response", "search retry and malformed response", "search ID-only deletion", "read-only search deletion disabled", "late zoom", "Other tile", "stale confirmation", "exact confirmation whitespace", "reachable long-path confirmation", "native modal keyboard focus and cancellation", "ID-only deletion", "revision refresh", "partial failure", "read-only", "acknowledged shutdown", "unconfirmed shutdown", "reconnect", "stop action ordering", "duplicate rescan guard", "rescan failure recovery", "rescan cancellation recovery", "toast dismissal integration", "bounded diagnostic integration"] : undefined });
+    output.textContent = JSON.stringify({ fixture: "scan-ui", passed, error, ipc_calls: calls.length, wide_paging: widePaging, expanded_tree: expandedTree, checks: passed ? ["offline fonts under CSP", "bounded collapsed discovery diagnostics", "discovery retry recovery", "setup alignment", "result fonts", "file label semantics", "usable file workspace", "collapsible diagnostics", "complete paging", "directory paging focus and retries", "expanded-tree row growth and keyboard focus", "first-scan comparison", "unchanged comparison after rescan", "deletion delta comparison", "cross-device comparison isolation", "bounded package-folder paging and coverage", "package query retries and stale replies", "bounded file-type totals", "file-type retry and malformed response", "file-type generation and deletion revision", "file-type coverage and empty scan", "bounded largest files", "late largest response", "largest query retry", "malformed largest response recovery", "largest ID-only deletion", "largest read-only guards", "largest folder navigation without rescanning", "bounded search results", "late search response", "search retry and malformed response", "search ID-only deletion", "read-only search deletion disabled", "late zoom", "Other tile", "stale confirmation", "exact confirmation whitespace", "reachable long-path confirmation", "native modal keyboard focus and cancellation", "ID-only deletion", "revision refresh", "partial failure", "read-only", "acknowledged shutdown", "unconfirmed shutdown", "reconnect", "stop action ordering", "duplicate rescan guard", "rescan failure recovery", "rescan cancellation recovery", "toast dismissal integration", "bounded diagnostic integration"] : undefined });
     document.body.append(output);
     void fetch("/report", { method: "POST", body: output.textContent }).then(() => {
       if (passed) location.replace("/tests/toast_lifecycle_fixture.html");
@@ -557,8 +562,11 @@
     const pageTimes = [];
     const visitPage = async (direction, expected) => {
       const started = performance.now();
-      button(direction).click();
+      button(direction).focus();
+      await pressKey("Enter");
       await waitFor(() => pageMatches(expected), `${direction} page omitted, duplicated or reordered entries`);
+      const expectedFocus = button(direction) ?? button(direction === "Next" ? "Previous" : "Next");
+      check(document.activeElement === expectedFocus, `${direction} directory paging lost keyboard focus`);
       pageTimes.push(performance.now() - started);
       check(rows().length <= 129, "Page exceeded the rendered-row bound");
     };
@@ -567,6 +575,89 @@
     for (const page of expectedPages.slice(0, -1).reverse()) await visitPage("Previous", page);
     check(!button("Previous"), "First page had an unexpected previous cursor");
     widePaging = { entries: expectedNames.length, max_rows: 129, transition_ms: pageTimes.map(ms => Math.round(ms)) };
+
+    const activate = async target => { target.focus(); await pressKey("Enter"); };
+    const holdPage = async target => {
+      holdView = true;
+      await activate(target);
+      await waitFor(() => releaseView, "Held directory query missing");
+      const release = releaseView;
+      releaseView = null;
+      return release;
+    };
+    const outside = document.querySelector("#btn-rescan");
+    const releaseMovedFocus = await holdPage(button("Next"));
+    outside.focus();
+    releaseMovedFocus();
+    await waitFor(() => pageMatches(expectedPages[1]), "Held page did not finish");
+    check(document.activeElement === outside, "Paging stole focus from another control");
+    await visitPage("Previous", expectedPages[0]);
+    const releaseAbandonedFocus = await holdPage(button("Next"));
+    outside.focus();
+    outside.blur();
+    releaseAbandonedFocus();
+    await waitFor(() => pageMatches(expectedPages[1]), "Abandoned page did not finish");
+    check(document.activeElement === document.body, "Paging reclaimed focus after the user left it");
+    await visitPage("Previous", expectedPages[0]);
+
+    failView = true;
+    await activate(button("Next"));
+    await waitFor(() => button("Retry") && document.activeElement === button("Retry"), "Failed page did not focus Retry");
+    await activate(button("Retry"));
+    await waitFor(() => pageMatches(expectedPages[1]), "Directory retry did not recover");
+    check(document.activeElement === button("Previous"), "Directory retry lost paging focus");
+    await visitPage("Previous", expectedPages[0]);
+
+    const releaseSwitchedView = await holdPage(button("Next"));
+    await activate(button("File types"));
+    await waitFor(() => document.querySelector('section[aria-label="File types"]'), "Types view missing during held page");
+    releaseSwitchedView();
+    await pause(30);
+    check(document.activeElement === button("File types"), "Late directory page stole focus after switching views");
+    await activate(button("Storage map"));
+    await waitFor(() => pageMatches(expectedPages[1]), "Returning to directory lost its cursor");
+    check(document.activeElement === button("Storage map"), "Returning directory query stole tab focus");
+    await visitPage("Previous", expectedPages[0]);
+
+    const folderToggle = () => rows().find(row => row.textContent.includes("large-folder"))?.querySelector("button[aria-expanded]");
+    const nestedPager = () => document.querySelector('nav[aria-label="Pages in large-folder"]');
+    const nestedAction = action => nestedPager()?.querySelector(`button[data-page-action="${action}"]:enabled`);
+    const nestedRows = () => rows().filter(row => row.textContent.includes("nested-"));
+    await activate(folderToggle());
+    await waitFor(() => nestedRows().length === 128, "Nested directory first page missing");
+    await activate(nestedAction("next"));
+    await waitFor(() => nestedRows().length === 72, "Nested directory last page missing");
+    check(document.activeElement === nestedAction("previous"), "Nested last page lost Previous focus");
+    await activate(nestedAction("previous"));
+    await waitFor(() => nestedRows().length === 128, "Nested directory previous page missing");
+    check(document.activeElement === nestedAction("next"), "Nested first page lost Next focus");
+    failView = true;
+    await activate(nestedAction("next"));
+    await waitFor(() => button("Retry") && document.activeElement === button("Retry"), "Nested page error lost Retry focus");
+    await activate(button("Retry"));
+    await waitFor(() => nestedRows().length === 72, "Nested retry did not recover");
+    check(document.activeElement === nestedAction("previous"), "Nested retry lost paging focus");
+    await activate(nestedAction("previous"));
+    await waitFor(() => nestedRows().length === 128, "Nested first page did not recover");
+    const releaseCollapsedPage = await holdPage(nestedAction("next"));
+    const collapseTrigger = folderToggle();
+    await activate(collapseTrigger);
+    releaseCollapsedPage();
+    await pause(30);
+    check(nestedRows().length === 0 && document.activeElement === collapseTrigger, "Late nested page restored collapsed focus");
+
+    zoomFolder();
+    await waitFor(() => button("← Back to Root") && rows()[0]?.textContent.includes("large-folder"), "Zoom during held page failed");
+    const releaseZoomedPage = await holdPage(button("Next"));
+    const backToRoot = button("← Back to Root");
+    await activate(backToRoot);
+    await waitFor(() => rows()[0]?.textContent.includes("fixture") && !button("← Back to Root"), "Root did not recover during held-page zoom");
+    if (folderToggle()?.getAttribute("aria-expanded") === "true") await activate(folderToggle());
+    const zoomFocus = document.querySelector("#btn-rescan");
+    zoomFocus.focus();
+    releaseZoomedPage();
+    await pause(30);
+    check(document.activeElement === zoomFocus && pageMatches(expectedPages[0]), "Late page stole zoom focus or replaced the root");
 
     // Search: bounded pages, a superseded held response, retry, malformed
     // recovery, and ID-only deletion. No rescan is ever allowed here.
@@ -986,6 +1077,19 @@
       expansion_ms: Math.round(expansionMs), scroll_ms: Math.round(scrollMs),
       root_collapse_ms: Math.round(performance.now() - collapseStarted),
     };
+    wideFolders = false;
+    button("↻ Rescan").click();
+    await waitFor(() => rows().length === 129, "Ordinary tree missing before focus rescan check");
+    const releaseRescannedPage = await holdPage(button("Next"));
+    const oldGeneration = generation;
+    await activate(document.querySelector("#btn-rescan"));
+    await waitFor(() => generation > oldGeneration && rows().length === 129, "Rescan during held page did not finish");
+    const freshFocus = document.querySelector("#btn-rescan");
+    freshFocus.focus();
+    releaseRescannedPage();
+    await pause(30);
+    check(document.activeElement === freshFocus && visibleNames()[0] === "large-folder",
+      "Superseded generation restored old directory focus or entries");
     check(violations.length === 0, `CSP blocked resources: ${violations.join(", ")}`);
     const fonts = performance.getEntriesByType("resource").filter(entry => entry.name.includes(".woff2"));
     check(fonts.length === 13 && fonts.every(entry => new URL(entry.name).origin === location.origin), "Fonts are missing or fetched off-site");
