@@ -47,8 +47,9 @@ class EngineBuildTests(unittest.TestCase):
         compiler.chmod(0o700)
         return ndk
 
-    def build(self, *args, **variables):
-        return subprocess.run(["bash", str(self.engine / "build.sh"), *args], cwd=self.root,
+    def build(self, *args, default_abis=False, **variables):
+        return subprocess.run(["bash", str(self.engine / "build.sh"),
+                               *([] if args or default_abis else ["--abi", "arm64-v8a"]), *args], cwd=self.root,
                               env={**self.environment, **{key: str(value) for key, value in variables.items()}},
                               capture_output=True, text=True, timeout=15)
 
@@ -128,7 +129,7 @@ class EngineBuildTests(unittest.TestCase):
         self.assertFalse((self.ndks["explicit"] / "calls.json").exists())
 
 
-    def test_experimental_32_bit_build_keeps_existing_arm64_artifacts(self):
+    def test_32_bit_build_keeps_existing_arm64_artifacts(self):
         ndk = self.ndks["explicit"]
         compiler = next(ndk.rglob("aarch64-linux-android31-clang++"))
         compiler.rename(compiler.with_name("armv7a-linux-androideabi31-clang++"))
@@ -138,3 +139,16 @@ class EngineBuildTests(unittest.TestCase):
         self.assertEqual((self.engine / "daemon").read_bytes(), b"existing engine")
         self.assertEqual(self.bundled.read_bytes(), b"existing bundle")
         self.assertIn("-D_FILE_OFFSET_BITS=64", json.loads((ndk / "calls.json").read_text()))
+        self.assertEqual((self.bundled.parent / "daemon-armeabi-v7a").read_bytes(), b"explicit")
+
+    def test_default_build_provisions_all_four_abis(self):
+        ndk = self.ndks["explicit"]
+        compiler = next(ndk.rglob("aarch64-linux-android31-clang++"))
+        for target in ("armv7a-linux-androideabi", "i686-linux-android", "x86_64-linux-android"):
+            shutil.copyfile(compiler, compiler.with_name(f"{target}31-clang++"))
+            compiler.with_name(f"{target}31-clang++").chmod(0o700)
+        result = self.build(default_abis=True, NDK=ndk)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for name in ("daemon", "daemon-armeabi-v7a", "daemon-x86", "daemon-x86_64"):
+            self.assertEqual((self.engine / name).read_bytes(), b"explicit")
+            self.assertEqual((self.bundled.parent / name).read_bytes(), b"explicit")

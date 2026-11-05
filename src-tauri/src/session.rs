@@ -56,6 +56,23 @@ fn supports_shell_v2(output: &str) -> bool {
     output.lines().any(|feature| feature.trim() == "shell_v2")
 }
 
+fn bundled_daemon(arm64: &Path, abis: &str) -> Result<PathBuf, String> {
+    for abi in abis.trim().split(',').map(str::trim) {
+        let path = match abi {
+            "arm64-v8a" => arm64.to_path_buf(),
+            "armeabi-v7a" => arm64.with_file_name("daemon-armeabi-v7a"),
+            "x86" => arm64.with_file_name("daemon-x86"),
+            "x86_64" => arm64.with_file_name("daemon-x86_64"),
+            _ => continue,
+        };
+        if !path.is_file() {
+            return Err(format!("Bundled daemon for {abi} is missing. Rebuild all daemon ABIs."));
+        }
+        return Ok(path);
+    }
+    Err("The selected device does not advertise a supported Android ABI.".into())
+}
+
 fn startup_stderr(mut pipe: impl Read + Send + 'static) -> Receiver<String> {
     let (send, receive) = sync_channel(1);
     std::thread::spawn(move || {
@@ -189,9 +206,7 @@ impl Session {
             return Err("The connected device must support ADB shell v2 for owned sessions".into());
         }
         let abis = self.adb(&["shell", "getprop ro.product.cpu.abilist"], None, deadline)?;
-        if !abis.trim().split(',').any(|abi| abi.trim() == "arm64-v8a") {
-            return Err("This build requires an Android device that supports the arm64-v8a ABI.".into());
-        }
+        let daemon = bundled_daemon(daemon, &abis)?;
         self.privilege = select_privilege(root_mode, |args| self.adb(args, None, deadline))?;
         // The directory is shell-owned even for su launches, so adb push can
         // write into it. mkdir must succeed exclusively before cleanup owns it.
@@ -531,13 +546,55 @@ mod tests {
         }
 
         #[test]
-        fn unsupported_device_abi_fails_before_creating_session_resources() {
+        fn device_abi_order_selects_only_the_matching_bundled_binary() {
+            let device = Device::new();
+            let directory = device.root.join("bundle");
+            fs::create_dir(&directory).unwrap();
+            let arm64 = directory.join("daemon");
+            for name in [
+                "daemon", "daemon-armeabi-v7a", "daemon-x86", "daemon-x86_64",
+            ] {
+                std::os::unix::fs::symlink(daemon(), directory.join(name)).unwrap();
+            }
+            for (index, (abis, name)) in [
+                ("arm64-v8a,armeabi-v7a", "daemon"),
+                ("armeabi-v7a,armeabi", "daemon-armeabi-v7a"),
+                ("x86_64,x86", "daemon-x86_64"),
+                ("unknown,x86", "daemon-x86"),
+                (" x86,arm64-v8a\r\n", "daemon-x86"),
+            ].into_iter().enumerate() {
+                let adb = device.client(&format!("abi-{index}"), "selected");
+                fs::write(adb.parent().unwrap().join("abis.txt"), abis).unwrap();
+                let (mut session, _) =
+                    Session::start(adb.clone(), &arm64, "selected".into(), false).unwrap();
+                assert!(ping(&session).contains("\"status\":\"ok\""));
+                let calls = fs::read_to_string(adb.parent().unwrap().join("calls.jsonl")).unwrap();
+                let push = calls
+                    .lines()
+                    .map(|line| serde_json::from_str::<Vec<String>>(line).unwrap())
+                    .find(|args| args[0] == "push")
+                    .unwrap();
+                assert_eq!(Path::new(&push[1]), directory.join(name));
+                let errors = session.cleanup();
+                assert!(errors.is_empty(), "{errors:?}");
+                assert_eq!(device.rows().len(), 1);
+            }
+            for abis in ["", "arm64-v8ax", "mips", "../x86"] {
+                assert!(bundled_daemon(&arm64, abis).is_err());
+            }
+            fs::remove_file(directory.join("daemon-x86_64")).unwrap();
+            assert!(bundled_daemon(&arm64, "x86_64,x86")
+                .unwrap_err().contains("missing"));
+        }
+
+        #[test]
+        fn missing_device_abi_binary_fails_before_creating_session_resources() {
             let device = Device::new();
             let adb = device.client("x86", "emulator");
             fs::write(adb.parent().unwrap().join("abis.txt"), "x86_64,x86\r\n").unwrap();
             let error = Session::start(adb.clone(), daemon(), "emulator".into(), true)
                 .err().expect("unsupported ABI accepted");
-            assert!(error.contains("arm64-v8a"), "{error}");
+            assert!(error.contains("x86_64") && error.contains("missing"), "{error}");
             let calls = fs::read_to_string(adb.parent().unwrap().join("calls.jsonl")).unwrap();
             assert!(!calls.contains("mkdir") && !calls.contains("push") && !calls.contains("su -c"));
             assert_eq!(device.directories(), 0);

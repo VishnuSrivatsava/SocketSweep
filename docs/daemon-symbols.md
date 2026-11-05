@@ -1,6 +1,6 @@
 # Daemon crash symbols
 
-CI builds an optimized Android ARM64 daemon with debug information, archives the
+CI builds optimized Android daemons for all four ABIs with debug information, archives the
 unstripped executable, and strips a separate copy for Tauri to bundle. Debug
 files stay outside `src-tauri/bin`; they are not pushed to the phone by the app.
 This addresses [#15](https://github.com/VishnuSrivatsava/SocketSweep/issues/15).
@@ -11,6 +11,15 @@ Each macOS/Linux/Windows job uploads a separate workflow artifact:
 daemon-symbols-<platform>-android-<full-workflow-commit-SHA>-attempt-<N>
   socketsweep_daemon
   metadata.json
+  armeabi-v7a/
+    socketsweep_daemon
+    metadata.json
+  x86/
+    socketsweep_daemon
+    metadata.json
+  x86_64/
+    socketsweep_daemon
+    metadata.json
 ```
 
 `socketsweep_daemon` is the unstripped archive filename. Owned sessions execute
@@ -62,22 +71,21 @@ or other device details before sharing them publicly.
 
 ## What CI verifies
 
-`tests/check_daemon_symbols.py` uses the NDK's LLVM tools to require ARM64 ELF
-files, identical nonempty build IDs, debug/line/static symbol sections in the
+`tests/check_daemon_symbols.py` uses the NDK's LLVM tools to require the selected ABI's ELF class and machine,
+identical nonempty build IDs, debug/line/static symbol sections in the
 archive, and their absence in the bundled binary. It compares the `.text` bytes
 and virtual addresses before/after stripping, then resolves the actual `main`
 address to `engine/daemon.cpp` with a nonzero source line. Only after those checks
 does it write the artifact manifest. A missing tool or failed check fails CI.
 
 These are host-side ELF checks: they neither run the Android daemon nor require
-a crash, ADB, a connected phone, or the desktop app. Local `engine/build.sh`
-continues its existing stripped build behavior; its broader build/provisioning
-work remains tracked in [#41](https://github.com/VishnuSrivatsava/SocketSweep/issues/41).
+a crash, ADB, a connected phone, or the desktop app. Local `engine/build.sh` builds all four stripped binaries by default.
+Pass `--abi <name>` to rebuild one ABI.
 
 
 The build entry point also accepts `--abi armeabi-v7a`, `--abi x86`, or
-`--abi x86_64` with `--platform` and `--commit`. These experimental builds
-write `engine/daemon-<abi>`, with debug files under `daemon-symbols/<abi>/`.
+`--abi x86_64` with `--platform` and `--commit`. These builds
+write `src-tauri/bin/daemon-<abi>`, with debug files under `daemon-symbols/<abi>/`.
 The checker validates the requested ELF class and machine as well as matching
 build IDs, code bytes, and source lookup. Verification finishes before publishing
-the stripped binary. CI cross-builds and verifies all four ABIs. Desktop installers currently bundle ARM64; the other binaries and their symbols are retained for cross-build validation.
+the stripped binary. CI cross-builds and verifies all four ABIs. Desktop installers bundle all four stripped binaries. The selected device’s ABI list determines which binary is pushed.

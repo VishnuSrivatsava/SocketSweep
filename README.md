@@ -266,10 +266,12 @@ configured path fails explicitly rather than selecting a different toolchain.
 copies it into `src-tauri/bin/daemon`, which Tauri bundles. Rebuild after changing
 the daemon so local development uses the current protocol (v3).*
 
-For cross-compilation experiments, pass `--abi armeabi-v7a`, `--abi x86`,
-or `--abi x86_64` to the build command. These builds write
-`engine/daemon-<abi>` for Android API 31. The desktop app still bundles
-and runs the ARM64 daemon.
+The default build creates all four Android ABIs and copies them into the Tauri
+resources. Use `--abi arm64-v8a`, `--abi armeabi-v7a`, `--abi x86`, or
+`--abi x86_64` to rebuild one target. The app chooses the first supported ABI
+advertised by the selected device. All binaries target Android API 31
+(Android 12) or newer. ARMv7 support therefore covers 32-bit Android 12+
+systems; Android versions below 12 remain unsupported.
 
 Ordinary storage scans use a bounded pool of four workers. For daemon-level
 comparisons, append `--threads N` (1–8) after `PORT TOKEN_FILE`; one worker

@@ -254,7 +254,9 @@ jobs:
             assert_mode 755 "$APPDIR/AppRun.wrapped"
           fi
           assert_mode 755 "$APPDIR/usr/lib/SocketSweep/bin/adb"
-          assert_mode 755 "$APPDIR/usr/lib/SocketSweep/bin/daemon"
+          for daemon in daemon daemon-armeabi-v7a daemon-x86 daemon-x86_64; do
+            assert_mode 755 "$APPDIR/usr/lib/SocketSweep/bin/$daemon"
+          done
 
           # Download appimagetool for repacking — pinned to 1.9.1 and
           # checksum-verified (GitHub "continuous" builds are unpinned, and

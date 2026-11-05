@@ -4,7 +4,10 @@
       "bin/adb.exe",
       "bin/AdbWinApi.dll",
       "bin/AdbWinUsbApi.dll",
-      "bin/daemon"
+      "bin/daemon",
+      "bin/daemon-armeabi-v7a",
+      "bin/daemon-x86",
+      "bin/daemon-x86_64"
     ]
   }
 }
