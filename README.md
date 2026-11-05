@@ -275,6 +275,8 @@ resources. Use `--abi arm64-v8a`, `--abi armeabi-v7a`, `--abi x86`, or
 advertised by the selected device. All binaries target Android API 31
 (Android 12) or newer. ARMv7 support therefore covers 32-bit Android 12+
 systems; Android versions below 12 remain unsupported.
+Startup checks the selected device's API level before requesting root access
+or uploading the daemon and reports this minimum directly on older versions.
 
 Ordinary storage scans use a bounded pool of four workers. For daemon-level
 comparisons, append `--threads N` (1–8) after `PORT TOKEN_FILE`; one worker
