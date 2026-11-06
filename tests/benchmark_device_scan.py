@@ -98,16 +98,31 @@ def benchmark(serial, root="/sdcard", output=None, adb=None, daemon=None):
             raise RuntimeError(f"Experiment failed (Cargo exit {status}). Inspect {output}; no verified result.json was created.")
         with (output / "measurements.json").open(encoding="utf-8") as stream:
             report = json.load(stream)
-        if report.get("verified") is not True:
+        if not isinstance(report, dict) or report.get("verified") is not True:
             raise ValueError("Experiment did not produce verified measurements")
+        workers_expected = (1, 2, 4, 8)
+        medians = report.get("medians")
+        if not isinstance(medians, list) or len(medians) != len(workers_expected):
+            raise ValueError("Experiment did not produce a median for each worker count")
+        summary = []
+        for workers, row in zip(workers_expected, medians):
+            if (not isinstance(row, dict) or type(row.get("workers")) is not int
+                    or row["workers"] != workers or type(row.get("samples")) is not int
+                    or row["samples"] != 5):
+                raise ValueError("Invalid worker count or sample count in benchmark medians")
+            scan_ms, wall_ms = row.get("scan_ms"), row.get("stream_wall_ms")
+            if any(type(value) not in (int, float) or not 0 <= value <= sys.float_info.max
+                   for value in (scan_ms, wall_ms)):
+                raise ValueError("Invalid timing in benchmark medians")
+            summary.append(f"{workers:7} | {scan_ms:14.1f} | {wall_ms:27.1f}")
         report["daemon_sha256"] = fingerprint
         report["daemon_abi"] = abi
+        encoded = json.dumps(report, indent=2, allow_nan=False) + "\n"
         with (output / "result.json").open("x", encoding="utf-8") as stream:
-            json.dump(report, stream, indent=2, allow_nan=False)
-            stream.write("\n")
+            stream.write(encoded)
         print("\nWorkers | median scan ms | median stream round-trip ms", flush=True)
-        for row in report["medians"]:
-            print(f"{row['workers']:7} | {row['scan_ms']:14.1f} | {row['stream_wall_ms']:27.1f}", flush=True)
+        for line in summary:
+            print(line, flush=True)
         print(f"\nShare this file after reviewing it: {output / 'result.json'}", flush=True)
         return output
 
