@@ -28,8 +28,8 @@ def digest(path):
 
 def daemon_abi(path):
     with path.open("rb") as stream:
-        header = stream.read(20)
-    if len(header) != 20 or header[:4] != b"\x7fELF" or header[5] != 1:
+        header = stream.read(64)
+    if len(header) < 20 or header[:4] != b"\x7fELF" or header[5] != 1:
         raise ValueError("Benchmark daemon must be a little-endian Android ELF binary")
     abi = {
         (2, 183): "arm64-v8a",
@@ -39,6 +39,9 @@ def daemon_abi(path):
     }.get((header[4], int.from_bytes(header[18:20], "little")))
     if abi is None:
         raise ValueError("Unsupported benchmark daemon ELF architecture")
+    header_size = 52 if header[4] == 1 else 64
+    if len(header) < header_size:
+        raise ValueError("Truncated benchmark daemon ELF header")
     return abi
 
 

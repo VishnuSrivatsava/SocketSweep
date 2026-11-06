@@ -10,7 +10,12 @@ from unittest.mock import patch
 import benchmark_device_scan as benchmark
 
 
-FIXTURE = b"\x7fELF\x02\x01" + bytes(12) + (183).to_bytes(2, "little") + b"immutable fixture"
+def elf_header(elf_class, machine, size):
+    prefix = b"\x7fELF" + bytes([elf_class, 1]) + bytes(12) + machine.to_bytes(2, "little")
+    return prefix.ljust(size, b"\0")
+
+
+FIXTURE = elf_header(2, 183, 64) + b"immutable fixture"
 
 
 def verified_report():
@@ -82,13 +87,13 @@ class DeviceScanBenchmarkTests(unittest.TestCase):
         self.assertEqual(result["daemon_sha256"], hashlib.sha256(FIXTURE).hexdigest())
 
     def test_elf_architecture_is_read_from_bytes_and_bad_snapshots_never_launch(self):
-        for elf_class, machine, expected in [
-            (1, 40, "armeabi-v7a"), (1, 3, "x86"), (2, 62, "x86_64"),
+        for elf_class, machine, size, expected in [
+            (1, 40, 52, "armeabi-v7a"), (1, 3, 52, "x86"), (2, 62, 64, "x86_64"),
         ]:
-            self.daemon.write_bytes(b"\x7fELF" + bytes([elf_class, 1]) + bytes(12) + machine.to_bytes(2, "little"))
+            self.daemon.write_bytes(elf_header(elf_class, machine, size))
             self.assertEqual(benchmark.daemon_abi(self.daemon), expected)
-        for index, invalid in enumerate([b"bad", b"\x7fELF" + bytes(16),
-                                        b"\x7fELF\x02\x01" + bytes(12) + (40).to_bytes(2, "little")]):
+        for index, invalid in enumerate([b"bad", b"\x7fELF" + bytes(16), elf_header(2, 40, 64),
+                                        FIXTURE[:20], FIXTURE[:63], elf_header(1, 40, 52)[:51]]):
             self.daemon.write_bytes(invalid)
             self.output = self.root / f"invalid-{index}"
             with patch.object(benchmark.subprocess, "Popen") as launch:
