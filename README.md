@@ -44,15 +44,9 @@ This is because **MTP (Media Transfer Protocol)** — the protocol your OS uses 
 
 ## ⚡ How Fast?
 
-Full `/sdcard` scan on a **Samsung Galaxy S24 Ultra (256GB)** with ~47,000 files:
+In one `/sdcard` scan on a **Samsung Galaxy S24 Ultra**, the daemon reported **7.99 seconds** of traversal for **93,194 files**. Scan time varies with storage contents, device load, and cache state. [Recorded scan timings](https://github.com/VishnuSrivatsava/SocketSweep/issues/2#issuecomment-6640521775)
 
-> **SocketSweep: ~6-15 seconds** — full interactive treemap ready to explore.
-
-Scan time varies depending on device load (background apps, media indexing, thermal state). Best case was 6.9 seconds with a warm cache and minimal background activity.
-
-For comparison, doing the same thing over MTP (plugging in the phone and browsing via Windows Explorer or Finder) typically involves minutes of "Calculating size..." freezes, and macOS Finder doesn't even show folder sizes at all.
-
-*Proper side-by-side benchmarks against OpenMTP and other tools are coming soon.*
+Measure ADB and MTP file copy throughput separately using the [transfer benchmark](docs/file-transfer.md).
 
 ---
 
