@@ -93,8 +93,8 @@ Go to **Settings → About Phone → tap "Build Number" 7 times** to unlock Deve
 ### 3. Plug in and scan
 1. Connect your phone via USB cable
 2. Open SocketSweep
-3. Click **Connect** — the app will automatically push the daemon to your phone and set everything up
-4. Click **Scan** — your full storage treemap loads in seconds
+3. Choose your phone under **Android device**. Click **Refresh** if it is not listed.
+4. Click **Connect Device** — the app pushes the daemon and starts scanning automatically. Use **Rescan** to scan again.
 5. Click on any block in the treemap to drill down. Found something huge you don't need? Delete it right from the app.
 
 That's it. No apps to install on your phone, no Wi-Fi setup, no root required.
@@ -175,7 +175,7 @@ SocketSweep has three layers:
 ```mermaid
 flowchart TB
     subgraph Host["Host Desktop"]
-        UI["React + Recharts<br>Interactive Dashboard"]
+        UI["React + SVG<br>Interactive Dashboard"]
         Bridge["Rust / Tauri Backend<br>Command Orchestrator"]
         
         UI <--> Bridge
