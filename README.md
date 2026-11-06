@@ -88,6 +88,8 @@ For comparison, doing the same thing over MTP (plugging in the phone and browsin
 > ```
 
 ### 2. Enable USB Debugging on your phone
+SocketSweep requires **Android 12 (API 31) or newer**.
+
 Go to **Settings → About Phone → tap "Build Number" 7 times** to unlock Developer Options. Then go to **Settings → Developer Options → enable "USB Debugging"**.
 
 ### 3. Plug in and scan
@@ -379,8 +381,8 @@ a path cannot redirect it into a different directory through a new symlink.
 
 ## 🛠 Troubleshooting
 
-### "0 Files" or Missing Folders on Android 11+
-Android 11 introduced Scoped Storage, restricting file access. SocketSweep automatically tries to bypass this via:
+### "0 Files" or Missing Folders
+Android storage permissions can limit what the ADB shell can read. SocketSweep attempts to grant shared-storage access during connection:
 ```bash
 adb shell appops set com.android.shell MANAGE_EXTERNAL_STORAGE allow
 ```
