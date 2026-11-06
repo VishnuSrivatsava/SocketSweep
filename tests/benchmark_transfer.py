@@ -54,12 +54,21 @@ def prepare(workspace, large_mib=64, small_count=1000):
 
 
 def load_manifest(workspace):
+    def unique_fields(pairs):
+        fields = {}
+        for key, value in pairs:
+            if key in fields:
+                raise ValueError("Manifest contains a duplicate JSON field")
+            fields[key] = value
+        return fields
+
     with (workspace / "manifest.json").open("rb") as stream:
         encoded = stream.read(2 * MIB + 1)
     if len(encoded) > 2 * MIB:
         raise ValueError("Manifest exceeds 2 MiB")
-    manifest = json.loads(encoded)
-    if not isinstance(manifest, dict) or manifest.get("version") != 1:
+    manifest = json.loads(encoded, object_pairs_hook=unique_fields)
+    if (not isinstance(manifest, dict) or type(manifest.get("version")) is not int
+            or manifest["version"] != 1):
         raise ValueError("Unsupported manifest")
     if not re.fullmatch(r"SocketSweep-benchmark-[0-9a-f]{32}", str(manifest.get("fixture"))):
         raise ValueError("Invalid fixture name")

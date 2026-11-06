@@ -70,7 +70,8 @@ class TransferBenchmarkTests(unittest.TestCase):
                 shutil.rmtree(target)
 
     def test_manifest_rejects_traversal_bad_hash_size_and_layout(self):
-        for change in ("traversal", "absolute", "fixture", "hash", "size", "empty", "layout"):
+        for change in ("traversal", "absolute", "fixture", "hash", "size", "empty", "layout",
+                       "bool-version", "float-version"):
             manifest = copy.deepcopy(self.manifest)
             files = manifest["files"]
             if change in ("traversal", "absolute"):
@@ -83,10 +84,23 @@ class TransferBenchmarkTests(unittest.TestCase):
                 files["large/file-000000.bin"]["bytes"] = True
             elif change == "empty":
                 manifest["files"] = {}
+            elif change in ("bool-version", "float-version"):
+                manifest["version"] = True if change == "bool-version" else 1.0
             else:
                 del files["small/file-000001.bin"]
             (self.workspace / "manifest.json").write_text(json.dumps(manifest))
             with self.subTest(change=change), self.assertRaises(ValueError):
+                benchmark.load_manifest(self.workspace)
+
+    def test_manifest_rejects_duplicate_json_fields(self):
+        encoded = json.dumps(self.manifest)
+        for field, duplicate in [
+            ('"version": 1', '"version": 2, "version": 1'),
+            ('"small/file-000000.bin":', '"small/file-000000.bin": {}, "small/file-000000.bin":'),
+            ('"bytes": 4096', '"bytes": 4097, "bytes": 4096'),
+        ]:
+            (self.workspace / "manifest.json").write_text(encoded.replace(field, duplicate, 1))
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, "duplicate JSON field"):
                 benchmark.load_manifest(self.workspace)
 
     def fake_copy(self, command, **kwargs):
