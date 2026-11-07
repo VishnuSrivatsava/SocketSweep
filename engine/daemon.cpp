@@ -374,6 +374,7 @@ static FileNode scan(const std::string& path, const std::string& name,
 
 #include "parallel_scan.h"
 #include "stream_scan.h"
+#include "file_read.h"
 
 // ── Command dispatch ────────────────────────────────────────────────────────
 static void handle_client(int fd) {
@@ -394,7 +395,7 @@ static void handle_client(int fd) {
     }
 
     if (cmd == "PING") {
-        out.write("{\"status\":\"ok\",\"message\":\"pong\",\"protocol_version\":3,\"scan_stream_version\":1,\"uid\":");
+        out.write("{\"status\":\"ok\",\"message\":\"pong\",\"protocol_version\":4,\"scan_stream_version\":1,\"uid\":");
         out.write(std::to_string(::geteuid()));
         out.write(",\"read_only\":");
         out.write(g_read_only ? "true" : "false");
@@ -440,6 +441,12 @@ static void handle_client(int fd) {
             out.write(std::to_string(result.removed));
             out.write(" items\"}\n");
         }
+    }
+    else if (cmd == "READ" || cmd.rfind("READ ", 0) == 0) {
+        // Authenticated single-file export (protocol v4). Streams bytes after
+        // the JSON header; the reply is never a plain command response.
+        file_read::handle(fd, cmd.size() > 4 ? cmd.substr(5) : std::string());
+        return;
     }
     else if (cmd == "SCAN_STREAM" || cmd.rfind("SCAN_STREAM ", 0) == 0) {
         stream_scan::handle(fd, cmd.size() > 11 ? cmd.substr(12) : cfg::DEFAULT_ROOT);

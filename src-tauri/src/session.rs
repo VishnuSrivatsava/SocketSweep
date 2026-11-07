@@ -24,6 +24,20 @@ pub(super) struct Connection {
     pub read_only: bool,
 }
 
+#[cfg(test)]
+impl Connection {
+    /// Test-only construction for binding-identity checks. Real connections
+    /// always come from an authenticated session start.
+    pub(super) fn for_test(
+        address: SocketAddr,
+        token: String,
+        serial: String,
+        read_only: bool,
+    ) -> Self {
+        Self { address, token, serial, read_only }
+    }
+}
+
 pub(super) struct Session {
     adb: PathBuf,
     serial: String,

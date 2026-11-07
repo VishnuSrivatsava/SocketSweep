@@ -1,5 +1,6 @@
 import { useState, useCallback } from "react";
 import { DeleteConfirmation } from "./DeleteConfirmation";
+import { ExportDialog } from "./ExportDialog";
 import { ToastContainer } from "./ToastContainer";
 import { useToasts } from "./useToasts";
 import { TerminalLog } from "./TerminalLog";
@@ -21,6 +22,7 @@ function App() {
     phase, deviceSelection, selectedSerial, rootMode, setRootMode, rootPath, setRootPath,
     scanData, busy, statusText, scanProgress, cancelScan, cancelling, confirmDelete,
     handleConnect, handleRescan, handleDisconnect, handleNuke, executeDelete, cancelDelete,
+    exportState, exportCancelling, handleExport, handleCancelExport,
   } = useScanSession(pushToast, addLog);
 
   return (
@@ -49,6 +51,7 @@ function App() {
             onRescan={handleRescan}
             onDisconnect={handleDisconnect}
             onNuke={handleNuke}
+            onExport={handleExport}
           />
         )}
       </div>
@@ -60,6 +63,15 @@ function App() {
         trigger={confirmDelete.trigger}
         onCancel={cancelDelete}
         onConfirm={executeDelete}
+      />}
+      {exportState && <ExportDialog
+        name={exportState.name}
+        size={exportState.size}
+        stage={exportState.stage}
+        bytesCopied={exportState.bytesCopied}
+        totalBytes={exportState.totalBytes}
+        cancelling={exportCancelling}
+        onCancel={handleCancelExport}
       />}
     </div>
   );

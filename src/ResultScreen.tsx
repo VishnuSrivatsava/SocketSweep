@@ -28,6 +28,7 @@ export function ResultScreen({
   onRescan,
   onDisconnect,
   onNuke,
+  onExport,
   busy,
   deviceSerial,
 }: {
@@ -35,6 +36,7 @@ export function ResultScreen({
   onRescan: () => void;
   onDisconnect: () => void;
   onNuke: (nodeId: number, trigger: HTMLButtonElement) => void;
+  onExport: (nodeId: number, name: string, size: number) => void;
   busy: boolean;
   deviceSerial: string;
 }) {
@@ -138,7 +140,7 @@ export function ResultScreen({
         <button aria-pressed={mode === "apps"} disabled={busy} onClick={() => setMode("apps")}
           className={`px-3 py-2 rounded-lg text-xs whitespace-nowrap ${mode === "apps" ? "bg-zinc-700 text-white" : "bg-zinc-900 text-zinc-400"}`}>Package folders</button>
       </div>
-      {mode === "apps" ? <AppUsage key={data.revision} scope={data} busy={busy} /> : mode === "types" ? <FileTypes scope={data} busy={busy} /> : mode === "largest" ? <LargestFiles scope={data} busy={busy} onZoom={onZoom} onNuke={onNuke} /> : mode === "search" ? <SearchFiles scope={data} busy={busy} onZoom={onZoom} onNuke={onNuke} /> : <div className="flex-1 min-h-0 grid grid-rows-[7rem_minmax(0,1fr)] md:grid-rows-1 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)] gap-3 px-4 pb-3">
+      {mode === "apps" ? <AppUsage key={data.revision} scope={data} busy={busy} /> : mode === "types" ? <FileTypes scope={data} busy={busy} /> : mode === "largest" ? <LargestFiles scope={data} busy={busy} onZoom={onZoom} onNuke={onNuke} onExport={onExport} /> : mode === "search" ? <SearchFiles scope={data} busy={busy} onZoom={onZoom} onNuke={onNuke} onExport={onExport} /> : <div className="flex-1 min-h-0 grid grid-rows-[7rem_minmax(0,1fr)] md:grid-rows-1 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)] gap-3 px-4 pb-3">
       <div className="min-h-0 min-w-0">
         <StorageMap page={page} busy={busy} onZoom={onZoom} />
       </div>
@@ -154,7 +156,7 @@ export function ResultScreen({
         {!page && !view.error && <p role="status" className="px-3 py-2 text-xs text-zinc-500">Loading storage map…</p>}
         {view.error && <div data-directory-query={zoomId} data-directory-request={view.request}><QueryError error={view.error} retry={view.retry} /></div>}
         {page && <FileTreeNode node={page.node} scope={data} parentSize={page.node.size} depth={0}
-          onNuke={onNuke} onZoom={onZoom} expanded={expanded} toggle={toggle} busy={busy} rootView={view} />}
+          onNuke={onNuke} onExport={onExport} onZoom={onZoom} expanded={expanded} toggle={toggle} busy={busy} rootView={view} />}
 
       </section>
       </div>}

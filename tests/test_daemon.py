@@ -97,6 +97,27 @@ class DaemonHarness(unittest.TestCase):
     def request(self, command):
         return self.raw_request(f"AUTH {self.token}\n{command}\n".encode())
 
+    def read_request(self, command):
+        """Header line plus the promised payload bytes of a READ exchange."""
+        with socket.create_connection(("127.0.0.1", self.port), timeout=5) as client:
+            client.sendall(f"AUTH {self.token}\n{command}\n".encode())
+            buffer = b""
+            while b"\n" not in buffer:
+                chunk = client.recv(65536)
+                if not chunk:
+                    self.fail("READ response ended before its header")
+                buffer += chunk
+            newline = buffer.index(b"\n")
+            header = json.loads(buffer[:newline])
+            body = bytearray(buffer[newline + 1:])
+            if header.get("status") == "ok":
+                while len(body) < header["size"]:
+                    chunk = client.recv(65536)
+                    if not chunk:
+                        break
+                    body += chunk
+            return header, bytes(body)
+
     def scan(self):
         result = self.request(f"SCAN {self.root}")
         self.assertEqual(result["status"], "ok")
@@ -107,10 +128,53 @@ class DaemonHarness(unittest.TestCase):
 class DaemonTests(DaemonHarness):
     def test_authenticated_ping_and_scan(self):
         (self.root / "photo").write_bytes(b"1234567")
-        self.assertEqual(self.request("PING")["protocol_version"], 3)
+        self.assertEqual(self.request("PING")["protocol_version"], 4)
         result = self.scan()
         self.assertEqual(result["total_files"], 1)
         self.assertEqual(result["total_size"], 7)
+
+    def test_read_streams_exact_bytes_from_beneath_the_scan_root(self):
+        content = bytes(range(256)) * 257
+        target = self.root / "nested"
+        target.mkdir()
+        payload = target / "file.bin"
+        payload.write_bytes(content)
+        self.scan()
+        header, body = self.read_request(f"READ {payload}")
+        self.assertEqual(header["status"], "ok")
+        self.assertEqual(header["size"], len(content))
+        self.assertEqual(header["read_only"], self.read_only)
+        self.assertEqual(body, content)
+
+    @unittest.skipIf(os.name == "nt", "POSIX symlink swap")
+    def test_read_refuses_symlink_replacement_out_of_root_and_directories(self):
+        target = self.root / "keep"
+        target.write_bytes(b"inside")
+        self.scan()
+
+        # A swapped symlink must never redirect the read, even to a readable target.
+        target.unlink()
+        target.symlink_to(os.devnull)
+        header, body = self.read_request(f"READ {target}")
+        self.assertEqual(header["status"], "error")
+        self.assertEqual(header["code"], "source_unavailable")
+        self.assertEqual(body, b"")
+
+        header, body = self.read_request("READ /etc/hostname")
+        self.assertEqual(header["status"], "error")
+        self.assertEqual(header["code"], "invalid_path")
+
+        header, _ = self.read_request(f"READ {self.root / 'missing.bin'}")
+        self.assertEqual(header["code"], "source_unavailable")
+
+        header, _ = self.read_request(f"READ {self.root}")
+        self.assertEqual(header["code"], "source_unavailable")
+
+    def test_read_requires_the_current_secret(self):
+        self.root / "keep"
+        self.scan()
+        bad = f"AUTH {'0' * 64}\nREAD {self.root / 'keep'}\n".encode()
+        self.assertEqual(self.raw_request(bad)["status"], "error")
 
     def test_commands_require_the_current_secret(self):
         target = self.root / "keep"
@@ -216,7 +280,7 @@ class ReadOnlyDaemonTests(DaemonHarness):
 
     def test_read_only_handshake_and_delete_block_before_and_after_scan(self):
         status = self.request("PING")
-        self.assertEqual(status["protocol_version"], 3)
+        self.assertEqual(status["protocol_version"], 4)
         self.assertEqual(status["uid"], os.geteuid())
         self.assertTrue(status["read_only"])
         target = self.root / "keep"

@@ -78,6 +78,7 @@ interface TreeProps {
   parentSize: number;
   depth: number;
   onNuke: (nodeId: number, trigger: HTMLButtonElement) => void;
+  onExport: (nodeId: number, name: string, size: number) => void;
   onZoom: (nodeId: number) => void;
   expanded: Set<number>;
   toggle: (nodeId: number) => void;
@@ -120,12 +121,13 @@ function DirectoryQuery({ node, scope, expanded, register, rootView }: {
     <DirectoryQuery key={child.id} node={child} scope={scope} expanded={expanded} register={register} />) : null;
 }
 
-function FileRow({ row, open, busy, active, onNuke, onZoom, toggle }: {
+function FileRow({ row, open, busy, active, onNuke, onExport, onZoom, toggle }: {
   row: NodeRow;
   open: boolean;
   busy: boolean;
   active: boolean;
   onNuke: TreeProps["onNuke"];
+  onExport: TreeProps["onExport"];
   onZoom: TreeProps["onZoom"];
   toggle: TreeProps["toggle"];
 }) {
@@ -147,6 +149,11 @@ function FileRow({ row, open, busy, active, onNuke, onZoom, toggle }: {
       className="opacity-0 group-hover:opacity-100 focus:opacity-100 mr-2 px-2 py-1 rounded text-[10px] uppercase font-bold bg-accent-500/10 text-accent-400 border border-accent-500/20">Zoom</button>}
     <SizeBar ratio={parentSize > 0 ? node.size / parentSize : 0} />
     <span className="w-20 text-right text-xs font-mono text-zinc-500 flex-shrink-0">{formatBytes(node.size)}</span>
+    {!isDir && depth > 0 && <button disabled={busy} tabIndex={active ? 0 : -1} onClick={() => onExport(node.id, node.name, node.size)}
+      title={`Save ${node.name}`} aria-label={`Save ${node.name}`}
+      className="opacity-0 group-hover:opacity-100 focus:opacity-100 ml-1 px-2 py-1 rounded-md bg-accent-500/10 border border-accent-500/20 text-accent-400 text-[10px] uppercase font-bold flex items-center gap-1">
+      <span className="hidden sm:inline">Save</span>
+    </button>}
     {depth > 0 && node.can_delete && <button disabled={busy} tabIndex={active ? 0 : -1} onClick={event => onNuke(node.id, event.currentTarget)}
       title={`Delete ${node.name}`} aria-label={`Delete ${node.name}`}
       className="btn-nuke opacity-0 group-hover:opacity-100 focus:opacity-100 ml-1 px-2 py-1 rounded-md bg-danger-600/20 border border-danger-500/30 text-danger-400 hover:bg-danger-500/30 text-[10px] uppercase font-bold flex items-center gap-1">
@@ -155,7 +162,7 @@ function FileRow({ row, open, busy, active, onNuke, onZoom, toggle }: {
   </div>;
 }
 
-export function FileTreeNode({ node, scope, parentSize, depth, onNuke, onZoom, expanded, toggle, busy, rootView }: TreeProps) {
+export function FileTreeNode({ node, scope, parentSize, depth, onNuke, onExport, onZoom, expanded, toggle, busy, rootView }: TreeProps) {
   const [views, setViews] = useState(() => new Map<string, DirectoryView>());
   const register = useCallback<RegisterView>((key, view) => {
     setViews(previous => new Map(previous).set(key, view));
@@ -287,7 +294,7 @@ export function FileTreeNode({ node, scope, parentSize, depth, onNuke, onZoom, e
             if (target !== undefined) focusNode(target);
           } : undefined}>
           {row.kind === "node" ? <FileRow row={row} open={expanded.has(row.node.id)} busy={busy} active={row.node.id === active}
-            onNuke={onNuke} onZoom={onZoom} toggle={toggle} />
+            onNuke={onNuke} onExport={onExport} onZoom={onZoom} toggle={toggle} />
             : row.view?.error ? <QueryError error={row.view.error} retry={row.view.retry} />
             : row.view?.page ? <nav aria-label={`Pages in ${row.node.name}`} className="flex items-center gap-3 py-2 text-xs text-zinc-400"
               style={{ paddingLeft: `${28 + row.depth * 16}px` }}>
