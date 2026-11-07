@@ -227,6 +227,9 @@ fn map_read_error(header: &ReadHeader) -> String {
         Some("source_unavailable") => {
             "The source is no longer the scanned file; rescan and retry.".into()
         }
+        Some("export_disabled") => {
+            "Export is unavailable in read-only root sessions; scan in normal mode instead.".into()
+        }
         Some("scan_root_changed") | Some("no_scan_root") | Some("invalid_path") => {
             "Export is no longer available for this scan; rescan and retry.".into()
         }
@@ -417,6 +420,14 @@ pub(crate) fn run_export(
     send: ProgressSink<'_>,
     recheck: &dyn Fn() -> Result<(), String>,
 ) -> Result<String, String> {
+    // Client-side echo of the daemon's policy refusal: export eligibility
+    // follows the shell-readable shared-storage policy even when the scan
+    // itself ran with root access.
+    if binding.read_only {
+        return Err(
+            "Export is unavailable in read-only root sessions; scan in normal mode instead.".into(),
+        );
+    }
     validate_destination(&destination)?;
     let directory = destination
         .parent()
@@ -655,6 +666,7 @@ mod tests {
             map_read_error(&header("source_unavailable")).contains("no longer the scanned file")
         );
         assert!(map_read_error(&header("scan_root_changed")).contains("rescan and retry"));
+        assert!(map_read_error(&header("export_disabled")).contains("read-only"));
         assert!(map_read_error(&header("unexpected")).contains("ignored detail"));
     }
 
@@ -975,6 +987,40 @@ mod tests {
         std::fs::remove_dir_all(directory).unwrap();
     }
 
+    #[test]
+    fn run_export_refuses_read_only_sessions_before_touching_the_destination() {
+        let destination = temp_dir("export-readonly").join("file.bin");
+        let binding = SessionBinding {
+            token: "a".repeat(64),
+            serial: "serial".into(),
+            address: std::net::SocketAddr::from(([127, 0, 0, 1], 1)),
+            read_only: true,
+        };
+        let plan = crate::scan_store::ExportPlan {
+            generation: "gen".into(),
+            revision: 0,
+            node_id: 1,
+            path: "/data/app/file.bin".into(),
+            name: "file.bin".into(),
+            size: 3,
+        };
+        let cancelled = AtomicBool::new(false);
+        let pending = AtomicBool::new(false);
+        let error = run_export(
+            destination.clone(),
+            &plan,
+            &binding,
+            "export-ro",
+            &cancelled,
+            &pending,
+            &|_: ExportProgress| Ok(()),
+            &|| Ok(()),
+        )
+        .unwrap_err();
+        assert!(error.contains("read-only"), "{error}");
+        assert!(!destination.exists());
+    }
+
     // ── real daemon: structural confinement ───────────────────────────────
     // The daemon targets Android (POSIX) only; host-compiling it needs a Unix
     // toolchain, so this group mirrors the session tests' cfg gate.
@@ -1145,6 +1191,78 @@ mod tests {
             matches!(&directory_reply, Err(message) if message.contains("source_unavailable")),
             "{directory_reply:?}"
         );
+    }
+
+    // The assembled engine against the real daemon: real READ framing, real
+    // streaming, real staging and commit — no mock in the path.
+    #[test]
+    fn export_engine_streams_the_real_daemon_into_a_fresh_destination() {
+        let live = start_live_daemon();
+        let tree = live.directory.join("tree");
+        std::fs::create_dir_all(&tree).unwrap();
+        let payload: Vec<u8> = (0..131_072_u32).map(|i| ((i * 31) % 256) as u8).collect();
+        std::fs::write(tree.join("video.bin"), &payload).unwrap();
+        let scan = daemon_reply(&live, &format!("SCAN_STREAM {}", tree.display()));
+        let done_marker = b"\"type\":\"done\"";
+        assert!(
+            scan.windows(done_marker.len()).any(|window| window == done_marker),
+            "{}",
+            String::from_utf8_lossy(&scan)
+        );
+
+        let destination_dir = temp_dir("export-destination");
+        let destination = destination_dir.join("video.bin");
+        let binding = SessionBinding {
+            token: live.token.clone(),
+            serial: "test-serial".into(),
+            address: std::net::SocketAddr::from(([127, 0, 0, 1], live.port)),
+            read_only: false,
+        };
+        let plan = crate::scan_store::ExportPlan {
+            generation: "gen".into(),
+            revision: 0,
+            node_id: 7,
+            path: tree.join("video.bin").display().to_string(),
+            name: "video.bin".into(),
+            size: payload.len() as u64,
+        };
+        let cancelled = AtomicBool::new(false);
+        let pending = AtomicBool::new(false);
+        let stages = std::sync::Mutex::new(Vec::new());
+        let result = run_export(
+            destination.clone(),
+            &plan,
+            &binding,
+            "export-e2e",
+            &cancelled,
+            &pending,
+            &|progress: ExportProgress| {
+                stages.lock().unwrap().push((progress.stage, progress.bytes_copied, progress.total_bytes));
+                // The real frontend acks each message (acknowledge_export_progress);
+                // mirror that here so coalescing does not swallow later stages.
+                pending.store(false, Ordering::SeqCst);
+                Ok(())
+            },
+            &|| Ok(()),
+        )
+        .unwrap();
+        let value: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(value["status"], "saved");
+        assert_eq!(value["name"], "video.bin");
+        let mut expected = Sha256::new();
+        expected.update(&payload);
+        assert_eq!(value["sha256"], format!("{:x}", expected.finalize()));
+        assert_eq!(std::fs::read(&destination).unwrap(), payload);
+        let stages = stages.into_inner().unwrap();
+        assert!(stages.iter().any(|(stage, _, _)| *stage == "transferring"));
+        assert!(stages.iter().any(|(stage, _, _)| *stage == "committing"));
+        // No staging leftovers beside the published file.
+        let leftovers: Vec<String> = std::fs::read_dir(&destination_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(leftovers, vec!["video.bin".to_string()], "{leftovers:?}");
+        std::fs::remove_dir_all(&destination_dir).unwrap();
     }
     } // confinement
 }

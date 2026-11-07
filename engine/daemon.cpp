@@ -445,6 +445,13 @@ static void handle_client(int fd) {
     else if (cmd == "READ" || cmd.rfind("READ ", 0) == 0) {
         // Authenticated single-file export (protocol v4). Streams bytes after
         // the JSON header; the reply is never a plain command response.
+        // Root read-only sessions never serve exports: eligibility follows the
+        // shell-readable shared-storage policy even when scanning with root.
+        if (g_read_only) {
+            out.write("{\"status\":\"error\",\"code\":\"export_disabled\","
+                      "\"message\":\"Export is unavailable in read-only sessions\"}\n");
+            return;
+        }
         file_read::handle(fd, cmd.size() > 4 ? cmd.substr(5) : std::string());
         return;
     }

@@ -295,6 +295,16 @@ class ReadOnlyDaemonTests(DaemonHarness):
             self.assertIn("read-only", result["message"])
             self.assertEqual(target.read_text(), "private app data")
 
+    def test_read_refuses_exports_in_read_only_sessions(self):
+        target = self.root / "keep"
+        target.write_bytes(b"inside")
+        self.scan()
+        header, body = self.read_request(f"READ {target}")
+        self.assertEqual(header["status"], "error")
+        self.assertEqual(header["code"], "export_disabled")
+        self.assertEqual(body, b"")
+        self.assertTrue(target.exists())
+
     def test_hard_links_are_counted_once_and_rescan_resets_seen_entries(self):
         (self.root / "original").write_bytes(b"1234567")
         os.link(self.root / "original", self.root / "alias")
