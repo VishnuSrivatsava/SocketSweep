@@ -46,6 +46,8 @@ This is because **MTP (Media Transfer Protocol)** — the protocol your OS uses 
 
 In one `/sdcard` scan on a **Samsung Galaxy S24 Ultra**, the daemon reported **7.99 seconds** of traversal for **93,194 files**. Scan time varies with storage contents, device load, and cache state. [Recorded scan timings](https://github.com/VishnuSrivatsava/SocketSweep/issues/2#issuecomment-6640521775)
 
+Traversal scales with worker count: on a **Samsung Galaxy S24 Ultra**, a 30,000-file synthetic tree measured **4.51 s → 2.95 s** going from one to two daemon workers, with four (the app default) and eight workers within measurement variance. [Worker-scaling record](https://github.com/VishnuSrivatsava/SocketSweep/issues/46#issuecomment-6693791408) — reproduce it yourself with the [scan worker benchmark](docs/scan-benchmark.md).
+
 Measure ADB and MTP file copy throughput separately using the [transfer benchmark](docs/file-transfer.md).
 
 ---
