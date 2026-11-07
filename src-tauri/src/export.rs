@@ -976,6 +976,12 @@ mod tests {
     }
 
     // ── real daemon: structural confinement ───────────────────────────────
+    // The daemon targets Android (POSIX) only; host-compiling it needs a Unix
+    // toolchain, so this group mirrors the session tests' cfg gate.
+    #[cfg(unix)]
+    mod confinement {
+        use super::*;
+
     fn host_daemon() -> PathBuf {
         static COMPILED: std::sync::OnceLock<Result<PathBuf, String>> =
             std::sync::OnceLock::new();
@@ -1140,4 +1146,5 @@ mod tests {
             "{directory_reply:?}"
         );
     }
+    } // confinement
 }
