@@ -1,6 +1,7 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, Channel } from "@tauri-apps/api/core";
 import { parseDeleteResult, parseNodeDetail, parseScanView } from "./scanView";
 import type { PageCursor, ScanScope } from "./scanView";
+import { parseExportResult } from "./exportTransfer";
 import { parseLargestFiles } from "./largestFilesSummary";
 import { parseSearchResults } from "./searchResults";
 import { parseFileTypes } from "./fileTypeSummary";
@@ -50,4 +51,17 @@ export async function deleteScanNode(scope: ScanScope, nodeId: number) {
 export async function getAppUsage(scope: Parameters<typeof parseAppUsage>[1], skip: number) {
   const raw = await invoke<string>("get_app_usage", { generation: scope.generation, revision: scope.revision, skip });
   return parseAppUsage(raw, scope, skip);
+}
+
+export async function exportScanFile(
+  scope: ScanScope, nodeId: number, exportId: string, onProgress: Channel<unknown>,
+) {
+  const raw = await invoke<string>("export_file", {
+    generation: scope.generation, revision: scope.revision, nodeId, exportId, onProgress,
+  });
+  return parseExportResult(JSON.parse(raw));
+}
+
+export async function cancelExport(exportId: string) {
+  await invoke("cancel_export", { exportId });
 }

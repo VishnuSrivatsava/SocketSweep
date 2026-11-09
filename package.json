@@ -8,14 +8,14 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "lint": "eslint src tests vite.config.ts eslint.config.js --max-warnings 0",
-    "test": "node --test tests/format_bytes.test.mjs tests/scan_view.test.mjs tests/log_history.test.mjs tests/lint_gate.test.mjs tests/devices.test.mjs tests/file_types.test.mjs tests/scan_history.test.mjs tests/largest_files.test.mjs tests/search_results.test.mjs tests/storage_map_layout.test.mjs tests/app_usage.test.mjs",
+    "test": "node --test tests/format_bytes.test.mjs tests/scan_view.test.mjs tests/log_history.test.mjs tests/lint_gate.test.mjs tests/devices.test.mjs tests/file_types.test.mjs tests/scan_history.test.mjs tests/largest_files.test.mjs tests/search_results.test.mjs tests/storage_map_layout.test.mjs tests/app_usage.test.mjs tests/export_transfer.test.mjs",
     "preview": "vite preview",
     "tauri": "tauri"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.0",
     "@tanstack/react-virtual": "^3.14.26",
-    "@tauri-apps/api": "^2",
+    "@tauri-apps/api": "2.12.4",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "tailwindcss": "^4.3.0"
