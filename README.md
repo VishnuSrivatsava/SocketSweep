@@ -66,17 +66,17 @@ Measure ADB and MTP file copy throughput separately using the [transfer benchmar
 ## 🚀 How to Use
 
 ### 1. Download
-**[Download SocketSweep v1.2.0](https://github.com/VishnuSrivatsava/SocketSweep/releases/tag/v1.2.0)**
+**[Download SocketSweep v1.3.0](https://github.com/VishnuSrivatsava/SocketSweep/releases/tag/v1.3.0)**
 
 | Platform | Download |
 |----------|----------|
-| 🪟 **Windows** | [Installer (.exe)](https://github.com/VishnuSrivatsava/SocketSweep/releases/tag/v1.2.0) · [Enterprise (.msi)](https://github.com/VishnuSrivatsava/SocketSweep/releases/tag/v1.2.0) |
-| 🍎 **macOS** (Apple Silicon) | [Disk Image (.dmg)](https://github.com/VishnuSrivatsava/SocketSweep/releases/tag/v1.2.0) |
-| 🐧 **Linux** | [AppImage](https://github.com/VishnuSrivatsava/SocketSweep/releases/tag/v1.2.0) · [.deb](https://github.com/VishnuSrivatsava/SocketSweep/releases/tag/v1.2.0) |
+| 🪟 **Windows** | [Installer (.exe)](https://github.com/VishnuSrivatsava/SocketSweep/releases/tag/v1.3.0) · [Enterprise (.msi)](https://github.com/VishnuSrivatsava/SocketSweep/releases/tag/v1.3.0) |
+| 🍎 **macOS** (Apple Silicon) | [Disk Image (.dmg)](https://github.com/VishnuSrivatsava/SocketSweep/releases/tag/v1.3.0) |
+| 🐧 **Linux** | [AppImage](https://github.com/VishnuSrivatsava/SocketSweep/releases/tag/v1.3.0) · [.deb](https://github.com/VishnuSrivatsava/SocketSweep/releases/tag/v1.3.0) |
 
 > **AppImage updates:** Starting with v1.2.0, AppImages include update information and a matching `.zsync` release asset for delta updates with [AppImageUpdate](https://github.com/AppImageCommunity/AppImageUpdate). Updates follow the latest published stable release. Existing v1.1.1 downloads need one manual upgrade to an AppImage with this metadata.
 
-> **Arch Linux (x86_64):** Use the **Linux AppImage** linked above. In the download directory, run `chmod +x SocketSweep_1.2.0_amd64.AppImage`, then `./SocketSweep_1.2.0_amd64.AppImage` ([AppImage instructions](https://docs.appimage.org/introduction/quickstart.html)). The `.deb` download is for Debian/Ubuntu; `pacman` requires an Arch package.
+> **Arch Linux (x86_64):** Use the **Linux AppImage** linked above. In the download directory, run `chmod +x SocketSweep_1.3.0_amd64.AppImage`, then `./SocketSweep_1.3.0_amd64.AppImage` ([AppImage instructions](https://docs.appimage.org/introduction/quickstart.html)). The `.deb` download is for Debian/Ubuntu; `pacman` requires an Arch package.
 
 > **macOS note:** Since the build is ad-hoc signed, run this once after installing:
 > ```bash
