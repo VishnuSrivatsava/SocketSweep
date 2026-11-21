@@ -20,6 +20,7 @@ import unittest
 class DaemonHarness(unittest.TestCase):
     read_only = False
     scan_threads = None
+    ready_announcement = False
     @classmethod
     def setUpClass(cls):
         cls.build_dir = tempfile.TemporaryDirectory(prefix="socketsweep-test-build-")
@@ -47,11 +48,18 @@ class DaemonHarness(unittest.TestCase):
             reservation.bind(("127.0.0.1", 0))
             self.port = reservation.getsockname()[1]
         args = [self.binary, str(self.port), str(token_file)]
+        if self.ready_announcement:
+            ready = Path(self.files.name) / "ready"
+            args.append("--session-ready")
+            args.append(str(ready))
         if self.read_only:
             args.append("--read-only")
         if self.scan_threads is not None:
             args.extend(["--threads", str(self.scan_threads)])
+        # stdin is the session-owner lifetime channel: pipe it and hold it
+        # open, exactly like the real client, or the daemon exits at once.
         self.process = subprocess.Popen(args,
+                                        stdin=subprocess.PIPE,
                                         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         self.addCleanup(self.stop)
         for _ in range(100):
@@ -74,6 +82,11 @@ class DaemonHarness(unittest.TestCase):
             except (OSError, subprocess.TimeoutExpired):
                 self.process.kill()
                 self.process.wait()
+        # Release the owner-lifetime channel for any surviving daemon.
+        try:
+            self.process.stdin.close()
+        except (OSError, AttributeError):
+            pass
         self.process.stderr.close()
 
     def raw_request(self, payload):
@@ -208,6 +221,15 @@ class DaemonTests(DaemonHarness):
         alias.symlink_to(outside, target_is_directory=True)
         self.assertEqual(self.request(f"DELETE {alias / 'keep'}")["status"], "error")
         self.assertTrue((outside / "keep").exists())
+
+
+class ReadyAnnouncementTests(DaemonHarness):
+    ready_announcement = True
+
+    def test_session_ready_is_published_and_tmp_removed(self):
+        self.assertEqual(self.request("PING")["status"], "ok")
+        self.assertTrue((Path(self.files.name) / "ready").exists())
+        self.assertFalse((Path(self.files.name) / "ready.tmp").exists())
 
 
 class ReadOnlyDaemonTests(DaemonHarness):
