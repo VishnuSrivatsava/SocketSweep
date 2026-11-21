@@ -86,7 +86,7 @@ Measure ADB and MTP file copy throughput separately using the [transfer benchmar
 ### 2. Enable USB Debugging on your phone
 SocketSweep requires **Android 12 (API 31) or newer**.
 
-Go to **Settings → About Phone → tap "Build Number" 7 times** to unlock Developer Options. Then go to **Settings → Developer Options → enable "USB Debugging"**.
+Go to **Settings → About Phone → tap "Build Number" 7 times** to unlock Developer Options. Then go to **Settings → Developer Options → enable "USB Debugging"**. If your device still doesn't show up afterwards, see [Device Not Listed or Won't Connect](#device-not-listed-or-wont-connect).
 
 ### 3. Plug in and scan
 1. Connect your phone via USB cable
@@ -396,6 +396,22 @@ See [this issue](https://github.com/gitbutlerapp/gitbutler/issues/5282#issuecomm
 
 ### Daemon Fails to Start
 If you get `Permission denied`, make sure the daemon is being pushed to `/data/local/tmp/`. Modern Android blocks execution from `/sdcard/`. SocketSweep handles this automatically.
+
+### Device Not Listed or Won't Connect
+The device picker reports each state directly — match it here:
+
+| Picker state | Cause and fix |
+| --- | --- |
+| `unauthorized` | Approve the "Allow USB debugging?" prompt on the phone (check "Always allow" to skip it next time), then refresh. |
+| `offline` | Reconnect the cable or try another USB port, then refresh. |
+| `no permissions` (Linux) | Install your distro's ADB udev rules (e.g., `android-sdk-udev-rules`), replug, and refresh. |
+| Phone missing entirely | Vendor quirks below — some vendors hide or disable USB debugging without telling you. |
+
+Vendor quirks that hide USB debugging entirely:
+
+- **Xiaomi / MIUI**: enable "USB debugging (security settings)" in addition to regular USB debugging — without it, devices may connect but scans come back empty (see "0 Files" above).
+- **Samsung**: **Auto Blocker** disables USB debugging after updates or reboots — see "Samsung Auto Blocker" above.
+- **Windows hosts**: install the Google USB driver or your OEM's ADB driver in Device Manager if the phone never enumerates.
 
 ---
 
