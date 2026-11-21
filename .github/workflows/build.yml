@@ -175,6 +175,23 @@ jobs:
           Remove-Item -Recurse -Force platform-tools, platform-tools.zip
           Write-Host "✓ ADB binaries ready for Windows"
 
+      # The windows-11-arm runner image ships no Android NDK. Download a
+      # pinned archive (x64 toolchain — Windows-on-ARM runs x64 processes
+      # under emulation) and expose it to the daemon build step.
+      - name: Download Android NDK (Windows-on-ARM)
+        if: matrix.platform == 'windows-arm64'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://dl.google.com/android/repository/android-ndk-r29-windows.zip" -OutFile android-ndk.zip
+          $hash = (Get-FileHash -Algorithm SHA256 android-ndk.zip).Hash
+          if ($hash -ne "4f83a1a87ea0d33ae2b43812ce27b768be949bc78acf90b955134d19e3068f1c") {
+            throw "Android NDK archive SHA-256 mismatch"
+          }
+          Expand-Archive android-ndk.zip -DestinationPath . -Force
+          "ANDROID_NDK_HOME=$pwd\android-ndk-r29" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Remove-Item android-ndk.zip
+          Write-Host "✓ Android NDK ready for Windows-on-ARM"
+
       - name: Update version from Git tag
         if: startsWith(github.ref, 'refs/tags/v')
         shell: node {0}
