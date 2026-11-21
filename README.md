@@ -71,7 +71,7 @@ Measure ADB and MTP file copy throughput separately using the [transfer benchmar
 | Platform | Download |
 |----------|----------|
 | 🪟 **Windows** | [Installer (.exe)](https://github.com/VishnuSrivatsava/SocketSweep/releases/tag/v1.3.0) · [Enterprise (.msi)](https://github.com/VishnuSrivatsava/SocketSweep/releases/tag/v1.3.0) |
-| 🍎 **macOS** (Apple Silicon) | [Disk Image (.dmg)](https://github.com/VishnuSrivatsava/SocketSweep/releases/tag/v1.3.0) |
+| 🍎 **macOS** (Apple Silicon & Intel) | [Disk Image (.dmg)](https://github.com/VishnuSrivatsava/SocketSweep/releases/tag/v1.3.0) |
 | 🐧 **Linux** | [AppImage](https://github.com/VishnuSrivatsava/SocketSweep/releases/tag/v1.3.0) · [.deb](https://github.com/VishnuSrivatsava/SocketSweep/releases/tag/v1.3.0) |
 
 > **AppImage updates:** Starting with v1.2.0, AppImages include update information and a matching `.zsync` release asset for delta updates with [AppImageUpdate](https://github.com/AppImageCommunity/AppImageUpdate). Updates follow the latest published stable release. Existing v1.1.1 downloads need one manual upgrade to an AppImage with this metadata.

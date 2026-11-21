@@ -20,6 +20,7 @@ jobs:
           # catalog ("error-glibc-too-new" otherwise).
           - os: ubuntu-22.04
             platform: linux
+            build_args: ""
             installer_artifact: SocketSweep-Linux
             installer_paths: |
               src-tauri/target/release/bundle/deb/*.deb
@@ -29,12 +30,16 @@ jobs:
             adb_sha256: d230f13842f60f782a8645f9c813f8f845bf36089ea7289f28c48f17979313f1
           - os: macos-latest
             platform: macos
+            # One DMG for Apple Silicon and Intel Macs alike: the universal
+            # target compiles both slices and lipo-merges them.
+            build_args: --target universal-apple-darwin
             installer_artifact: SocketSweep-macOS
-            installer_paths: src-tauri/target/release/bundle/dmg/*.dmg
+            installer_paths: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
             adb_url: https://dl.google.com/android/repository/platform-tools_r37.0.1-darwin.zip
             adb_sha256: ee39ad5967e95c2a07f04dbcbde96b1a0c916ba376096db5d2f498b7727a5d1d
           - os: windows-latest
             platform: windows
+            build_args: ""
             installer_artifact: SocketSweep-Windows
             installer_paths: |
               src-tauri/target/release/bundle/msi/*.msi
@@ -177,9 +182,13 @@ jobs:
       # ── Build Tauri desktop app ───────────────────────────────────────────
       # This single command builds the React frontend (beforeBuildCommand),
       # compiles the Rust bridge, and packages everything into native
-      # platform installers (.dmg / .deb / .AppImage / .msi / .exe).
+      # platform installers (.dmg / .deb / .AppImage / .msi / .exe). The
+      # macOS job builds the universal target for Apple Silicon and Intel.
+      - name: Add universal macOS Rust targets
+        if: runner.os == 'macOS'
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - name: Build Tauri app
-        run: npm run tauri -- build --verbose
+        run: npm run tauri -- build --verbose ${{ matrix.build_args }}
 
       - name: Test Rust bridge
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
