@@ -20,6 +20,7 @@ jobs:
           # catalog ("error-glibc-too-new" otherwise).
           - os: ubuntu-22.04
             platform: linux
+            daemon_platform: linux
             build_args: ""
             installer_artifact: SocketSweep-Linux
             installer_paths: |
@@ -30,6 +31,7 @@ jobs:
             adb_sha256: d230f13842f60f782a8645f9c813f8f845bf36089ea7289f28c48f17979313f1
           - os: macos-latest
             platform: macos
+            daemon_platform: macos
             # One DMG for Apple Silicon and Intel Macs alike: the universal
             # target compiles both slices and lipo-merges them.
             build_args: --target universal-apple-darwin
@@ -39,6 +41,7 @@ jobs:
             adb_sha256: ee39ad5967e95c2a07f04dbcbde96b1a0c916ba376096db5d2f498b7727a5d1d
           - os: windows-latest
             platform: windows
+            daemon_platform: windows
             build_args: ""
             installer_artifact: SocketSweep-Windows
             installer_paths: |
@@ -51,6 +54,7 @@ jobs:
           # x64 processes under emulation, keeping device operations working.
           - os: windows-11-arm
             platform: windows-arm64
+            daemon_platform: windows
             build_args: --target aarch64-pc-windows-msvc
             installer_artifact: SocketSweep-Windows-arm64
             installer_paths: |
@@ -130,7 +134,7 @@ jobs:
           for abi in ("arm64-v8a", "armeabi-v7a", "x86", "x86_64"):
               subprocess.run([
                   sys.executable, "engine/build_daemon.py", "--abi", abi,
-                  "--platform", "${{ matrix.platform }}", "--commit", "${{ github.sha }}",
+                  "--platform", "${{ matrix.daemon_platform }}", "--commit", "${{ github.sha }}",
               ], check=True)
 
       # Keep symbols outside Tauri resources. Each host build can use a
