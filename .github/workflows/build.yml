@@ -20,6 +20,7 @@ jobs:
           # catalog ("error-glibc-too-new" otherwise).
           - os: ubuntu-22.04
             platform: linux
+            daemon_platform: linux
             build_args: ""
             installer_artifact: SocketSweep-Linux
             installer_paths: |
@@ -30,6 +31,7 @@ jobs:
             adb_sha256: d230f13842f60f782a8645f9c813f8f845bf36089ea7289f28c48f17979313f1
           - os: macos-latest
             platform: macos
+            daemon_platform: macos
             # One DMG for Apple Silicon and Intel Macs alike: the universal
             # target compiles both slices and lipo-merges them.
             build_args: --target universal-apple-darwin
@@ -39,11 +41,25 @@ jobs:
             adb_sha256: ee39ad5967e95c2a07f04dbcbde96b1a0c916ba376096db5d2f498b7727a5d1d
           - os: windows-latest
             platform: windows
+            daemon_platform: windows
             build_args: ""
             installer_artifact: SocketSweep-Windows
             installer_paths: |
               src-tauri/target/release/bundle/msi/*.msi
               src-tauri/target/release/bundle/nsis/*.exe
+            adb_url: https://dl.google.com/android/repository/platform-tools_r37.0.1-win.zip
+            adb_sha256: 45f4d63113e895ebde0c90f194099a4676b6ac653bd28d54314a9e022bbc1a99
+          # Native Windows-on-ARM app shell. Google publishes no arm64 ADB,
+          # so the x64 adb.exe is bundled as a sidecar: Windows-on-ARM runs
+          # x64 processes under emulation, keeping device operations working.
+          - os: windows-11-arm
+            platform: windows-arm64
+            daemon_platform: windows
+            build_args: --target aarch64-pc-windows-msvc
+            installer_artifact: SocketSweep-Windows-arm64
+            installer_paths: |
+              src-tauri/target/aarch64-pc-windows-msvc/release/bundle/msi/*.msi
+              src-tauri/target/aarch64-pc-windows-msvc/release/bundle/nsis/*.exe
             adb_url: https://dl.google.com/android/repository/platform-tools_r37.0.1-win.zip
             adb_sha256: 45f4d63113e895ebde0c90f194099a4676b6ac653bd28d54314a9e022bbc1a99
 
@@ -110,6 +126,24 @@ jobs:
           sudo -n env CXX=g++ python3 -m unittest discover -s tests -p test_root_scan.py -v
           sudo -n env CXX=g++ python3 -m unittest discover -s tests -p test_owned_session.py -v
 
+
+      # The windows-11-arm runner image ships no Android NDK. Download a
+      # pinned archive (x64 toolchain — Windows-on-ARM runs x64 processes
+      # under emulation) and expose it to the daemon build step.
+      - name: Download Android NDK (Windows-on-ARM)
+        if: matrix.platform == 'windows-arm64'
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://dl.google.com/android/repository/android-ndk-r29-windows.zip" -OutFile android-ndk.zip
+          $hash = (Get-FileHash -Algorithm SHA256 android-ndk.zip).Hash
+          if ($hash -ne "4f83a1a87ea0d33ae2b43812ce27b768be949bc78acf90b955134d19e3068f1c") {
+            throw "Android NDK archive SHA-256 mismatch"
+          }
+          Expand-Archive android-ndk.zip -DestinationPath . -Force
+          "ANDROID_NDK_HOME=$pwd\android-ndk-r29" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Remove-Item android-ndk.zip
+          Write-Host "✓ Android NDK ready for Windows-on-ARM"
+
       - name: Cross-compile C++ daemons
         shell: python {0}
         run: |
@@ -118,7 +152,7 @@ jobs:
           for abi in ("arm64-v8a", "armeabi-v7a", "x86", "x86_64"):
               subprocess.run([
                   sys.executable, "engine/build_daemon.py", "--abi", abi,
-                  "--platform", "${{ matrix.platform }}", "--commit", "${{ github.sha }}",
+                  "--platform", "${{ matrix.daemon_platform }}", "--commit", "${{ github.sha }}",
               ], check=True)
 
       # Keep symbols outside Tauri resources. Each host build can use a
@@ -159,6 +193,7 @@ jobs:
           Remove-Item -Recurse -Force platform-tools, platform-tools.zip
           Write-Host "✓ ADB binaries ready for Windows"
 
+
       - name: Update version from Git tag
         if: startsWith(github.ref, 'refs/tags/v')
         shell: node {0}
@@ -187,6 +222,9 @@ jobs:
       - name: Add universal macOS Rust targets
         if: runner.os == 'macOS'
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - name: Add Windows-on-ARM Rust target
+        if: matrix.platform == 'windows-arm64'
+        run: rustup target add aarch64-pc-windows-msvc
       - name: Build Tauri app
         run: npm run tauri -- build --verbose ${{ matrix.build_args }}
 
@@ -406,5 +444,6 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             artifacts/SocketSweep-Windows/**/*
+            artifacts/SocketSweep-Windows-arm64/**/*
             artifacts/SocketSweep-Linux/**/*
             artifacts/SocketSweep-macOS/**/*
