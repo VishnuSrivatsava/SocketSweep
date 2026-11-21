@@ -46,6 +46,18 @@ jobs:
               src-tauri/target/release/bundle/nsis/*.exe
             adb_url: https://dl.google.com/android/repository/platform-tools_r37.0.1-win.zip
             adb_sha256: 45f4d63113e895ebde0c90f194099a4676b6ac653bd28d54314a9e022bbc1a99
+          # Native Windows-on-ARM app shell. Google publishes no arm64 ADB,
+          # so the x64 adb.exe is bundled as a sidecar: Windows-on-ARM runs
+          # x64 processes under emulation, keeping device operations working.
+          - os: windows-11-arm
+            platform: windows-arm64
+            build_args: --target aarch64-pc-windows-msvc
+            installer_artifact: SocketSweep-Windows-arm64
+            installer_paths: |
+              src-tauri/target/aarch64-pc-windows-msvc/release/bundle/msi/*.msi
+              src-tauri/target/aarch64-pc-windows-msvc/release/bundle/nsis/*.exe
+            adb_url: https://dl.google.com/android/repository/platform-tools_r37.0.1-win.zip
+            adb_sha256: 45f4d63113e895ebde0c90f194099a4676b6ac653bd28d54314a9e022bbc1a99
 
     runs-on: ${{ matrix.os }}
 
@@ -187,6 +199,9 @@ jobs:
       - name: Add universal macOS Rust targets
         if: runner.os == 'macOS'
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - name: Add Windows-on-ARM Rust target
+        if: matrix.platform == 'windows-arm64'
+        run: rustup target add aarch64-pc-windows-msvc
       - name: Build Tauri app
         run: npm run tauri -- build --verbose ${{ matrix.build_args }}
 
@@ -406,5 +421,6 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             artifacts/SocketSweep-Windows/**/*
+            artifacts/SocketSweep-Windows-arm64/**/*
             artifacts/SocketSweep-Linux/**/*
             artifacts/SocketSweep-macOS/**/*
