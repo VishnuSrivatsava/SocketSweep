@@ -1,13 +1,22 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { getFileTypes } from "./scanIpc";
 import { FILE_TYPES, FILE_TYPE_LABELS } from "./fileTypeSummary";
-import type { FileTypesResponse } from "./fileTypeSummary";
+import type { FileType, FileTypesResponse } from "./fileTypeSummary";
 import type { ScanResponse } from "./scanView";
 import { formatBytes } from "./formatBytes";
+import { SearchFiles } from "./SearchFiles";
 
-export function FileTypes({ scope, busy }: { scope: ScanResponse; busy: boolean }) {
+export function FileTypes({ scope, busy, onZoom, onNuke }: {
+  scope: ScanResponse;
+  busy: boolean;
+  onZoom: (id: number) => void;
+  onNuke: (id: number, trigger: HTMLButtonElement) => void;
+}) {
   const { generation, revision, total_files, total_size } = scope;
   const [retry, setRetry] = useState(0);
+  const [category, setCategory] = useState<FileType | null>(null);
+  const returnFocus = useRef<FileType | null>(null);
+  const summary = useRef<HTMLElement>(null);
   const key = JSON.stringify([generation, revision, total_files, total_size, retry]);
   const [state, setState] = useState<{ key: string; data?: FileTypesResponse; error?: string }>({ key: "" });
   useEffect(() => {
@@ -21,7 +30,17 @@ export function FileTypes({ scope, busy }: { scope: ScanResponse; busy: boolean 
   }, [generation, revision, total_files, total_size, key]);
   const data = state.key === key ? state.data : undefined;
   const error = state.key === key ? state.error : undefined;
-  return <section aria-label="File types" className="flex-1 min-h-0 overflow-y-auto px-6 pb-4">
+  useLayoutEffect(() => {
+    if (category || !returnFocus.current) return;
+    const button = summary.current?.querySelector<HTMLButtonElement>(`[data-kind="${returnFocus.current}"] button:enabled`);
+    (button ?? summary.current)?.focus();
+    returnFocus.current = null;
+  }, [category]);
+  if (category) {
+    return <SearchFiles scope={scope} folder={null} busy={busy} onZoom={onZoom} onNuke={onNuke}
+      category={{ kind: category, clear: () => { returnFocus.current = category; setCategory(null); } }} />;
+  }
+  return <section aria-label="File types" ref={summary} tabIndex={-1} className="flex-1 min-h-0 overflow-y-auto px-6 pb-4">
     <p role="status" className="text-xs text-zinc-400 py-3">{data ? `${data.total_files.toLocaleString("en-US")} scanned files · ${formatBytes(data.total_size)}` : error ? "File types unavailable" : "Loading file types…"}</p>
     <p className="text-xs text-zinc-500 mb-2 break-all">Scan root: <span className="font-mono">{scope.root_path}</span></p>
     <p className="text-xs text-zinc-500 mb-2">Across all folders in this scan. Grouped by filename extension; file contents are not inspected.</p>
@@ -36,7 +55,13 @@ export function FileTypes({ scope, busy }: { scope: ScanResponse; busy: boolean 
           const category = data?.categories[index];
           const percent = data && category ? (data.total_size > 0 ? category.size / data.total_size * 100 : 0) : undefined;
           return <tr key={kind} className="file-type-row" data-kind={kind}>
-            <th scope="row" className="py-3 font-medium text-zinc-200">{FILE_TYPE_LABELS[kind]}</th>
+            <th scope="row" className="py-3 font-medium text-zinc-200">
+              <button type="button" aria-label={`Browse ${FILE_TYPE_LABELS[kind]}`} disabled={busy || !category}
+                onClick={() => setCategory(kind)}
+                className="text-left text-accent-400 hover:underline disabled:text-zinc-400 disabled:no-underline">
+                {FILE_TYPE_LABELS[kind]}
+              </button>
+            </th>
             <td className="text-right px-2 font-mono text-zinc-400">{category ? category.files.toLocaleString("en-US") : "—"}</td>
             <td className="text-right px-2 font-mono text-zinc-300">{category ? formatBytes(category.size) : "—"}</td>
             <td className="pl-2"><div className="flex items-center justify-end gap-2">

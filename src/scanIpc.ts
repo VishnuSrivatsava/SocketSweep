@@ -5,6 +5,7 @@ import { parseLargestFiles } from "./largestFilesSummary";
 import { parseSearchResults } from "./searchResults";
 import type { SearchFolder } from "./searchResults";
 import { parseFileTypes } from "./fileTypeSummary";
+import type { FileType } from "./fileTypeSummary";
 import { parseAppUsage } from "./appUsageSummary";
 import { parseScanComparison } from "./scanComparison";
 
@@ -13,11 +14,14 @@ export async function getLargestFiles(scope: Parameters<typeof parseLargestFiles
   return parseLargestFiles(raw, scope, limit);
 }
 
-export async function getSearchResults(scope: Parameters<typeof parseSearchResults>[1], query: string, skip: number, folder: SearchFolder | null) {
+export async function getSearchResults(
+  scope: Parameters<typeof parseSearchResults>[1], query: string, skip: number,
+  folder: SearchFolder | null, fileType: FileType | null,
+) {
   const raw = await invoke<string>("get_search_results", {
-    generation: scope.generation, revision: scope.revision, query, skip, folderId: folder?.id ?? null,
+    generation: scope.generation, revision: scope.revision, query, skip, folderId: folder?.id ?? null, fileType,
   });
-  return parseSearchResults(raw, scope, query, skip, folder);
+  return parseSearchResults(raw, scope, query, skip, folder, fileType);
 }
 
 export async function getFileTypes(scope: Parameters<typeof parseFileTypes>[1]) {

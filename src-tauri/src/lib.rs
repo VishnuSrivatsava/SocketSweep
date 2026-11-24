@@ -611,12 +611,17 @@ fn get_search_results(
     query: String,
     skip: u32,
     folder_id: Option<u32>,
+    file_type: Option<scan_store::FileType>,
 ) -> Result<String, String> {
     let store = SCAN_STORE.lock().map_err(|_| "Scan state is unavailable")?;
-    store
-        .as_ref()
-        .ok_or("Scan is unavailable; rescan required")?
-        .search_json(&generation, revision, &query, skip, folder_id)
+    let catalog = store.as_ref().ok_or("Scan is unavailable; rescan required")?;
+    match file_type {
+        Some(kind) if query.is_empty() && folder_id.is_none() => {
+            catalog.file_type_results_json(&generation, revision, kind, skip)
+        }
+        Some(_) => Err("File-type results require an entire-scan filter".into()),
+        None => catalog.search_json(&generation, revision, &query, skip, folder_id),
+    }
 }
 
 #[tauri::command(async)]

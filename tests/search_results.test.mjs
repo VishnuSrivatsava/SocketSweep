@@ -101,3 +101,15 @@ test("scoped pages must echo the folder and contain only descendants", () => {
   assert.throws(() => parseScoped({ ...data, folder_id: 2 }));
   assert.throws(() => parseScoped({ ...data, results: [{ ...entry, path: "/fixture/Logs-old/app.log" }] }));
 });
+
+test("file-type pages must echo the category and contain only counted files", () => {
+  const page = { ...report(), query: "", file_type: "images", has_more: true, results: [row(2, "photo.JPG", 0)] };
+  const filtered = data => parseSearchResults(JSON.stringify(data), expected, "", 0, null, "images");
+  assert.deepEqual(filtered(page), page);
+  for (const changes of [
+    { file_type: undefined }, { file_type: "videos" }, { revision: 1 },
+    { folder_id: 2 }, { results: [row(2, "album.JPG", 0, "directory")] },
+    { results: [row(2, "photo.JPG", 0, "file", false)] },
+  ]) assert.throws(() => filtered({ ...page, ...changes }));
+  assert.throws(() => parse({ ...report(), file_type: "images" }));
+});

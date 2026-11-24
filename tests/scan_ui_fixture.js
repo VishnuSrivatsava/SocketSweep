@@ -221,7 +221,9 @@
         return response;
       }
       if (command === "get_search_results") {
-        check(typeof args.query === "string" && args.query !== "" && args.query.length <= 255, "Unbounded search query");
+        const category = args.fileType;
+        check(typeof args.query === "string" && args.query.length <= 255
+          && (category ? args.query === "" && args.folderId === null : args.query !== ""), "Invalid search filter");
         check(Number.isInteger(args.skip) && args.skip >= 0, "Invalid search skip");
         check(args.folderId === null || args.folderId === 1, "Unexpected search folder");
         if (failSearch) { failSearch = false; throw "Fixture search failure"; }
@@ -230,10 +232,13 @@
           return JSON.stringify({ ...scope(), query: args.query, skip: args.skip, folder_id: args.folderId, has_more: false, results: null });
         }
         const candidates = args.folderId === 1 ? folderChildren : [...rootChildren, ...folderChildren];
-        const matches = candidates.filter(item => item.name.toLowerCase().includes(args.query.toLowerCase()));
+        const matches = candidates.filter(item => category
+          ? category === "no_extension" && item.type === "file" && item.counted
+          : item.name.toLowerCase().includes(args.query.toLowerCase()));
         // Simulate a page shortened by the backend's serialized-byte budget.
-        const limit = args.query === "nested" ? 37 : 100;
+        const limit = category || args.query === "nested" ? 37 : 100;
         const response = JSON.stringify({ ...scope(), query: args.query, skip: args.skip, folder_id: args.folderId,
+          ...(category && { file_type: category }),
           has_more: matches.length > args.skip + limit,
           results: matches.slice(args.skip, args.skip + limit).map(item => detail(item.id)) });
         if (holdSearch) { holdSearch = false; return new Promise(resolve => { resolveSearch = () => resolve(response); }); }
@@ -300,7 +305,7 @@
   const report = (passed, error) => {
     const output = document.createElement("pre");
     output.id = "scan-test-report";
-    output.textContent = JSON.stringify({ fixture: "scan-ui", passed, error, ipc_calls: calls.length, wide_paging: widePaging, expanded_tree: expandedTree, checks: passed ? ["offline fonts under CSP", "bounded collapsed discovery diagnostics", "discovery retry recovery", "setup alignment", "result fonts", "file label semantics", "usable file workspace", "keyboard storage map visibility", "collapsible diagnostics", "complete paging", "directory paging focus and retries", "expanded-tree row growth and keyboard focus", "first-scan comparison", "unchanged comparison after rescan", "deletion delta comparison", "cross-device comparison isolation", "bounded package-folder paging and coverage", "package query retries and stale replies", "bounded file-type totals", "file-type retry and malformed response", "file-type generation and deletion revision", "file-type coverage and empty scan", "bounded largest files", "late largest response", "largest query retry", "malformed largest response recovery", "largest ID-only deletion", "largest read-only guards", "largest folder navigation without rescanning", "bounded search results", "late search response", "search retry and malformed response", "search ID-only deletion", "read-only search deletion disabled", "late zoom", "Other tile", "stale confirmation", "exact confirmation whitespace", "reachable long-path confirmation", "native modal keyboard focus and cancellation", "ID-only deletion", "revision refresh", "partial failure", "read-only", "acknowledged shutdown", "unconfirmed shutdown", "reconnect", "stop action ordering", "duplicate rescan guard", "rescan failure recovery", "rescan cancellation recovery", "toast dismissal integration", "bounded diagnostic integration"] : undefined });
+    output.textContent = JSON.stringify({ fixture: "scan-ui", passed, error, ipc_calls: calls.length, wide_paging: widePaging, expanded_tree: expandedTree, checks: passed ? ["offline fonts under CSP", "bounded collapsed discovery diagnostics", "discovery retry recovery", "setup alignment", "result fonts", "file label semantics", "usable file workspace", "keyboard storage map visibility", "collapsible diagnostics", "complete paging", "directory paging focus and retries", "expanded-tree row growth and keyboard focus", "first-scan comparison", "unchanged comparison after rescan", "deletion delta comparison", "cross-device comparison isolation", "bounded package-folder paging and coverage", "package query retries and stale replies", "bounded file-type totals", "file-type retry and malformed response", "file-type generation and deletion revision", "file-type coverage and empty scan", "file-type drilldown paging, keyboard and revision", "bounded largest files", "late largest response", "largest query retry", "malformed largest response recovery", "largest ID-only deletion", "largest read-only guards", "largest folder navigation without rescanning", "bounded search results", "late search response", "search retry and malformed response", "search ID-only deletion", "read-only search deletion disabled", "late zoom", "Other tile", "stale confirmation", "exact confirmation whitespace", "reachable long-path confirmation", "native modal keyboard focus and cancellation", "ID-only deletion", "revision refresh", "partial failure", "read-only", "acknowledged shutdown", "unconfirmed shutdown", "reconnect", "stop action ordering", "duplicate rescan guard", "rescan failure recovery", "rescan cancellation recovery", "toast dismissal integration", "bounded diagnostic integration"] : undefined });
     document.body.append(output);
     void fetch("/report", { method: "POST", body: output.textContent }).then(() => {
       if (passed) location.replace("/tests/toast_lifecycle_fixture.html");
@@ -888,6 +893,49 @@
     button("File types").click();
     await waitFor(typesReady, "File types did not refresh after deletion");
     checkTypes(735);
+    const filteredPanel = () => document.querySelector('section[aria-label="Files by type"]');
+    const typeButton = kind => typesPanel()?.querySelector(`[data-kind="${kind}"] button`);
+    const categoryQuery = () => calls.filter(call => call.command === "get_search_results" && call.args.fileType).at(-1).args;
+    typeButton("no_extension").focus();
+    await pressKey("Enter");
+    await waitFor(() => searchRows().length === 37, "File-type drilldown did not open from the keyboard");
+    check(filteredPanel().querySelector("h2").textContent === "No extension" && document.activeElement === button("Clear filter"),
+      "File-type filter or keyboard focus missing");
+    check(categoryQuery().skip === 0 && categoryQuery().fileType === "no_extension" && categoryQuery().folderId === null,
+      "File-type drilldown sent the wrong first-page filter");
+    holdSearch = true;
+    resolveSearch = undefined;
+    button("Next").click();
+    await waitFor(() => resolveSearch && categoryQuery().skip === 37, "File-type continuation skipped the short first page");
+    button("Clear filter").focus();
+    await pressKey("Enter");
+    await waitFor(typesReady, "Keyboard did not clear the file-type filter");
+    check(document.activeElement === typeButton("no_extension"), "Clearing the filter did not restore category focus");
+    typeButton("images").click();
+    await waitFor(() => filteredPanel()?.textContent.includes("No files of this type"), "Empty category did not render");
+    resolveSearch();
+    resolveSearch = undefined;
+    await pause(30);
+    check(searchRows().length === 0 && categoryQuery().fileType === "images" && categoryQuery().skip === 0,
+      "A late category page crossed filters");
+    button("Clear filter").click();
+    await waitFor(typesReady, "File-type summary did not return");
+    typeButton("no_extension").click();
+    await waitFor(() => searchRows().length === 37 && categoryQuery().skip === 0, "Reopened category retained an old offset");
+    button("Next").click();
+    await waitFor(() => searchRows()[0]?.textContent.includes(" file-38 ") && categoryQuery().skip === 37, "Second category page lost its first match");
+    const revisionBeforeCategoryDelete = revision;
+    filteredPanel().querySelector('[aria-label="Delete  file-38 "]').click();
+    await waitFor(() => button("NUKE IT"), "Category file did not open the existing confirmation");
+    button("NUKE IT").click();
+    await waitFor(() => searchRows()[0]?.textContent.includes(" file-1 ")
+      && categoryQuery().revision === revisionBeforeCategoryDelete + 1 && categoryQuery().skip === 0,
+    "Category deletion did not refresh the filter at the new revision");
+    check(calls.filter(call => call.command === "delete_item").at(-1).args.nodeId === 40,
+      "Category deletion did not use the selected node ID");
+    button("Clear filter").click();
+    await waitFor(typesReady, "File type totals did not refresh after category deletion");
+    checkTypes(734);
     button("Package folders").click();
     await waitFor(() => appRows().length === 100, "Package view missing after deletion");
     check(calls.filter(call => call.command === "get_app_usage").at(-1).args.revision === revision,
@@ -952,6 +1000,9 @@
     await waitFor(typesReady, "Read-only file types missing");
     checkTypes(736);
     check(typesPanel().textContent.includes("2 access errors") && typesPanel().textContent.includes("3 excluded or duplicate entries") && typesPanel().textContent.includes("/fixture"), "File-type coverage context missing");
+    typeButton("no_extension").click();
+    await waitFor(() => searchRows().length === 37, "Read-only category results missing");
+    check(searchRows().every(row => row.querySelector('[aria-label^="Delete "]').disabled), "Read-only category deletion enabled");
     button("Storage map").click();
     await waitFor(() => rows().length === 129, "Read-only map missing");
     const previousAcknowledgements = () => (document.body.textContent.match(/Daemon acknowledged shutdown\./g) ?? []).length;
