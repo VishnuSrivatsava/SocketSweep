@@ -7,7 +7,8 @@
 //
 // Wire protocol (matches Phase 1 daemon):
 // Each connection starts with "AUTH <session token>\n", then one command.
-//   → "PING\n"              ← {"status":"ok","protocol_version":3,"uid":…,"read_only":…}
+//   → "PING\n"              ← {"status":"ok","protocol_version":4,"uid":…,"read_only":…}
+//   → "READ path\n"         ← JSON header line + exactly <size> raw bytes (export v1)
 //   → "SCAN_STREAM path\n" ← length-prefixed JSON frames (scan stream v1)
 //   → "SCAN [path]\n"       ← legacy whole-tree JSON (diagnostics/tests)
 //   → "SHUTDOWN\n"          ← {"status":"ok","message":"shutting down"}
@@ -19,11 +20,13 @@ use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use tauri::ipc::Channel;
 #[cfg(test)]
 mod scan_benchmark;
+mod export;
 mod scan_stream;
 mod scan_store;
 mod scan_history;
 mod session;
 mod devices;
+use export::ExportProgress;
 use std::process::Command;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -270,7 +273,7 @@ struct DaemonStatus {
 
 fn require_handshake(response: &str, root_mode: bool) -> Result<DaemonStatus, String> {
     let parsed = require_ok(response)?;
-    if parsed.protocol_version != Some(3) || parsed.scan_stream_version != Some(1) || parsed.uid.is_none() || parsed.read_only.is_none() {
+    if parsed.protocol_version != Some(4) || parsed.scan_stream_version != Some(1) || parsed.uid.is_none() || parsed.read_only.is_none() {
         return Err("Bundled daemon is outdated. Rebuild it before connecting.".into());
     }
     if (root_mode && parsed.uid != Some(0)) || (parsed.uid == Some(0) && parsed.read_only != Some(true)) {
@@ -355,6 +358,23 @@ struct ScanProgress {
     scan_id: String,
     #[serde(flatten)]
     progress: scan_stream::Progress,
+}
+
+// Export registry mirrors the scan registry: cancellation bypasses every
+// other lock, IDs prevent a late click cancelling a newer export, and the
+// socket is published so a parked transfer read can be unblocked immediately.
+static ACTIVE_EXPORT: Mutex<Option<export::ActiveExport>> = Mutex::new(None);
+struct ExportRegistration(String);
+impl Drop for ExportRegistration {
+    fn drop(&mut self) {
+        if let Ok(mut active) = ACTIVE_EXPORT.lock() {
+            if active.as_ref().is_some_and(|export| export.id == self.0) {
+                if let Some(socket) = active.take().and_then(|export| export.socket) {
+                    let _ = socket.shutdown(Shutdown::Both);
+                }
+            }
+        }
+    }
 }
 
 // At most one progress message may await delivery/acknowledgement. A slow
@@ -644,11 +664,145 @@ fn delete_item(generation: String, revision: u32, node_id: u32) -> Result<String
     scan_store::finish_delete(&mut store, &plan, response)
 }
 
+#[tauri::command(async)]
+async fn export_file(
+    app: tauri::AppHandle,
+    generation: String,
+    revision: u32,
+    node_id: u32,
+    export_id: String,
+    on_progress: Channel<ExportProgress>,
+) -> Result<String, String> {
+    use tauri_plugin_dialog::DialogExt;
+    export::validate_export_id(&export_id)?;
+    // Snapshot both bindings under their locks before touching any resource.
+    // The export deliberately does not hold DAEMON_OPERATION: it mutates no
+    // shared state, and the documented recheck points carry its correctness.
+    let (plan, binding) = {
+        let store = SCAN_STORE.lock().map_err(|_| "Scan state is unavailable")?;
+        let plan = store
+            .as_ref()
+            .ok_or("Scan your device before exporting files.")?
+            .prepare_export(&generation, revision, node_id)?;
+        let connection = SESSION
+            .lock()
+            .map_err(|_| "Session state is unavailable")?
+            .as_ref()
+            .map(|session| session.connection())
+            .ok_or("No active daemon session. Connect your device first.")?;
+        (
+            plan,
+            export::SessionBinding {
+                token: connection.token,
+                serial: connection.serial,
+                address: connection.address,
+                read_only: connection.read_only,
+            },
+        )
+    };
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let progress_pending = Arc::new(AtomicBool::new(false));
+    *ACTIVE_EXPORT.lock().map_err(|_| "Export state is unavailable")? = Some(export::ActiveExport {
+        id: export_id.clone(),
+        cancelled: cancelled.clone(),
+        progress_pending: progress_pending.clone(),
+        socket: None,
+    });
+    let _registration = ExportRegistration(export_id.clone());
+    if cancelled.load(Ordering::SeqCst) {
+        return Err("Export cancelled".into());
+    }
+    // Rust owns the destination: the native save picker suggests the scanned
+    // file's name and the frontend never sends a path. A user-dismissed
+    // picker aborts cleanly before any staging resource exists.
+    let suggested = plan.name.clone();
+    let dialog_app = app.clone();
+    let destination = tauri::async_runtime::spawn_blocking(move || {
+        let dialog = dialog_app.dialog().file().set_file_name(&suggested);
+        let dialog = match export::extension_filter(&suggested) {
+            Some((label, extensions)) => {
+                let extensions: Vec<&str> = extensions.iter().map(String::as_str).collect();
+                dialog.add_filter(&label, &extensions)
+            }
+            None => dialog,
+        };
+        dialog.blocking_save_file()
+    })
+    .await
+    .map_err(|e| format!("Cannot open the save dialog: {e}"))?;
+    let Some(file_path) = destination else {
+        return Err("Export cancelled".into());
+    };
+    let destination = export::destination_path(file_path)?;
+    if cancelled.load(Ordering::SeqCst) {
+        return Err("Export cancelled".into());
+    }
+    let recheck = || {
+        let current = SESSION
+            .lock()
+            .map_err(|_| "Session state is unavailable")?
+            .as_ref()
+            .map(|session| session.connection());
+        export::binding_matches(current.as_ref(), &binding)?;
+        SCAN_STORE
+            .lock()
+            .map_err(|_| "Scan state is unavailable")?
+            .as_ref()
+            .ok_or("Scan is unavailable; rescan required")?
+            .require_scope(&plan.generation, plan.revision)
+    };
+    let result = export::run_export(
+        destination,
+        &plan,
+        &binding,
+        &export_id,
+        &cancelled,
+        &progress_pending,
+        &|progress| {
+            on_progress
+                .send(progress)
+                .map_err(|e| format!("Cannot deliver export progress: {e}"))
+        },
+        &recheck,
+    );
+    if cancelled.load(Ordering::SeqCst) {
+        Err("Export cancelled".into())
+    } else {
+        result
+    }
+}
+
+#[tauri::command(async)]
+fn cancel_export(export_id: String) -> Result<(), String> {
+    let active = ACTIVE_EXPORT
+        .lock()
+        .map_err(|_| "Export state is unavailable")?;
+    if let Some(export) = active.as_ref().filter(|export| export.id == export_id) {
+        export.cancelled.store(true, Ordering::SeqCst);
+        if let Some(socket) = &export.socket {
+            let _ = socket.shutdown(Shutdown::Both);
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command(async)]
+fn acknowledge_export_progress(export_id: String) -> Result<(), String> {
+    let active = ACTIVE_EXPORT
+        .lock()
+        .map_err(|_| "Export state is unavailable")?;
+    if let Some(export) = active.as_ref().filter(|export| export.id == export_id) {
+        export.progress_pending.store(false, Ordering::SeqCst);
+    }
+    Ok(())
+}
+
 // ── Tauri entry point ───────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             check_adb,
             list_devices,
@@ -659,6 +813,9 @@ pub fn run() {
             ping_daemon,
             stop_daemon,
             delete_item,
+            export_file,
+            cancel_export,
+            acknowledge_export_progress,
             get_scan_view,
             get_scan_node,
             get_largest_files,
@@ -675,6 +832,12 @@ pub fn run() {
                     if let Some(scan) = active.as_ref() {
                         scan.cancelled.store(true, Ordering::SeqCst);
                         if let Some(socket) = &scan.socket { let _ = socket.shutdown(Shutdown::Both); }
+                    }
+                }
+                if let Ok(active) = ACTIVE_EXPORT.lock() {
+                    if let Some(export) = active.as_ref() {
+                        export.cancelled.store(true, Ordering::SeqCst);
+                        if let Some(socket) = &export.socket { let _ = socket.shutdown(Shutdown::Both); }
                     }
                 }
                 let _ = clear_session();
@@ -706,15 +869,17 @@ mod tests {
     #[test]
     fn root_handshake_rejects_wrong_uid_writable_daemon_and_old_protocol() {
         let response = |version, uid, read_only| format!("{{\"status\":\"ok\",\"protocol_version\":{version},\"scan_stream_version\":1,\"uid\":{uid},\"read_only\":{read_only}}}");
-        assert!(require_handshake(&response(3, 0, true), true).is_ok());
-        assert!(require_handshake(&response(3, 2000, false), false).is_ok());
-        assert!(require_handshake(&response(3, 0, true), false).is_ok());
-        assert!(require_handshake(&response(3, 2000, true), true).is_err());
-        assert!(require_handshake(&response(3, 0, false), true).is_err());
-        assert!(require_handshake(&response(3, 0, false), false).is_err());
+        assert!(require_handshake(&response(4, 0, true), true).is_ok());
+        assert!(require_handshake(&response(4, 2000, false), false).is_ok());
+        assert!(require_handshake(&response(4, 0, true), false).is_ok());
+        assert!(require_handshake(&response(4, 2000, true), true).is_err());
+        assert!(require_handshake(&response(4, 0, false), true).is_err());
+        assert!(require_handshake(&response(4, 0, false), false).is_err());
+        // The export READ command requires protocol 4; older daemons are stale.
+        assert!(require_handshake(&response(3, 0, true), true).is_err());
         assert!(require_handshake(&response(2, 0, true), true).is_err());
-        assert!(require_handshake("{\"status\":\"ok\",\"protocol_version\":3}", true).is_err());
-        assert!(require_handshake("{\"status\":\"ok\",\"protocol_version\":3,\"uid\":2000,\"read_only\":false}", false).is_err());
+        assert!(require_handshake("{\"status\":\"ok\",\"protocol_version\":4}", true).is_err());
+        assert!(require_handshake("{\"status\":\"ok\",\"protocol_version\":4,\"uid\":2000,\"read_only\":false}", false).is_err());
     }
 
     #[test]

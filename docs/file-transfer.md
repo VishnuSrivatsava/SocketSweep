@@ -1,9 +1,31 @@
 # File-transfer baseline and single-file export plan
 
 Tracked in [#59](https://github.com/VishnuSrivatsava/SocketSweep/issues/59).
-This change adds an experiment and a design, not an application download button.
-No device throughput has been measured for this work. Backend selection remains
-open until the manual results and source-access requirements below are assessed.
+
+**Implementation status (safe single-file export):** the export described in the
+safety table below is implemented in the app against a new authenticated daemon
+`READ` command — not `adb pull`. The daemon opens the scanned path through a
+no-follow component walk anchored at its verified scan-root descriptor and
+streams exactly `fstat` bytes over the existing authenticated forward, so a
+path that became a symlink, shrank, or was replaced after the scan is rejected
+instead of silently re-read. Export is normal-mode only (the daemon runs as
+`shell`, so kernel permissions enforce the shared-storage policy), stages into
+an exclusive `.name.export-<id>.part` file beside the user-chosen destination,
+verifies the received size against both the stream header and the catalog, and
+commits with a no-clobber `hard_link` (exclusive `create_new` + copy fallback
+on filesystems without link support). The destination is chosen in a native
+save dialog owned by Rust; an existing destination is never replaced, and a
+name that appears after the picker fails the commit safely. Errors distinguish
+stale session/authentication loss from ordinary transfer failures and collisions.
+
+**The ADB/MTP comparison below is preliminary**: the ADB figures are backed by
+three verified runs per workload, but the MTP figures rest on one timed
+verified copy per workload (plus one verified untimed whole-fixture copy).
+Repeat MTP runs remain open follow-up; the comparison informed the transport
+decision above but does not gate it, because the app transport is the daemon
+read, whose throughput the scan-stream record bounds.
+
+The original experiment and design notes follow unchanged.
 
 ## Why measure the existing backend first?
 

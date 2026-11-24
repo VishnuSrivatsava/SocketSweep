@@ -1063,8 +1063,11 @@
     await pressKey("End");
     await waitFor(() => document.activeElement?.dataset.treeNode === "17383", "End did not reach the last logical entry");
     await pressKey("Tab");
+    const saveTrigger = document.querySelector('[aria-label="Save entry-128-127"]');
+    check(document.activeElement === saveTrigger, "Last virtual entry Save action was unreachable by Tab");
+    await pressKey("Tab");
     const deleteTrigger = document.querySelector('[aria-label="Delete entry-128-127"]');
-    check(document.activeElement === deleteTrigger, "Last virtual entry action was unreachable by Tab");
+    check(document.activeElement === deleteTrigger, "Last virtual entry Delete action was unreachable by Tab");
     await pressKey("Enter");
     await waitFor(() => document.querySelector("dialog")?.matches(":modal"), "Virtual entry did not open confirmation");
     await pressKey("Escape");

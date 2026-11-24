@@ -160,6 +160,17 @@ pub struct DeletePlan {
     pub path: String,
 }
 
+/// Prepared under the store lock like `DeletePlan`. Export never mutates the
+/// catalog: failures downstream must not quarantine the snapshot.
+pub struct ExportPlan {
+    pub(crate) generation: String,
+    pub(crate) revision: u32,
+    pub(crate) node_id: u32,
+    pub path: String,
+    pub name: String,
+    pub size: u64,
+}
+
 /// ASCII letters compare case-insensitively, matching the file-type
 /// classifier's fold rule; every other byte compares exactly. Candidates must
 /// start on a UTF-8 character boundary so a multi-byte character can never
@@ -729,6 +740,37 @@ impl Catalog {
             path: self.path(id),
         })
     }
+    /// Export eligibility follows the documented shared-storage policy even
+    /// when the session runs with root access: only regular files scanned
+    /// from shared storage are exportable, and the daemon structurally
+    /// re-confines every read to its own pinned root.
+    pub fn prepare_export(
+        &self,
+        generation: &str,
+        revision: u32,
+        id: u32,
+    ) -> Result<ExportPlan, String> {
+        self.scope(generation, revision)?;
+        let node = self.node(id)?;
+        if id == 0 || node.kind != Kind::File {
+            return Err("Choose a regular file to export; folders and special entries cannot be exported.".into());
+        }
+        if !shared_storage_root(self.response.root()) {
+            return Err("Only files scanned from shared storage can be exported.".into());
+        }
+        let path = self.path(id);
+        if path.len() + "READ ".len() > crate::MAX_COMMAND_BYTES {
+            return Err("This path cannot be sent safely: it is too long.".into());
+        }
+        Ok(ExportPlan {
+            generation: generation.into(),
+            revision,
+            node_id: id,
+            path,
+            name: node.name.to_string(),
+            size: node.size,
+        })
+    }
     fn commit_delete(&mut self, plan: &DeletePlan, message: &str) -> Result<String, String> {
         self.scope(&plan.generation, plan.revision)?;
         let node = self.node(plan.node_id)?;
@@ -823,6 +865,13 @@ pub fn finish_delete(
         *store = None;
     }
     result
+}
+
+/// Shared storage is the only export-eligible source, whatever privilege the
+/// session scanned with. The daemon structurally re-confines each read to
+/// its pinned root; this policy check selects which scans may export at all.
+pub(crate) fn shared_storage_root(root: &str) -> bool {
+    root == "/sdcard" || root.starts_with("/storage/emulated/")
 }
 
 #[cfg(test)]

@@ -1,9 +1,12 @@
 import { useState, useCallback, useRef } from "react";
-import { deleteScanNode, getScanNode } from "./scanIpc";
+import { invoke, Channel } from "@tauri-apps/api/core";
+import { deleteScanNode, getScanNode, exportScanFile, cancelExport } from "./scanIpc";
 import { checkAdb, confirmDaemonShutdown, startDaemon, stopDaemon } from "./daemonIpc";
 import { formatBytes } from "./formatBytes";
 import { sameScan } from "./scanView";
 import type { ScanResponse, NodeDetail } from "./scanView";
+import { parseExportProgress, classifyExportError } from "./exportTransfer";
+import type { ExportStage } from "./exportTransfer";
 import { useDevices } from "./useDevices";
 import { useScanRequest } from "./useScanRequest";
 import type { Toast } from "./ToastContainer";
@@ -192,9 +195,82 @@ export function useScanSession(pushToast: PushToast, addLog: (message: string) =
     setConfirmDelete(null);
   };
 
+  // ── Export ──────────────────────────────────────────────────────────────
+  // The backend owns the save picker, staging and commit; the frontend only
+  // forwards IDs, renders progress, and never sees a device or destination
+  // path it could forge. Export failures never invalidate the scan snapshot:
+  // the transfer is read-only, unlike deletion.
+  const [exportState, setExportState] = useState<{
+    exportId: string; name: string; size: number; stage: ExportStage; bytesCopied: number; totalBytes: number;
+  } | null>(null);
+  const [exportCancelling, setExportCancelling] = useState(false);
+  const exportActive = useRef<string | null>(null);
+
+  const handleExport = useCallback(async (nodeId: number, name: string, size: number) => {
+    const scope = snapshot.current;
+    if (!scope || actionPending.current) return;
+    // Export eligibility follows the shell-readable shared-storage policy, so
+    // read-only root sessions cannot export regardless of what they scanned.
+    if (scope.read_only) {
+      pushToast("Export is available in normal-mode scans only.", "info");
+      return;
+    }
+    actionPending.current = true;
+    setBusy(true);
+    const exportId = crypto.randomUUID();
+    exportActive.current = exportId;
+    setExportCancelling(false);
+    setExportState({ exportId, name, size, stage: "transferring", bytesCopied: 0, totalBytes: size });
+    addLog(`[EXPORT] Requesting ${name} (${formatBytes(size)})...`);
+    const onProgress = new Channel<unknown>();
+    onProgress.onmessage = (progress) => {
+      const parsed = parseExportProgress(progress, exportId);
+      if (exportActive.current === exportId && parsed) {
+        setExportState(prev => prev && prev.exportId === exportId
+          ? { ...prev, stage: parsed.stage, bytesCopied: parsed.bytesCopied, totalBytes: parsed.totalBytes }
+          : prev);
+      }
+      // Release backpressure for this channel even if the payload was ignored.
+      void invoke("acknowledge_export_progress", { exportId }).catch(() => {});
+    };
+    try {
+      const result = await exportScanFile(scope, nodeId, exportId, onProgress);
+      if (exportActive.current !== exportId) return;
+      pushToast(`Saved ${result.name} (${formatBytes(result.size)})`, "success");
+      addLog(`[EXPORT] Saved ${result.path} — ${formatBytes(result.size)} · sha256 ${result.sha256.slice(0, 16)}…`);
+      if (result.caveat) pushToast(result.caveat, "info");
+    } catch (err: unknown) {
+      if (exportActive.current !== exportId) return;
+      const message = err instanceof Error ? err.message : String(err);
+      pushToast(message, classifyExportError(message) === "cancelled" ? "info" : "error");
+      addLog(message === "Export cancelled" ? "[EXPORT] Cancelled." : `[ERROR] Export failed: ${message}`);
+    } finally {
+      if (exportActive.current === exportId) {
+        exportActive.current = null;
+        setExportState(null);
+        setExportCancelling(false);
+      }
+      actionPending.current = false;
+      setBusy(false);
+    }
+  }, [pushToast, addLog]);
+
+  const handleCancelExport = useCallback(async () => {
+    const exportId = exportActive.current;
+    if (!exportId) return;
+    setExportCancelling(true);
+    try {
+      await cancelExport(exportId);
+    } catch (err) {
+      pushToast(String(err), "error");
+      setExportCancelling(false);
+    }
+  }, [pushToast]);
+
   return {
     phase, deviceSelection, selectedSerial, rootMode, setRootMode, rootPath, setRootPath,
     scanData, busy, statusText, scanProgress, cancelScan, cancelling, confirmDelete,
     handleConnect, handleRescan, handleDisconnect, handleNuke, executeDelete, cancelDelete,
+    exportState, exportCancelling, handleExport, handleCancelExport,
   };
 }

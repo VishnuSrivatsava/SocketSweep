@@ -4,11 +4,12 @@ import type { LargestResponse } from "./largestFilesSummary";
 import type { ScanResponse } from "./scanView";
 import { formatBytes } from "./formatBytes";
 
-export function LargestFiles({ scope, busy, onZoom, onNuke }: {
+export function LargestFiles({ scope, busy, onZoom, onNuke, onExport }: {
   scope: ScanResponse;
   busy: boolean;
   onZoom: (id: number) => void;
   onNuke: (id: number, trigger: HTMLButtonElement) => void;
+  onExport: (id: number, name: string, size: number) => void;
 }) {
   const { generation, revision, root_path, read_only, total_files, total_size } = scope;
   const [limit, setLimit] = useState(25);
@@ -47,6 +48,8 @@ export function LargestFiles({ scope, busy, onZoom, onNuke }: {
         <span className="text-xs text-zinc-300 font-mono shrink-0">{formatBytes(node.size)}</span>
         <div className="flex flex-col gap-2 shrink-0 text-xs">
           <button disabled={busy || node.parent_id === null} onClick={() => onZoom(node.parent_id!)} className="text-accent-400 hover:underline">Show folder</button>
+          <button aria-label={`Save ${node.name}`} disabled={busy} onClick={() => onExport(node.id, node.name, node.size)}
+            className="text-accent-400 hover:underline disabled:text-zinc-600">Save</button>
           <button aria-label={`Delete ${node.name}`} disabled={busy || !node.can_delete} onClick={event => onNuke(node.id, event.currentTarget)}
             className="text-red-400 hover:underline disabled:text-zinc-600">Delete</button>
         </div>
