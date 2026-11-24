@@ -300,7 +300,7 @@
   const report = (passed, error) => {
     const output = document.createElement("pre");
     output.id = "scan-test-report";
-    output.textContent = JSON.stringify({ fixture: "scan-ui", passed, error, ipc_calls: calls.length, wide_paging: widePaging, expanded_tree: expandedTree, checks: passed ? ["offline fonts under CSP", "bounded collapsed discovery diagnostics", "discovery retry recovery", "setup alignment", "result fonts", "file label semantics", "usable file workspace", "collapsible diagnostics", "complete paging", "directory paging focus and retries", "expanded-tree row growth and keyboard focus", "first-scan comparison", "unchanged comparison after rescan", "deletion delta comparison", "cross-device comparison isolation", "bounded package-folder paging and coverage", "package query retries and stale replies", "bounded file-type totals", "file-type retry and malformed response", "file-type generation and deletion revision", "file-type coverage and empty scan", "bounded largest files", "late largest response", "largest query retry", "malformed largest response recovery", "largest ID-only deletion", "largest read-only guards", "largest folder navigation without rescanning", "bounded search results", "late search response", "search retry and malformed response", "search ID-only deletion", "read-only search deletion disabled", "late zoom", "Other tile", "stale confirmation", "exact confirmation whitespace", "reachable long-path confirmation", "native modal keyboard focus and cancellation", "ID-only deletion", "revision refresh", "partial failure", "read-only", "acknowledged shutdown", "unconfirmed shutdown", "reconnect", "stop action ordering", "duplicate rescan guard", "rescan failure recovery", "rescan cancellation recovery", "toast dismissal integration", "bounded diagnostic integration"] : undefined });
+    output.textContent = JSON.stringify({ fixture: "scan-ui", passed, error, ipc_calls: calls.length, wide_paging: widePaging, expanded_tree: expandedTree, checks: passed ? ["offline fonts under CSP", "bounded collapsed discovery diagnostics", "discovery retry recovery", "setup alignment", "result fonts", "file label semantics", "usable file workspace", "keyboard storage map visibility", "collapsible diagnostics", "complete paging", "directory paging focus and retries", "expanded-tree row growth and keyboard focus", "first-scan comparison", "unchanged comparison after rescan", "deletion delta comparison", "cross-device comparison isolation", "bounded package-folder paging and coverage", "package query retries and stale replies", "bounded file-type totals", "file-type retry and malformed response", "file-type generation and deletion revision", "file-type coverage and empty scan", "bounded largest files", "late largest response", "largest query retry", "malformed largest response recovery", "largest ID-only deletion", "largest read-only guards", "largest folder navigation without rescanning", "bounded search results", "late search response", "search retry and malformed response", "search ID-only deletion", "read-only search deletion disabled", "late zoom", "Other tile", "stale confirmation", "exact confirmation whitespace", "reachable long-path confirmation", "native modal keyboard focus and cancellation", "ID-only deletion", "revision refresh", "partial failure", "read-only", "acknowledged shutdown", "unconfirmed shutdown", "reconnect", "stop action ordering", "duplicate rescan guard", "rescan failure recovery", "rescan cancellation recovery", "toast dismissal integration", "bounded diagnostic integration"] : undefined });
     document.body.append(output);
     void fetch("/report", { method: "POST", body: output.textContent }).then(() => {
       if (passed) location.replace("/tests/toast_lifecycle_fixture.html");
@@ -820,6 +820,32 @@
     check(document.activeElement === mapFolder, "Storage map folder did not receive focus");
     await pressKey("Enter");
     await waitFor(() => button("← Back to Root") && rows().length === 129, "Keyboard map zoom failed");
+    await waitFor(() => document.querySelector('svg [role="button"]'), "Zoomed map did not render");
+    const mapToggle = button("Hide map");
+    const mapPanel = document.getElementById(mapToggle.getAttribute("aria-controls"));
+    check(mapPanel && !mapPanel.hidden && mapToggle.getAttribute("aria-expanded") === "true",
+      "Toggle does not announce the visible map");
+    const shownBounds = fileViewport.getBoundingClientRect();
+    const zoomedRoot = fileViewport.querySelector('[role="treeitem"][aria-level="1"]');
+    const zoomQueries = calls.filter(call => call.command === "get_scan_view").length;
+    button("Package folders").focus();
+    await pressKey("Tab");
+    check(document.activeElement === mapToggle, "Map toggle is missing from the keyboard tab order");
+    await pressKey("Enter");
+    await waitFor(() => mapPanel.hidden && button("Show map") === mapToggle, "Keyboard did not hide the map");
+    const hiddenBounds = fileViewport.getBoundingClientRect();
+    check(mapToggle.getAttribute("aria-expanded") === "false" && !mapPanel.querySelector("svg"),
+      "Hidden map did not clear its tiles or announce its state");
+    check(document.activeElement === mapToggle && (hiddenBounds.width > shownBounds.width || hiddenBounds.height > shownBounds.height),
+      "Hiding the map lost toggle focus or did not free space for the file list");
+    await pressKey("Enter");
+    await waitFor(() => !mapPanel.hidden && mapPanel.querySelector('svg [role="button"]'), "Keyboard did not restore the map");
+    check(document.activeElement === mapToggle && mapToggle.getAttribute("aria-expanded") === "true",
+      "Restoring the map lost focus or did not announce the visible state");
+    check(fileViewport.querySelector('[role="treeitem"][aria-level="1"]') === zoomedRoot
+      && zoomedRoot.getAttribute("aria-expanded") === "true" && rows().length === 129
+      && calls.filter(call => call.command === "get_scan_view").length === zoomQueries,
+    "Toggling the map reset the current folder or its expanded rows");
     button("← Back to Root").click();
     await waitFor(() => !button("← Back to Root") && rows().some(row => row.textContent.includes("large-folder")), "Map zoom did not return to root");
 
@@ -1093,6 +1119,19 @@
     const viewportBounds = viewport.getBoundingClientRect();
     check(finalRowBounds.top >= viewportBounds.top && finalRowBounds.bottom <= viewportBounds.bottom,
       "Final expanded entry could not be scrolled into view");
+    const wideMapToggle = button("Hide map");
+    wideMapToggle.focus({ preventScroll: true });
+    for (const visible of [false, true]) {
+      await pressKey("Enter");
+      await viewportSettled();
+      check(document.activeElement === wideMapToggle && wideMapToggle.getAttribute("aria-expanded") === String(visible),
+        "Toggling the map beside a virtualized tree lost toggle focus");
+      check(logicalRows() === 1 + 128 + 128 * 128 && rows().length < 100,
+        "Toggling the map reset expansion or broke the virtual row bound");
+      check(viewport.querySelector('[data-tree-node="17383"][tabindex="0"] button[aria-label="Delete entry-128-127"]') === last,
+        "Toggling the map discarded the active virtual row");
+    }
+    last.focus({ preventScroll: true });
     await pressKey("Home");
     await waitFor(() => document.activeElement?.dataset.treeNode === "0", "Home did not focus the first tree entry");
     await pressKey("ArrowDown");
