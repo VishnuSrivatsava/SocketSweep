@@ -60,6 +60,8 @@ export function ResultScreen({
   }, [view.error, data.root.id]);
 
   const breadcrumbs = page?.breadcrumbs ?? [];
+  const unreadable = data.unreadable_directories;
+  const unreadableCount = unreadable ? unreadable.paths.length + unreadable.omitted : 0;
 
   return (
     <div className="flex flex-col h-full min-h-0 animate-fade-in-up">
@@ -163,6 +165,19 @@ export function ResultScreen({
             {[data.errors > 0 ? `${data.errors} access errors` : "", data.skipped > 0 ? `${data.skipped} excluded or duplicate entries` : ""].filter(Boolean).join(" · ")}
           </span>
         </div>
+        {unreadable && unreadableCount > 0 && (
+          <details className="px-3 pb-2 text-xs text-zinc-400">
+            <summary className="cursor-pointer text-amber-300">
+              {unreadableCount === 1 ? "1 folder could not be read" : `${unreadableCount.toLocaleString("en-US")} folders could not be read`}
+            </summary>
+            <ul aria-label="Unreadable folder paths" className="mt-1 max-h-32 overflow-y-auto font-mono">
+              {unreadable.paths.map(path => (
+                <li key={path} className="py-0.5 whitespace-pre-wrap break-all"><bdi>{path}</bdi></li>
+              ))}
+            </ul>
+            {unreadable.omitted > 0 && <p className="mt-1">Plus {unreadable.omitted.toLocaleString("en-US")} more</p>}
+          </details>
+        )}
         {!page && !view.error && <p role="status" className="px-3 py-2 text-xs text-zinc-500">Loading storage map…</p>}
         {view.error && <div data-directory-query={zoomId} data-directory-request={view.request}><QueryError error={view.error} retry={view.retry} /></div>}
         {page && <FileTreeNode node={page.node} scope={data} parentSize={page.node.size} depth={0}

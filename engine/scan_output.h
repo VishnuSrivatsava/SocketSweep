@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+
 // Stream v1 is bounded, length-prefixed JSON, independent of the legacy SCAN
 // response. Entries precede their children; directory totals are computed by
 // the host. No lossy filename conversion is performed by either endpoint.
@@ -9,7 +11,12 @@ class ScanOutput {
         bool write(const std::string& s) { text += s; return true; }
         bool write(const char* s, size_t n) { text.append(s, n); return true; }
     };
+    static constexpr size_t MAX_UNREADABLE_DIRECTORIES = 8;
     int fd_;
+    const bool report_directory_errors_;
+    std::array<uint64_t, MAX_UNREADABLE_DIRECTORIES> unreadable_directories_{};
+    size_t unreadable_sample_size_ = 0;
+    uint64_t unreadable_omitted_ = 0;
     std::mutex mutex_;
     std::atomic<bool> failed_{false};
     uint64_t next_id_ = 0;
@@ -76,7 +83,19 @@ class ScanOutput {
 public:
     static constexpr size_t MAX_FRAME_BYTES = 128 * 1024;
     static constexpr size_t MAX_BATCH_ENTRIES = 128;
-    explicit ScanOutput(int fd) : fd_(fd) { batch_.reserve(64 * 1024); }
+    ScanOutput(int fd, bool report_directory_errors)
+        : fd_(fd), report_directory_errors_(report_directory_errors) {
+        batch_.reserve(64 * 1024);
+    }
+    void unreadable_directory(uint64_t id) {
+        if (!report_directory_errors_) return;
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (unreadable_sample_size_ < unreadable_directories_.size()) {
+            unreadable_directories_[unreadable_sample_size_++] = id;
+        } else {
+            ++unreadable_omitted_;
+        }
+    }
     bool alive() {
         if (failed_ || !g_running) return false;
         std::lock_guard<std::mutex> lock(mutex_);
@@ -136,13 +155,22 @@ public:
     bool finish(const ScanStats& stats, int64_t elapsed_ms, int workers) {
         std::lock_guard<std::mutex> lock(mutex_);
         if (failed_ || !flush_locked()) return false;
-        const std::string text = "{\"type\":\"done\",\"total_files\":" + std::to_string(stats.files) +
+        std::string text = "{\"type\":\"done\",\"total_files\":" + std::to_string(stats.files) +
             ",\"total_dirs\":" + std::to_string(stats.dirs) + ",\"total_size\":" + std::to_string(stats.total_size) +
             ",\"errors\":" + std::to_string(stats.errors) + ",\"skipped\":" + std::to_string(stats.skipped) +
             ",\"scan_time_ms\":" + std::to_string(elapsed_ms) + ",\"scan_threads\":" + std::to_string(workers) +
             ",\"serialize_ms\":" + std::to_string(ns_to_ms(encode_ns_)) +
             ",\"send_ms\":" + std::to_string(ns_to_ms(g_send_ns)) +
-            ",\"bytes_sent\":" + std::to_string(g_send_bytes) + "}";
+            ",\"bytes_sent\":" + std::to_string(g_send_bytes);
+        if (report_directory_errors_) {
+            text += ",\"unreadable_directories\":{\"ids\":[";
+            for (size_t i = 0; i < unreadable_sample_size_; ++i) {
+                if (i) text += ',';
+                text += std::to_string(unreadable_directories_[i]);
+            }
+            text += "],\"omitted\":" + std::to_string(unreadable_omitted_) + "}";
+        }
+        text += '}';
         return frame(text);
     }
 };

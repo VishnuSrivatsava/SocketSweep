@@ -67,7 +67,7 @@ static Snapshot run(const std::string& path, int workers, bool streaming = false
         require(::socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0, "socketpair failed");
         safe_delete::Fd writer(sockets[0]), reader(sockets[1]);
         std::thread drain([&] { char bytes[4096]; while (::recv(reader.get(), bytes, sizeof(bytes), 0) > 0) {} });
-        ScanOutput output(writer.get());
+        ScanOutput output(writer.get(), false);
         require(output.start(path), "stream start failed");
         uint64_t id = 0;
         require(output.entry(snapshot.tree, 0, "directory", true, id), "stream root failed");
@@ -248,7 +248,7 @@ static void stream_cancel() {
         blocked = true; ready.notify_one();
         ready.wait(lock, [&] { return release; });
     };
-    std::thread server([&] { stream_scan::handle(writer.get(), fixture.path); });
+    std::thread server([&] { stream_scan::handle(writer.get(), fixture.path, false); });
     {
         std::unique_lock<std::mutex> lock(mutex);
         require(ready.wait_for(lock, std::chrono::seconds(5), [&] { return blocked; }), "traversal barrier not reached");
@@ -288,7 +288,7 @@ static void stream_limits_and_root_replacement(bool replace) {
             require(::rename(path.c_str(), (fixture.path + "/moved").c_str()) == 0, "root rename failed");
             fixture.dir("root"); fixture.file("root/replacement", 1000000);
         };
-        stream_scan::handle(writer.get(), path);
+        stream_scan::handle(writer.get(), path, false);
         checkpoint = {};
         require(fired && g_scan_root.fd.get() < 0, "changed root enabled deletion");
     } else {
@@ -296,7 +296,7 @@ static void stream_limits_and_root_replacement(bool replace) {
         require(root.open(path), "root open failed");
         FileNode node; node.name = "root"; node.path = path; node.is_dir = true;
         node.device = root.identity.st_dev; node.inode = root.identity.st_ino;
-        ScanOutput output(writer.get());
+        ScanOutput output(writer.get(), false);
         require(output.start(path), "stream start failed");
         uint64_t id = 0; require(output.entry(node, 0, "directory", true, id), "root entry failed");
         stream_scan::Pool pool(root, output, node, 256);

@@ -25,13 +25,14 @@ def frame(client):
     return dict(type=value["type"], **value["data"]), size + 4
 
 class StreamScanTests(DaemonHarness):
-    def connect_scan(self, root=None):
+    def connect_scan(self, root=None, *, diagnostics=False):
         client = socket.create_connection(('127.0.0.1', self.port), timeout=3)
-        client.sendall(f'AUTH {self.token}\nSCAN_STREAM {root or self.root}\n'.encode())
+        command = 'SCAN_DETAIL' if diagnostics else 'SCAN_STREAM'
+        client.sendall(f'AUTH {self.token}\n{command} {root or self.root}\n'.encode())
         return client
 
-    def collect(self, root=None):
-        with self.connect_scan(root) as client:
+    def collect(self, root=None, *, diagnostics=False):
+        with self.connect_scan(root, diagnostics=diagnostics) as client:
             started, byte_count = frame(client)
             if started['type'] == 'error':
                 return started, {}, []
@@ -202,6 +203,53 @@ class StreamScanTests(DaemonHarness):
         result, _, _ = self.collect('relative-root')
         self.assertEqual(result['type'], 'error')
 
+    def test_directory_diagnostics_distinguish_unreadable_from_empty_and_bound_the_sample(self):
+        if os.geteuid() == 0:
+            self.skipTest('Directory permissions require an unprivileged daemon')
+        (self.root / 'empty').mkdir()
+        blocked = [self.root / f'blocked {i}' for i in range(11)]
+
+        def block(path):
+            path.mkdir()
+            (path / 'hidden.txt').write_bytes(b'hidden')
+            self.addCleanup(path.chmod, 0o700)
+            path.chmod(0)
+
+        self.assertIs(self.request('PING')['scan_directory_errors'], True)
+        block(blocked[0])
+        done, entries, _ = self.collect(diagnostics=True)
+        self.assertEqual(done['errors'], 1)
+        self.assertEqual(done['skipped'], 0)
+        self.assertEqual(done['total_files'], 0)
+        self.assertEqual(done['total_dirs'], 3)
+        sample = done['unreadable_directories']
+        self.assertEqual(sample['omitted'], 0)
+        self.assertEqual([entries[id]['name'] for id in sample['ids']], [blocked[0].name])
+
+        for path in blocked[1:]:
+            block(path)
+        done, entries, _ = self.collect(diagnostics=True)
+        self.assertEqual(done['errors'], len(blocked))
+        self.assertEqual(done['total_dirs'], len(blocked) + 2)
+        self.assertEqual(done['total_size'], 0)
+        sample = done['unreadable_directories']
+        names = {entries[id]['name'] for id in sample['ids']}
+        self.assertEqual(len(sample['ids']), 8)
+        self.assertEqual(len(names), 8)
+        self.assertLessEqual(names, {path.name for path in blocked})
+        self.assertEqual(sample['omitted'], 3)
+
+        legacy, _, _ = self.collect()
+        self.assertNotIn('unreadable_directories', legacy)
+        self.assertEqual(legacy['errors'], done['errors'])
+
+        for path in blocked:
+            path.chmod(0o700)
+        recovered, _, _ = self.collect(diagnostics=True)
+        self.assertEqual(recovered['unreadable_directories'], dict(ids=[], omitted=0))
+        self.assertEqual(recovered['errors'], 0)
+        self.assertEqual(recovered['total_files'], len(blocked))
+
     def test_depth_limit_preserves_counts_and_reports_error(self):
         directory = self.root
         for level in range(67):
@@ -209,10 +257,11 @@ class StreamScanTests(DaemonHarness):
             directory = directory / 'next'
             directory.mkdir()
         legacy = self.scan()
-        done, _, _ = self.collect()
+        done, _, _ = self.collect(diagnostics=True)
         for key in ['total_files', 'total_dirs', 'total_size', 'errors', 'skipped']:
             self.assertEqual(done[key], legacy[key], key)
         self.assertEqual(done['errors'], 1)
+        self.assertEqual(done['unreadable_directories'], dict(ids=[], omitted=0))
 
     def test_extra_command_bytes_abort_the_stream(self):
         with socket.create_connection(('127.0.0.1', self.port), timeout=3) as client:

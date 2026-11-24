@@ -158,6 +158,28 @@ test("scan and deletion summaries validate before becoming the active snapshot",
   assert.throws(() => parseDeleteResult({ ...deletion, summary: {} }));
 });
 
+test("unreadable folder paths and omitted counts stay within the scan scope", () => {
+  const paths = Array.from({ length: 8 }, (_, index) => `/scan/parent/ folder ${index} `);
+  const summary = {
+    ...scope, status: "ok", root_path: "/scan", read_only: true,
+    total_size: 0, total_files: 0, total_dirs: 10, errors: 11, skipped: 1, scan_time_ms: 0,
+    root: { id: 0, parent_id: null, name: "scan", type: "directory", size: 0,
+      counted: true, child_count: 9, can_delete: false },
+    unreadable_directories: { paths, omitted: 2 },
+  };
+  assert.deepEqual(parseScanSummary(summary), summary);
+  for (const sample of [
+    { paths, omitted: 4 }, { paths: [...paths, "/scan"], omitted: 0 },
+    { paths: ["/scan"], omitted: 1 }, { paths: ["/scan", "/scan"], omitted: 0 },
+    { paths: ["/scan/../outside"], omitted: 0 }, { paths: ["/scan-neighbor"], omitted: 0 },
+    { paths: ["/scan/\0"], omitted: 0 }, { paths: ["/scan/a//b"], omitted: 0 },
+  ]) {
+    assert.throws(() => parseScanSummary({ ...summary, unreadable_directories: sample }), /Invalid scan summary/);
+  }
+  assert.deepEqual(parseScanSummary({ ...summary, unreadable_directories: { paths: ["/scan"], omitted: 0 } })
+    .unreadable_directories, { paths: ["/scan"], omitted: 0 });
+});
+
 test("folder views reject malformed children, cursor anchors and chart data", () => {
   const node = { id: 0, parent_id: null, name: "/", type: "directory", size: 1,
     counted: true, child_count: 1, can_delete: false };

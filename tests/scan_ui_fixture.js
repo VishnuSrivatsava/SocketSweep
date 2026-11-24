@@ -35,6 +35,7 @@
   let expandedTree;
   let emptyScan = false;
   let coverageErrors = 0;
+  let unreadableDirectories;
   let coverageSkipped = 0;
   let failDelete = false;
   let failScan = false;
@@ -86,6 +87,7 @@
     ...scope(), status: "ok", root_path: scanRoot, root: { ...node(0, null, "fixture", rootChildren.reduce((sum, item) => sum + item.size, 0), true), child_count: rootChildren.length },
     total_files: wideFolders ? 128 * 128 : rootChildren.filter(item => item.type === "file").length + folderChildren.length, total_dirs: 1 + rootChildren.filter(item => item.type === "directory").length,
     total_size: rootChildren.reduce((sum, item) => sum + item.size, 0), errors: coverageErrors, skipped: coverageSkipped, scan_time_ms: 1, read_only: readOnly,
+    unreadable_directories: unreadableDirectories,
   });
   const wideEntries = parent => Array.from({ length: 128 }, (_, index) =>
     node(1000 + (parent - 1) * 128 + index, parent, `entry-${parent}-${index}`, 1));
@@ -888,9 +890,20 @@
     readOnly = true;
     coverageErrors = 2;
     coverageSkipped = 3;
+    unreadableDirectories = { paths: [`${scanRoot}/large-folder`], omitted: 0 };
     document.querySelector("#btn-connect").click();
     await waitFor(() => rows().length === 129, "Read-only page missing");
     check(document.body.textContent.includes("Deletion disabled"), "Read-only banner missing");
+    const unreadablePaths = document.querySelector('[aria-label="Unreadable folder paths"]');
+    const unreadableDetails = unreadablePaths?.closest("details");
+    check(unreadableDetails && !unreadableDetails.open, "Unreadable paths should start collapsed");
+    const unreadableSummary = unreadableDetails.querySelector("summary");
+    check(unreadableSummary.textContent.includes("1 folder could not be read"), "Unreadable folder count missing");
+    unreadableSummary.click();
+    await waitFor(() => unreadableDetails.open, "Unreadable paths did not expand");
+    check(unreadablePaths.textContent === unreadableDirectories.paths[0]
+      && !unreadablePaths.querySelector("a, button"), "Unreadable paths or actions are incorrect");
+    unreadableSummary.click();
     await waitFor(() => document.querySelector("#scan-history")?.textContent.includes("comparison unavailable"), "Partial scan claimed a history comparison");
     check(!document.querySelector('[aria-label^="Delete "]'), "Read-only deletion enabled");
     button("Package folders").click();
@@ -940,6 +953,7 @@
     readOnly = false;
     coverageErrors = 0;
     coverageSkipped = 0;
+    unreadableDirectories = undefined;
     stopOutcome = "acknowledged";
     selectDevice("phone-one");
     await waitFor(() => picker().value === "phone-one" && document.querySelector("#btn-connect:enabled"),
@@ -949,6 +963,7 @@
     check(activeDevice === "phone-one" && scope().generation !== previousGeneration && document.querySelector("#connected-device").textContent.includes("phone-one"), "Device switch reused old results/identity");
     await waitFor(() => document.querySelector("#scan-history")?.textContent.includes("No previous comparable scan"), "Cross-device comparison reused another device's baseline");
     check(!button("NUKE IT"), "Device switch retained a destructive confirmation");
+    check(!document.querySelector('[aria-label="Unreadable folder paths"]'), "Device switch retained prior scan diagnostics");
     const deleteCallsBeforeSwitch = calls.filter(call => call.command === "delete_item").length;
     document.querySelector('[aria-label="Delete  file-0 "]').click();
     await waitFor(() => button("NUKE IT"), "Cross-device confirmation fixture did not open");

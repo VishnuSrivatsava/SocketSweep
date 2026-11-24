@@ -120,6 +120,11 @@ struct NodeSummary<'a> {
     can_delete: bool,
 }
 #[derive(Serialize)]
+struct UnreadableDirectories {
+    paths: Vec<String>,
+    omitted: u64,
+}
+#[derive(Serialize)]
 struct Summary<'a> {
     #[serde(flatten)]
     stats: &'a Response,
@@ -127,6 +132,8 @@ struct Summary<'a> {
     revision: u32,
     root_path: &'a str,
     root: NodeSummary<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unreadable_directories: Option<UnreadableDirectories>,
 }
 #[derive(Serialize)]
 struct Breadcrumb<'a> {
@@ -310,6 +317,14 @@ impl Catalog {
             revision: self.revision,
             root_path: &self.response.root,
             root: self.summary_node(0),
+            unreadable_directories: self.response.unreadable_directories.as_ref().map(|sample| {
+                let mut paths: Vec<_> = sample.ids.iter().map(|&id| self.path(id)).collect();
+                paths.sort_unstable();
+                UnreadableDirectories {
+                    paths,
+                    omitted: sample.omitted,
+                }
+            }),
         }
     }
     pub fn summary_json(&self) -> Result<String, String> {

@@ -331,14 +331,24 @@ static FileNode scan(const std::string& path, const std::string& name,
     if (depth >= cfg::MAX_DEPTH) { ++st.errors; return node; }
 
     DIR* dir = ::opendir(path.c_str());
-    if (!dir) { ++st.errors; return node; }
+    if (!dir) {
+        ++st.errors;
+        if (output) output->unreadable_directory(id);
+        return node;
+    }
 
     struct dirent* ent;
     while (true) {
         if (output && !output->alive()) break;
         errno = 0;
         ent = ::readdir(dir);
-        if (!ent) { if (output && errno != 0) ++st.errors; break; }
+        if (!ent) {
+            if (output && errno != 0) {
+                ++st.errors;
+                output->unreadable_directory(id);
+            }
+            break;
+        }
         if (ent->d_name[0] == '.') {
             if (ent->d_name[1] == '\0') continue;
             if (ent->d_name[1] == '.' && ent->d_name[2] == '\0') continue;
@@ -394,7 +404,7 @@ static void handle_client(int fd) {
     }
 
     if (cmd == "PING") {
-        out.write("{\"status\":\"ok\",\"message\":\"pong\",\"protocol_version\":3,\"scan_stream_version\":1,\"uid\":");
+        out.write("{\"status\":\"ok\",\"message\":\"pong\",\"protocol_version\":3,\"scan_stream_version\":1,\"scan_directory_errors\":true,\"uid\":");
         out.write(std::to_string(::geteuid()));
         out.write(",\"read_only\":");
         out.write(g_read_only ? "true" : "false");
@@ -442,7 +452,11 @@ static void handle_client(int fd) {
         }
     }
     else if (cmd == "SCAN_STREAM" || cmd.rfind("SCAN_STREAM ", 0) == 0) {
-        stream_scan::handle(fd, cmd.size() > 11 ? cmd.substr(12) : cfg::DEFAULT_ROOT);
+        stream_scan::handle(fd, cmd.size() > 11 ? cmd.substr(12) : cfg::DEFAULT_ROOT, false);
+        return;
+    }
+    else if (cmd == "SCAN_DETAIL" || cmd.rfind("SCAN_DETAIL ", 0) == 0) {
+        stream_scan::handle(fd, cmd.size() > 11 ? cmd.substr(12) : cfg::DEFAULT_ROOT, true);
         return;
     }
     else if (cmd == "SCAN" || cmd.rfind("SCAN ", 0) == 0) {

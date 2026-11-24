@@ -21,6 +21,7 @@ export interface ScanResponse {
   total_dirs: number;
   total_size: number;
   errors: number;
+  unreadable_directories?: { paths: string[]; omitted: number };
   read_only: boolean;
   skipped: number;
   /** Per-phase timings from daemon v1.2+ (issue #3); absent in older daemons. */
@@ -58,6 +59,7 @@ export interface ScanScope { generation: string; revision: number }
 export const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 export const isCount = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 export const isU32 = (value: unknown): value is number => isCount(value) && value <= 0xffff_ffff;
+const maxUnreadableDirectories = 8;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { ignoreBOM: true });
 const textBytes = (value: string) => {
@@ -152,6 +154,17 @@ export function parseScanSummary(data: unknown): ScanResponse {
     || (data.streamed !== undefined && typeof data.streamed !== "boolean")) throw invalid();
   for (const field of ["traverse_ms", "sort_ms", "serialize_ms", "send_ms", "bytes_sent"]) {
     if (data[field] !== undefined && !isCount(data[field])) throw invalid();
+  }
+  const unreadable = data.unreadable_directories;
+  if (unreadable !== undefined) {
+    const prefix = data.root_path === "/" ? "/" : `${data.root_path}/`;
+    if (!isRecord(unreadable) || !isCount(unreadable.omitted)
+      || !Array.isArray(unreadable.paths) || unreadable.paths.length > maxUnreadableDirectories
+      || (unreadable.omitted > 0 && unreadable.paths.length !== maxUnreadableDirectories)
+      || unreadable.paths.length > data.errors || unreadable.omitted > data.errors - unreadable.paths.length
+      || !unreadable.paths.every(path => typeof path === "string" && textBytes(path) <= 16 * 1024
+        && (path === data.root_path || (path.startsWith(prefix) && path.slice(prefix.length).split("/").every(entryName))))
+      || new Set(unreadable.paths).size !== unreadable.paths.length) throw invalid();
   }
   const { node } = parseNodeReference({ node: data.root, path: data.root_path }, {
     root_path: data.root_path, read_only: data.read_only, total_size: data.total_size,
