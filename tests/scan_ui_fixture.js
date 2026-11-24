@@ -693,7 +693,9 @@
     button("Search this folder").click();
     await waitFor(() => document.body.textContent.includes("No matching names in this folder"), "Folder search included outside filenames");
     button("← Back to Root").click();
-    await waitFor(() => rows().length === 129, "Root map missing after folder search");
+    await waitFor(() => rows()[0]?.textContent.includes("fixture") && folderToggle(), "Root map missing after folder search");
+    if (folderToggle().getAttribute("aria-expanded") === "true") await activate(folderToggle());
+    await waitFor(() => rows().length === 129, "Root entries did not settle after folder search");
     button("Search").click();
     await waitFor(() => document.querySelector("#search-input"), "Search controls missing");
     // The first response is held; an empty superseding query must win and
