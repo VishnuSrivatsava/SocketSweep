@@ -34,8 +34,10 @@ Percentages use total scanned file bytes; displayed rounding may not sum to
 The scan root, access-error count and excluded/duplicate-entry count remain
 visible. This describes scanned data, not the phone's complete physical storage
 or Android app ownership. Root scans retain the existing read-only banner.
-There are no deletion controls in this view. External device changes require a
-rescan, as with the other snapshot views.
+Select a category to browse its counted files across the scan. The list uses
+the same extension rules as the totals and the same navigation and confirmation
+controls as Search. **Clear filter** returns to the breakdown. Root scans keep
+deletion disabled. External device changes require a rescan.
 
 ## Ownership and bounds
 
@@ -51,6 +53,12 @@ persistent index or full-tree copy. Exactly eight category records cross IPC;
 filenames and paths are not returned. The existing response-size cap applies.
 The command uses the existing scan-store lock, so it observes one coherent
 revision. Switching away and returning runs another host query.
+
+Category results use the Search pager. The host filters live, counted files
+before applying the offset and stops at 100 rows or the existing 1 MiB IPC
+limit. Continue by the actual number of rows returned, including short pages.
+The frontend checks the echoed category and scan revision. Changing categories
+or deleting a file starts at the first page.
 
 The frontend validates safe integer counts, all eight unique known categories,
 matching scan identity, both sums and the expected scan totals. It hides stale

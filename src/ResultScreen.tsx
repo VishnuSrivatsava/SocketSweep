@@ -163,7 +163,7 @@ export function ResultScreen({
           </button>
         )}
       </div>
-      {mode === "apps" ? <AppUsage key={data.revision} scope={data} busy={busy} /> : mode === "types" ? <FileTypes scope={data} busy={busy} /> : mode === "largest" ? <LargestFiles scope={data} busy={busy} onZoom={onZoom} onNuke={onNuke} /> : mode === "search" ? <SearchFiles key={searchFolder?.id ?? "all"} scope={data} folder={searchFolder} busy={busy} onZoom={onZoom} onNuke={onNuke} /> : <div className={`flex-1 min-h-0 grid gap-3 px-4 pb-3 ${mapVisible
+      {mode === "apps" ? <AppUsage key={data.revision} scope={data} busy={busy} /> : mode === "types" ? <FileTypes scope={data} busy={busy} onZoom={onZoom} onNuke={onNuke} /> : mode === "largest" ? <LargestFiles scope={data} busy={busy} onZoom={onZoom} onNuke={onNuke} /> : mode === "search" ? <SearchFiles key={searchFolder?.id ?? "all"} scope={data} folder={searchFolder} busy={busy} onZoom={onZoom} onNuke={onNuke} /> : <div className={`flex-1 min-h-0 grid gap-3 px-4 pb-3 ${mapVisible
         ? "grid-rows-[7rem_minmax(0,1fr)] md:grid-rows-1 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]"
         : "grid-cols-1 grid-rows-1"}`}>
       <div id="storage-map-panel" ref={mapPanel} hidden={!mapVisible} className="min-h-0 min-w-0">

@@ -19,9 +19,9 @@ const CHART_SIZE: usize = 64;
 const MAX_QUERY_BYTES: usize = 1024 * 1024;
 type Key = (Reverse<u64>, Arc<str>, u32);
 
-#[derive(Clone, Copy, Serialize)]
+#[derive(Clone, Copy, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-enum FileType {
+pub(super) enum FileType {
     Images,
     Videos,
     Audio,
@@ -67,6 +67,12 @@ impl FileType {
             _ => Self::Other,
         }
     }
+}
+
+#[derive(Clone, Copy)]
+enum SearchFilter<'a> {
+    Name(&'a str),
+    FileType(FileType),
 }
 
 // Directory names identify package folders, including leftovers from removed
@@ -651,6 +657,26 @@ impl Catalog {
                 "Search text is longer than any stored name ({MAX_SEARCH_QUERY_BYTES} bytes)"
             ));
         }
+        self.entry_results_json(SearchFilter::Name(query), skip, folder_id)
+    }
+
+    pub fn file_type_results_json(
+        &self,
+        generation: &str,
+        revision: u32,
+        file_type: FileType,
+        skip: u32,
+    ) -> Result<String, String> {
+        self.scope(generation, revision)?;
+        self.entry_results_json(SearchFilter::FileType(file_type), skip, None)
+    }
+
+    fn entry_results_json(
+        &self,
+        filter: SearchFilter<'_>,
+        skip: u32,
+        folder_id: Option<u32>,
+    ) -> Result<String, String> {
         #[derive(Serialize)]
         struct Entry<'a> {
             node: NodeSummary<'a>,
@@ -661,15 +687,22 @@ impl Catalog {
             generation: &'a str,
             revision: u32,
             query: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            file_type: Option<FileType>,
             skip: u32,
             folder_id: Option<u32>,
             has_more: bool,
             results: Vec<Entry<'a>>,
         }
+        let (query, file_type) = match filter {
+            SearchFilter::Name(query) => (query, None),
+            SearchFilter::FileType(kind) => ("", Some(kind)),
+        };
         let mut page = Search {
             generation: &self.generation,
             revision: self.revision,
             query,
+            file_type,
             skip,
             folder_id,
             has_more: false,
@@ -679,8 +712,14 @@ impl Catalog {
         // byte longer than `true`, so this also covers a continuation page.
         let mut remaining = MAX_QUERY_BYTES - json(&page)?.len();
         let mut omitted = 0_usize;
-        self.visit_entries_from(folder, |id, node| {
-            if !name_matches(&node.name, query.as_bytes()) {
+        self.visit_entries_from(folder_id.unwrap_or(0), |id, node| {
+            let matches = match filter {
+                SearchFilter::Name(query) => name_matches(&node.name, query.as_bytes()),
+                SearchFilter::FileType(kind) => {
+                    node.kind == Kind::File && node.counted && FileType::of(&node.name) == kind
+                }
+            };
+            if !matches {
                 return Ok(true);
             }
             if omitted < skip as usize {
@@ -1156,6 +1195,71 @@ mod tests {
         let result = value(store.as_ref().unwrap().file_types_json("generation-a", 2));
         assert_eq!(result["total_files"], 0);
         assert_eq!(result["total_size"], 0);
+    }
+
+    #[test]
+    fn file_type_pages_match_totals_and_restart_after_deletion() {
+        let folder_name = "\u{1}".repeat(255);
+        let depth = 12;
+        let mut entries = vec![root(), entry(1, Some(0), "album.JPG", "directory", 0, true)];
+        for id in 2..=depth {
+            entries.push(entry(id, Some(id - 1), &folder_name, "directory", 0, true));
+        }
+        let mut expected = BTreeSet::new();
+        for index in 0..=130 {
+            let id = entries.len();
+            expected.insert(id as u64);
+            entries.push(entry(id, Some(depth), &format!("photo-{index}.JPG"), "file", index as u64, true));
+            entries.push(entry(id + 1, Some(depth), &format!("photo-{index}.txt"), "file", 1000, true));
+        }
+        entries.push(entry(entries.len(), Some(depth), "duplicate.jpg", "file", 0, false));
+        entries.push(entry(entries.len(), Some(depth), "special.png", "other", 0, false));
+
+        let mut store = Some(Catalog::new(fixture(&entries, false), "generation-a".into()));
+        let catalog = store.as_ref().unwrap();
+        let category = |catalog: &Catalog, revision| {
+            value(catalog.file_types_json("generation-a", revision))["categories"][0].clone()
+        };
+        let totals = category(catalog, 0);
+        let (mut skip, mut bytes) = (0, 0);
+        let mut seen = BTreeSet::new();
+        loop {
+            let raw = catalog.file_type_results_json("generation-a", 0, FileType::Images, skip).unwrap();
+            let page: Value = serde_json::from_str(&raw).unwrap();
+            let rows = page["results"].as_array().unwrap();
+            assert!(raw.len() <= MAX_QUERY_BYTES && !rows.is_empty() && rows.len() < MAX_SEARCH_RESULTS);
+            assert_eq!(page["file_type"], "images");
+            assert_eq!(page["skip"], skip);
+            for row in rows {
+                let node = &row["node"];
+                assert!(seen.insert(node["id"].as_u64().unwrap()));
+                assert_eq!(node["type"], "file");
+                assert_eq!(node["counted"], true);
+                bytes += node["size"].as_u64().unwrap();
+            }
+            skip += rows.len() as u32;
+            assert_eq!(page["has_more"], (skip as usize) < expected.len());
+            if page["has_more"] == false {
+                break;
+            }
+        }
+        assert_eq!(seen, expected);
+        assert_eq!(totals["files"], skip);
+        assert_eq!(totals["size"], bytes);
+
+        let removed = depth as u32 + 1;
+        let plan = catalog.prepare_delete("generation-a", 0, removed).unwrap();
+        finish_delete(&mut store, &plan, success()).unwrap();
+        let catalog = store.as_ref().unwrap();
+        assert!(catalog.file_type_results_json("generation-a", 0, FileType::Images, 0).is_err());
+        assert!(catalog.file_type_results_json("older", 1, FileType::Images, 0).is_err());
+        let page = value(catalog.file_type_results_json("generation-a", 1, FileType::Images, 0));
+        assert_eq!(page["revision"], 1);
+        let last = value(catalog.file_type_results_json("generation-a", 1, FileType::Images, skip - 2));
+        assert_eq!(last["results"].as_array().unwrap().len(), 1);
+        assert_ne!(last["results"][0]["node"]["id"], removed);
+        assert_eq!(last["has_more"], false);
+        assert_eq!(category(catalog, 1)["files"], skip - 1);
     }
 
     #[test]
