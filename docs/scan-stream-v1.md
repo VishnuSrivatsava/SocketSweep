@@ -69,6 +69,32 @@ The daemon pins its pending root separately and promotes it only after an
 unchanged-root check and successful completion write. Existing descriptor-
 anchored deletion and root read-only checks remain in force.
 
+## Unreadable directory diagnostics
+
+A daemon that advertises `scan_directory_errors: true` in `PING` accepts
+`SCAN_DETAIL <absolute root>`. It follows the same stream rules as
+`SCAN_STREAM` and adds one field to the `done` payload:
+
+```json
+{"unreadable_directories":{"ids":[42,51],"omitted":0}}
+```
+
+The daemon records directory-open or iteration failures. The sample holds at
+most eight distinct directory IDs. Additional failures increment `omitted`,
+which is zero until the sample is full. The order in which parallel workers
+encounter failures can change which directories appear. A directory that
+could only be read in part may contain some scanned entries. Empty folders,
+depth limits, failures to stat individual entries, exclusions, and duplicate
+inodes do not produce unreadable-directory diagnostics. Existing error and
+exclusion counters and scan totals keep their meanings.
+
+The host validates the IDs against counted directories in the completed tree,
+checks the sample and omitted count against the aggregate error count, and
+reconstructs paths from the verified root and entry names. The results screen
+displays those paths as text and keeps the details attached to the completed
+scan until a rescan. Older clients and daemons can continue using
+`SCAN_STREAM`, which retains its original payload.
+
 ## Bounds and cancellation
 
 Normal scanning retains immediate directory jobs rather than completed file

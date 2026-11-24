@@ -22,6 +22,7 @@ pub(super) struct Connection {
     pub token: String,
     pub serial: String,
     pub read_only: bool,
+    pub scan_directory_errors: bool,
 }
 
 pub(super) struct Session {
@@ -151,6 +152,7 @@ impl Session {
                 token: new_random_id()?,
                 serial,
                 read_only: false,
+                scan_directory_errors: false,
             },
         })
     }
@@ -345,7 +347,9 @@ impl Session {
             &self.connection.token,
             remaining(deadline)?.min(Duration::from_secs(5)),
         )?;
-        self.connection.read_only = require_handshake(&pong, root_mode)?.read_only.unwrap();
+        let handshake = require_handshake(&pong, root_mode)?;
+        self.connection.read_only = handshake.read_only.unwrap();
+        self.connection.scan_directory_errors = handshake.scan_directory_errors == Some(true);
         Ok(format!(
             "{{\"daemon_pid\":\"{}\",\"ping_response\":{pong}}}",
             ready.pid

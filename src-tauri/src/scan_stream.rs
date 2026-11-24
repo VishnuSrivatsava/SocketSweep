@@ -10,6 +10,8 @@ use std::time::{Duration, Instant};
 
 pub const MAX_FRAME_BYTES: usize = 128 * 1024;
 const MAX_BATCH_ENTRIES: usize = 128;
+// Eight 16 KiB paths fit in the 1 MiB IPC summary even with JSON escaping.
+const MAX_UNREADABLE_DIRECTORIES: usize = 8;
 const MAX_NODES: usize = 2_000_000;
 const MAX_TREE_BYTES: usize = 128 * 1024 * 1024;
 #[cfg(test)]
@@ -44,11 +46,35 @@ enum Frame {
         serialize_ms: u64,
         send_ms: u64,
         bytes_sent: u64,
+        unreadable_directories: Option<UnreadableDirectories>,
     },
     Error {
         message: String,
     },
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct UnreadableDirectories {
+    pub ids: Vec<u32>,
+    pub omitted: u64,
+}
+
+impl UnreadableDirectories {
+    fn valid(&self, nodes: &[Node], errors: u64) -> bool {
+        let count = self.ids.len();
+        count <= MAX_UNREADABLE_DIRECTORIES
+            && (self.omitted == 0 || count == MAX_UNREADABLE_DIRECTORIES)
+            && count as u64 <= errors
+            && self.omitted <= errors - count as u64
+            && self.ids.iter().enumerate().all(|(index, id)| {
+                !self.ids[..index].contains(id)
+                    && nodes.get(*id as usize).is_some_and(|node| {
+                        node.kind == Kind::Directory && node.counted
+                    })
+            })
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Entry {
@@ -164,6 +190,8 @@ pub struct Response {
     pub(crate) total_dirs: u64,
     pub(crate) total_size: u64,
     pub(crate) errors: u64,
+    #[serde(skip)]
+    pub(crate) unreadable_directories: Option<UnreadableDirectories>,
     pub(crate) skipped: u64,
     pub(crate) read_only: bool,
     scan_time_ms: u64,
@@ -430,6 +458,7 @@ pub fn read(
                 serialize_ms,
                 send_ms,
                 bytes_sent,
+                unreadable_directories,
             } => {
                 if nodes.is_empty()
                     || total_files != observed.files
@@ -452,6 +481,12 @@ pub fn read(
                     return Err(
                         "Scan completion does not match received entries or negotiated mode".into(),
                     );
+                }
+                if unreadable_directories
+                    .as_ref()
+                    .is_some_and(|sample| !sample.valid(&nodes, errors))
+                {
+                    return Err("Invalid unreadable directory diagnostics".into());
                 }
                 let mut trailing = [0];
                 if reader
@@ -518,6 +553,7 @@ pub fn read(
                     total_dirs,
                     total_size,
                     errors,
+                    unreadable_directories,
                     skipped,
                     read_only: expected_read_only,
                     scan_time_ms,
@@ -688,6 +724,43 @@ mod tests {
             json!({"total_files":2,"total_size":14})
         ))
         .is_err());
+    }
+    #[test]
+    fn unreadable_directories_are_bounded_counted_nodes_with_scoped_paths() {
+        let mut entries = vec![root(), file()];
+        for id in 2..=9 {
+            let parent = if id == 3 { 2 } else { 0 };
+            entries.push(json!({"id":id,"parent":parent,"name":format!(" folder {id} "),
+                "kind":"directory","size":0,"counted":true}));
+        }
+        entries.push(json!({"id":10,"parent":0,"name":"excluded","kind":"directory","size":0,"counted":false}));
+        let read = |ids: Vec<u32>, omitted| {
+            parse(stream(entries.clone(), json!({"total_dirs":9,"errors":11,"skipped":1,
+                "unreadable_directories":{"ids":ids,"omitted":omitted}})))
+        };
+        let ids = vec![0, 2, 3, 4, 5, 6, 7, 8];
+        let response = read(ids.clone(), 2).unwrap();
+        let catalog = crate::scan_store::Catalog::new(response, "generation".into());
+        let summary: Value = serde_json::from_str(&catalog.summary_json().unwrap()).unwrap();
+        let sample = &summary["unreadable_directories"];
+        assert_eq!(sample["omitted"], 2);
+        assert_eq!(sample["paths"].as_array().unwrap().len(), 8);
+        assert!(sample["paths"].as_array().unwrap().contains(&json!("/fixture/ folder 2 / folder 3 ")));
+        assert!(sample["paths"].as_array().unwrap().contains(&json!("/fixture")));
+        assert_eq!(summary["errors"], 11);
+        assert_eq!(summary["skipped"], 1);
+
+        for (ids, omitted) in [
+            ((2..=9).chain([0]).collect(), 0), // over sample budget
+            (vec![1], 0),                    // file
+            (vec![10], 0),                   // excluded directory
+            (vec![99], 0),                   // unknown node
+            (vec![2, 2], 0),                 // duplicate
+            (vec![2], 1),                    // omissions before sample is full
+            (ids, 4),                       // exceeds the access-error count
+        ] {
+            assert_eq!(read(ids, omitted).err().as_deref(), Some("Invalid unreadable directory diagnostics"));
+        }
     }
     #[test]
     fn rejects_mismatched_completion_and_root_modes() {

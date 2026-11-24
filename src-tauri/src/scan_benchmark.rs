@@ -405,6 +405,7 @@ mod tests {
                 token: "0".repeat(64),
                 serial: "fixture-device".into(),
                 read_only: false,
+                scan_directory_errors: false,
             };
             let server = std::thread::spawn(move || {
                 let (mut socket, _) = listener.accept().unwrap();

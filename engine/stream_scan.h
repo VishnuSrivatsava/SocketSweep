@@ -33,10 +33,18 @@ class Pool {
         ++stats.dirs;
         if (task.depth >= cfg::MAX_DEPTH) { ++stats.errors; return; }
         safe_delete::Fd opened = parallel_scan::open_directory(root_, task.node);
-        if (opened.get() < 0) { ++stats.errors; return; }
+        if (opened.get() < 0) {
+            ++stats.errors;
+            output_.unreadable_directory(task.id);
+            return;
+        }
         SOCKETSWEEP_SCAN_CHECKPOINT("opened", opened.get(), task.node.path.c_str());
         DIR* listing = ::fdopendir(opened.get());
-        if (!listing) { ++stats.errors; return; }
+        if (!listing) {
+            ++stats.errors;
+            output_.unreadable_directory(task.id);
+            return;
+        }
         opened.release();
         std::vector<Task> directories;
         struct Staging {
@@ -56,7 +64,13 @@ class Pool {
         while (output_.alive()) {
             errno = 0;
             const auto* entry = ::readdir(listing);
-            if (!entry) { if (errno) ++stats.errors; break; }
+            if (!entry) {
+                if (errno) {
+                    ++stats.errors;
+                    output_.unreadable_directory(task.id);
+                }
+                break;
+            }
             const std::string name = entry->d_name;
             if (name == "." || name == "..") continue;
 #ifdef DT_LNK
@@ -158,10 +172,10 @@ public:
     }
 };
 
-static void handle(int fd, std::string root) {
+static void handle(int fd, std::string root, bool report_directory_errors) {
     g_scan_root.clear();
     g_send_ns = 0; g_send_bytes = 0;
-    ScanOutput output(fd);
+    ScanOutput output(fd, report_directory_errors);
     while (root.size() > 1 && root.back() == '/') root.pop_back();
     if (root.empty() || root.front() != '/') { output.error("Scan root must be an absolute directory"); return; }
     if (g_read_only) {

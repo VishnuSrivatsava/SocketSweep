@@ -264,6 +264,7 @@ struct DaemonStatus {
     message: Option<String>,
     protocol_version: Option<u32>,
     scan_stream_version: Option<u32>,
+    scan_directory_errors: Option<bool>,
     uid: Option<u32>,
     read_only: Option<bool>,
 }
@@ -408,7 +409,12 @@ fn run_scan(
         .unwrap_or_else(|| "/sdcard".into());
     let connection = active_connection()?;
     let serial = connection.serial.clone();
-    let payload = command_payload(&format!("SCAN_STREAM {effective_root}"), &connection.token)?;
+    let command = if connection.scan_directory_errors {
+        "SCAN_DETAIL"
+    } else {
+        "SCAN_STREAM"
+    };
+    let payload = command_payload(&format!("{command} {effective_root}"), &connection.token)?;
     let read_only = connection.read_only;
     let cancelled = Arc::new(AtomicBool::new(false));
     let progress_pending = Arc::new(AtomicBool::new(false));
@@ -464,6 +470,9 @@ fn run_scan(
                     .map_err(|e| format!("Cannot deliver scan progress: {e}"))
             },
         )?;
+        if response.unreadable_directories.is_some() != connection.scan_directory_errors {
+            return Err("Scan directory diagnostics do not match the daemon's capabilities".into());
+        }
         if !read_only {
             let normalized = effective_root.trim_end_matches('/');
             let normalized = if normalized.is_empty() { "/" } else { normalized };
