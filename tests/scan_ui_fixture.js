@@ -825,24 +825,26 @@
     const mapPanel = document.getElementById(mapToggle.getAttribute("aria-controls"));
     check(mapPanel && !mapPanel.hidden && mapToggle.getAttribute("aria-expanded") === "true",
       "Toggle does not announce the visible map");
-    const shownBounds = fileViewport.getBoundingClientRect();
-    const zoomedRoot = fileViewport.querySelector('[role="treeitem"][aria-level="1"]');
+    const zoomedViewport = document.querySelector('[aria-label="Files and folders"]');
+    const shownBounds = zoomedViewport.getBoundingClientRect();
+    const zoomedRoot = zoomedViewport.querySelector('[role="treeitem"][aria-level="1"]');
     const zoomQueries = calls.filter(call => call.command === "get_scan_view").length;
     button("Package folders").focus();
     await pressKey("Tab");
     check(document.activeElement === mapToggle, "Map toggle is missing from the keyboard tab order");
     await pressKey("Enter");
     await waitFor(() => mapPanel.hidden && button("Show map") === mapToggle, "Keyboard did not hide the map");
-    const hiddenBounds = fileViewport.getBoundingClientRect();
+    const hiddenBounds = zoomedViewport.getBoundingClientRect();
     check(mapToggle.getAttribute("aria-expanded") === "false" && !mapPanel.querySelector("svg"),
       "Hidden map did not clear its tiles or announce its state");
-    check(document.activeElement === mapToggle && (hiddenBounds.width > shownBounds.width || hiddenBounds.height > shownBounds.height),
-      "Hiding the map lost toggle focus or did not free space for the file list");
+    check(document.activeElement === mapToggle, "Hiding the map lost toggle focus");
+    check(hiddenBounds.width > shownBounds.width || hiddenBounds.height > shownBounds.height,
+      `Hiding the map did not grow the file pane: ${shownBounds.width}×${shownBounds.height} to ${hiddenBounds.width}×${hiddenBounds.height}`);
     await pressKey("Enter");
     await waitFor(() => !mapPanel.hidden && mapPanel.querySelector('svg [role="button"]'), "Keyboard did not restore the map");
     check(document.activeElement === mapToggle && mapToggle.getAttribute("aria-expanded") === "true",
       "Restoring the map lost focus or did not announce the visible state");
-    check(fileViewport.querySelector('[role="treeitem"][aria-level="1"]') === zoomedRoot
+    check(zoomedViewport.querySelector('[role="treeitem"][aria-level="1"]') === zoomedRoot
       && zoomedRoot.getAttribute("aria-expanded") === "true" && rows().length === 129
       && calls.filter(call => call.command === "get_scan_view").length === zoomQueries,
     "Toggling the map reset the current folder or its expanded rows");
