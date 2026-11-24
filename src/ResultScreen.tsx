@@ -1,3 +1,4 @@
+import type { SearchFolder } from "./searchResults";
 import { useEffect, useState } from "react";
 import { StorageMap } from "./StorageMap";
 import { formatBytes } from "./formatBytes";
@@ -41,6 +42,7 @@ export function ResultScreen({
   const [zoomId, setZoomId] = useState(data.root.id);
   const [expanded, setExpanded] = useState(() => new Set([data.root.id]));
   const [mode, setMode] = useState<"map" | "largest" | "types" | "search" | "apps">("map");
+  const [searchFolder, setSearchFolder] = useState<SearchFolder | null>(null);
   const view = useScanView(data, zoomId, mode === "map");
   const page = view.page;
   const onZoom = (id: number) => {
@@ -133,12 +135,12 @@ export function ResultScreen({
           className={`px-3 py-2 rounded-lg text-xs ${mode === "largest" ? "bg-zinc-700 text-white" : "bg-zinc-900 text-zinc-400"}`}>Largest files</button>
         <button aria-pressed={mode === "types"} disabled={busy} onClick={() => setMode("types")}
           className={`px-3 py-2 rounded-lg text-xs ${mode === "types" ? "bg-zinc-700 text-white" : "bg-zinc-900 text-zinc-400"}`}>File types</button>
-        <button aria-pressed={mode === "search"} disabled={busy} onClick={() => setMode("search")}
+        <button aria-pressed={mode === "search"} disabled={busy} onClick={() => { setSearchFolder(null); setMode("search"); }}
           className={`px-3 py-2 rounded-lg text-xs ${mode === "search" ? "bg-zinc-700 text-white" : "bg-zinc-900 text-zinc-400"}`}>Search</button>
         <button aria-pressed={mode === "apps"} disabled={busy} onClick={() => setMode("apps")}
           className={`px-3 py-2 rounded-lg text-xs whitespace-nowrap ${mode === "apps" ? "bg-zinc-700 text-white" : "bg-zinc-900 text-zinc-400"}`}>Package folders</button>
       </div>
-      {mode === "apps" ? <AppUsage key={data.revision} scope={data} busy={busy} /> : mode === "types" ? <FileTypes scope={data} busy={busy} /> : mode === "largest" ? <LargestFiles scope={data} busy={busy} onZoom={onZoom} onNuke={onNuke} /> : mode === "search" ? <SearchFiles scope={data} busy={busy} onZoom={onZoom} onNuke={onNuke} /> : <div className="flex-1 min-h-0 grid grid-rows-[7rem_minmax(0,1fr)] md:grid-rows-1 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)] gap-3 px-4 pb-3">
+      {mode === "apps" ? <AppUsage key={data.revision} scope={data} busy={busy} /> : mode === "types" ? <FileTypes scope={data} busy={busy} /> : mode === "largest" ? <LargestFiles scope={data} busy={busy} onZoom={onZoom} onNuke={onNuke} /> : mode === "search" ? <SearchFiles key={searchFolder?.id ?? "all"} scope={data} folder={searchFolder} busy={busy} onZoom={onZoom} onNuke={onNuke} /> : <div className="flex-1 min-h-0 grid grid-rows-[7rem_minmax(0,1fr)] md:grid-rows-1 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)] gap-3 px-4 pb-3">
       <div className="min-h-0 min-w-0">
         <StorageMap page={page} busy={busy} onZoom={onZoom} />
       </div>
@@ -147,6 +149,16 @@ export function ResultScreen({
       <section aria-label="Files and folders" className="glass-card rounded-xl overflow-y-auto px-2 pb-3 min-h-0 min-w-0">
         <div className="flex items-center gap-2 px-3 py-2 mb-1">
           <span className="text-xs font-semibold text-zinc-500 uppercase tracking-wider flex-1">Files and folders</span>
+          {page?.node.type === "directory" && page.node.id !== data.root.id && (
+            <button
+              disabled={busy}
+              onClick={() => {
+                setSearchFolder({ id: page.node.id, name: page.node.name, path: page.path });
+                setMode("search");
+              }}
+              className="text-xs text-accent-400 hover:underline"
+            >Search this folder</button>
+          )}
           <span className="text-xs text-zinc-500">
             {[data.errors > 0 ? `${data.errors} access errors` : "", data.skipped > 0 ? `${data.skipped} excluded or duplicate entries` : ""].filter(Boolean).join(" · ")}
           </span>

@@ -3,6 +3,7 @@ import { parseDeleteResult, parseNodeDetail, parseScanView } from "./scanView";
 import type { PageCursor, ScanScope } from "./scanView";
 import { parseLargestFiles } from "./largestFilesSummary";
 import { parseSearchResults } from "./searchResults";
+import type { SearchFolder } from "./searchResults";
 import { parseFileTypes } from "./fileTypeSummary";
 import { parseAppUsage } from "./appUsageSummary";
 import { parseScanComparison } from "./scanComparison";
@@ -12,9 +13,11 @@ export async function getLargestFiles(scope: Parameters<typeof parseLargestFiles
   return parseLargestFiles(raw, scope, limit);
 }
 
-export async function getSearchResults(scope: Parameters<typeof parseSearchResults>[1], query: string, skip: number) {
-  const raw = await invoke<string>("get_search_results", { generation: scope.generation, revision: scope.revision, query, skip });
-  return parseSearchResults(raw, scope, query, skip);
+export async function getSearchResults(scope: Parameters<typeof parseSearchResults>[1], query: string, skip: number, folder: SearchFolder | null) {
+  const raw = await invoke<string>("get_search_results", {
+    generation: scope.generation, revision: scope.revision, query, skip, folderId: folder?.id ?? null,
+  });
+  return parseSearchResults(raw, scope, query, skip, folder);
 }
 
 export async function getFileTypes(scope: Parameters<typeof parseFileTypes>[1]) {

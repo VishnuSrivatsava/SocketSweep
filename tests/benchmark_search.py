@@ -85,10 +85,10 @@ fn main() {{
     report.insert("ingest_ms".into(), serde_json::json!(started.elapsed().as_secs_f64()*1000.0));
     let generation = "a".repeat(64);
     // ASCII-folded query over ~{expected_matches} scattered matches, then every page.
-    timed(&mut report, "fold_first_page", || store.search_json(&generation, 0, "NEEDLE", 0).unwrap());
+    timed(&mut report, "fold_first_page", || store.search_json(&generation, 0, "NEEDLE", 0, None).unwrap());
     let mut page = 0usize;
     loop {{
-        let value: serde_json::Value = serde_json::from_str(&store.search_json(&generation, 0, "NEEDLE", page as u32).unwrap()).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&store.search_json(&generation, 0, "NEEDLE", page as u32, None).unwrap()).unwrap();
         let results = value["results"].as_array().unwrap().len();
         page += results;
         if !value["has_more"].as_bool().unwrap() {{ break; }}
@@ -96,15 +96,15 @@ fn main() {{
     assert_eq!(page, expected_matches, "pagination must reach every match");
     // Worst-case deep skip over the common matches: the scan restarts each
     // page, so a page near the end re-checks every earlier entry.
-    timed(&mut report, "common_first_page", || store.search_json(&generation, 0, "file-0", 0).unwrap());
+    timed(&mut report, "common_first_page", || store.search_json(&generation, 0, "file-0", 0, None).unwrap());
     let common_matches = 86_666usize - expected_matches;
     let deep: serde_json::Value = serde_json::from_str(&timed(
         &mut report, "common_deep_skip",
-        || store.search_json(&generation, 0, "file-0", (common_matches - 100) as u32).unwrap(),
+        || store.search_json(&generation, 0, "file-0", (common_matches - 100) as u32, None).unwrap(),
     )).unwrap();
     assert_eq!(deep["results"].as_array().unwrap().len(), 100);
     assert_eq!(deep["has_more"], false);
-    timed(&mut report, "no_match", || store.search_json(&generation, 0, "zzz-no-match", 0).unwrap());
+    timed(&mut report, "no_match", || store.search_json(&generation, 0, "zzz-no-match", 0, None).unwrap());
     std::fs::File::create(&args[3]).unwrap().write_all(serde_json::to_string_pretty(&report).unwrap().as_bytes()).unwrap();
 }}''')
     stream = work / "fixture.stream"

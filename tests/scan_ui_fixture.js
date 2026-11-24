@@ -221,15 +221,17 @@
       if (command === "get_search_results") {
         check(typeof args.query === "string" && args.query !== "" && args.query.length <= 255, "Unbounded search query");
         check(Number.isInteger(args.skip) && args.skip >= 0, "Invalid search skip");
+        check(args.folderId === null || args.folderId === 1, "Unexpected search folder");
         if (failSearch) { failSearch = false; throw "Fixture search failure"; }
         if (malformedSearch) {
           malformedSearch = false;
-          return JSON.stringify({ ...scope(), query: args.query, skip: args.skip, has_more: false, results: null });
+          return JSON.stringify({ ...scope(), query: args.query, skip: args.skip, folder_id: args.folderId, has_more: false, results: null });
         }
-        const matches = [...rootChildren, ...folderChildren].filter(item => item.name.toLowerCase().includes(args.query.toLowerCase()));
+        const candidates = args.folderId === 1 ? folderChildren : [...rootChildren, ...folderChildren];
+        const matches = candidates.filter(item => item.name.toLowerCase().includes(args.query.toLowerCase()));
         // Simulate a page shortened by the backend's serialized-byte budget.
         const limit = args.query === "nested" ? 37 : 100;
-        const response = JSON.stringify({ ...scope(), query: args.query, skip: args.skip,
+        const response = JSON.stringify({ ...scope(), query: args.query, skip: args.skip, folder_id: args.folderId,
           has_more: matches.length > args.skip + limit,
           results: matches.slice(args.skip, args.skip + limit).map(item => detail(item.id)) });
         if (holdSearch) { holdSearch = false; return new Promise(resolve => { resolveSearch = () => resolve(response); }); }
@@ -670,6 +672,30 @@
       document.querySelector("#search-submit").click();
     };
     const searchNext = () => [...document.querySelectorAll("button")].find(item => item.textContent.trim() === "Next" && !item.disabled);
+    zoomFolder();
+    await waitFor(() => button("Search this folder"), "Folder search entry point missing");
+    button("Search this folder").click();
+    await waitFor(() => document.querySelector("#search-input"), "Folder search controls missing");
+    searchFor("nested");
+    await waitFor(() => searchRows().length === 37, "First folder search page missing");
+    check(calls.filter(call => call.command === "get_search_results").at(-1).args.folderId === 1, "Search lost the folder ID");
+    holdSearch = true;
+    searchNext().click();
+    await waitFor(() => typeof resolveSearch === "function", "Second folder page did not start");
+    button("Search entire scan").click();
+    await waitFor(() => searchRows()[0]?.textContent.includes("nested-0"), "Scope switch retained the page offset");
+    resolveSearch();
+    resolveSearch = undefined;
+    await pause(30);
+    check(searchRows()[0]?.textContent.includes("nested-0"), "Late folder page replaced whole-scan results");
+    searchFor("file");
+    await waitFor(() => searchRows().length === 100, "Whole-scan results missing");
+    button("Search this folder").click();
+    await waitFor(() => document.body.textContent.includes("No matching names in this folder"), "Folder search included outside filenames");
+    button("← Back to Root").click();
+    await waitFor(() => rows()[0]?.textContent.includes("fixture") && folderToggle(), "Root map missing after folder search");
+    if (folderToggle().getAttribute("aria-expanded") === "true") await activate(folderToggle());
+    await waitFor(() => rows().length === 129, "Root entries did not settle after folder search");
     button("Search").click();
     await waitFor(() => document.querySelector("#search-input"), "Search controls missing");
     // The first response is held; an empty superseding query must win and
