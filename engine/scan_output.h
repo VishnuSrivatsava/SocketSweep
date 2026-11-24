@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+
 // Stream v1 is bounded, length-prefixed JSON, independent of the legacy SCAN
 // response. Entries precede their children; directory totals are computed by
 // the host. No lossy filename conversion is performed by either endpoint.
