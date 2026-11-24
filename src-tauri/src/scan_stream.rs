@@ -538,6 +538,8 @@ pub fn read(
 }
 #[cfg(test)]
 mod tests {
+    mod generated;
+
     use super::*;
     use serde_json::{json, Value};
     use std::io::Cursor;
