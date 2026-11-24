@@ -501,11 +501,12 @@ impl Catalog {
     // Traverse the live index like visit_files, but report every entry kind
     // and counted state, so search mirrors exactly what browsing shows.
     // Returning false stops traversal, including descent into the current node.
-    fn visit_entries(
+    fn visit_entries_from(
         &self,
+        folder: u32,
         mut visit: impl FnMut(u32, &Node) -> Result<bool, String>,
     ) -> Result<(), String> {
-        let mut pending = vec![self.children[0].iter()];
+        let mut pending = vec![self.children[folder as usize].iter()];
         while let Some(children) = pending.last_mut() {
             if let Some(key) = children.next() {
                 let id = key.2;
@@ -535,7 +536,7 @@ impl Catalog {
             Ok(())
         };
         collect(0, &self.response.nodes[0])?;
-        self.visit_entries(|id, node| { collect(id, node)?; Ok(true) })?;
+        self.visit_entries_from(0, |id, node| { collect(id, node)?; Ok(true) })?;
         if skip > 0 && skip >= packages.len() {
             return Err("Package page is no longer available".into());
         }
@@ -620,8 +621,13 @@ impl Catalog {
         revision: u32,
         query: &str,
         skip: u32,
+        folder_id: Option<u32>,
     ) -> Result<String, String> {
         self.scope(generation, revision)?;
+        let folder = folder_id.unwrap_or(0);
+        if self.node(folder)?.kind != Kind::Directory {
+            return Err("Search scope must be a directory".into());
+        }
         if query.is_empty() {
             return Err("Enter text to search this scan".into());
         }
@@ -641,6 +647,7 @@ impl Catalog {
             revision: u32,
             query: &'a str,
             skip: u32,
+            folder_id: Option<u32>,
             has_more: bool,
             results: Vec<Entry<'a>>,
         }
@@ -649,6 +656,7 @@ impl Catalog {
             revision: self.revision,
             query,
             skip,
+            folder_id,
             has_more: false,
             results: Vec::with_capacity(MAX_SEARCH_RESULTS),
         };
@@ -656,7 +664,7 @@ impl Catalog {
         // byte longer than `true`, so this also covers a continuation page.
         let mut remaining = MAX_QUERY_BYTES - json(&page)?.len();
         let mut omitted = 0_usize;
-        self.visit_entries(|id, node| {
+        self.visit_entries_from(folder, |id, node| {
             if !name_matches(&node.name, query.as_bytes()) {
                 return Ok(true);
             }
@@ -1762,27 +1770,27 @@ mod tests {
                 .collect::<Vec<_>>())
         };
         // ASCII letters fold; non-ASCII bytes compare exactly.
-        assert_eq!(ids(store.search_json("generation-a", 0, "PHOTO.JPG", 0)), json!([1, 2]));
-        assert_eq!(ids(store.search_json("generation-a", 0, "photo", 0)), json!([1, 2, 4]));
-        assert_eq!(ids(store.search_json("generation-a", 0, "PHÖ", 0)), json!([]));
-        assert_eq!(ids(store.search_json("generation-a", 0, "phö", 0)), json!([3]));
+        assert_eq!(ids(store.search_json("generation-a", 0, "PHOTO.JPG", 0, None)), json!([1, 2]));
+        assert_eq!(ids(store.search_json("generation-a", 0, "photo", 0, None)), json!([1, 2, 4]));
+        assert_eq!(ids(store.search_json("generation-a", 0, "PHÖ", 0, None)), json!([]));
+        assert_eq!(ids(store.search_json("generation-a", 0, "phö", 0, None)), json!([3]));
         // Other/uncounted entries and newline names stay searchable; the root
         // itself never matches.
-        assert_eq!(ids(store.search_json("generation-a", 0, "link", 0)), json!([5]));
-        assert_eq!(ids(store.search_json("generation-a", 0, "\n", 0)), json!([6]));
-        assert_eq!(ids(store.search_json("generation-a", 0, "fixture", 0)), json!([]));
+        assert_eq!(ids(store.search_json("generation-a", 0, "link", 0, None)), json!([5]));
+        assert_eq!(ids(store.search_json("generation-a", 0, "\n", 0, None)), json!([6]));
+        assert_eq!(ids(store.search_json("generation-a", 0, "fixture", 0, None)), json!([]));
         for query in ["", "x".repeat(256).as_str()] {
-            assert!(store.search_json("generation-a", 0, query, 0).is_err());
+            assert!(store.search_json("generation-a", 0, query, 0, None).is_err());
         }
-        assert!(store.search_json("generation-a", 0, &"x".repeat(255), 0).is_ok());
-        assert!(store.search_json("old", 0, "photo", 0).is_err());
-        assert!(store.search_json("generation-a", 1, "photo", 0).is_err());
+        assert!(store.search_json("generation-a", 0, &"x".repeat(255), 0, None).is_ok());
+        assert!(store.search_json("old", 0, "photo", 0, None).is_err());
+        assert!(store.search_json("generation-a", 1, "photo", 0, None).is_err());
     }
 
     #[test]
     fn search_pagination_reaches_every_match_in_deterministic_order() {
         let store = Catalog::new(fixture(&wide(250), false), "generation-a".into());
-        let page = |skip: u32| value(store.search_json("generation-a", 0, "FILE-", skip));
+        let page = |skip: u32| value(store.search_json("generation-a", 0, "FILE-", skip, None));
         // Every root child is a matched sibling, so pages follow the child
         // index order: size descending, then name, then ID.
         let mut seen = Vec::new();
@@ -1844,7 +1852,7 @@ mod tests {
             let mut seen = BTreeSet::new();
             let mut skip = 0;
             loop {
-                let raw = store.search_json("generation-a", 0, "needle", skip).unwrap();
+                let raw = store.search_json("generation-a", 0, "needle", skip, None).unwrap();
                 assert!(raw.len() <= MAX_QUERY_BYTES);
                 let page: Value = serde_json::from_str(&raw).unwrap();
                 let rows = page["results"].as_array().unwrap();
@@ -1874,7 +1882,7 @@ mod tests {
         let store = Catalog::new(fixture(&entries, false), "generation-a".into());
         let mut visited = Vec::new();
         store
-            .visit_entries(|id, _| {
+            .visit_entries_from(0, |id, _| {
                 visited.push(id);
                 Ok(false)
             })
@@ -1883,12 +1891,46 @@ mod tests {
         let store = Catalog::new(fixture(&wide(250), false), "generation-a".into());
         let mut matches = 0;
         store
-            .visit_entries(|_, node| {
+            .visit_entries_from(0, |_, node| {
                 matches += usize::from(name_matches(&node.name, b"file-"));
                 Ok(matches <= MAX_SEARCH_RESULTS)
             })
             .unwrap();
         assert_eq!(matches, MAX_SEARCH_RESULTS + 1);
+    }
+
+    #[test]
+    fn folder_search_pages_only_live_descendants() {
+        let mut entries = vec![
+            root(),
+            entry(1, Some(0), "Logs", "directory", 0, true),
+            entry(2, Some(0), "Logs-old", "directory", 0, true),
+            entry(3, Some(2), "log-outside", "file", 500, true),
+            entry(4, Some(1), "Nested", "directory", 0, true),
+        ];
+        for id in 5..106 {
+            entries.push(entry(id, Some(4), &format!("log-{id:03}"), "file", 1, true));
+        }
+        let mut store = Some(Catalog::new(fixture(&entries, false), "generation-a".into()));
+        let catalog = store.as_ref().unwrap();
+        let search = |skip| value(catalog.search_json("generation-a", 0, "log", skip, Some(1)));
+        let first = search(0);
+        assert_eq!(first["folder_id"], 1);
+        assert_eq!(first["has_more"], true);
+        let rows = first["results"].as_array().unwrap();
+        assert_eq!(rows.len(), MAX_SEARCH_RESULTS);
+        assert_eq!(rows[0]["node"]["id"], 5);
+        assert_eq!(rows[99]["node"]["id"], 104);
+        let last = search(100);
+        assert_eq!(last["has_more"], false);
+        assert_eq!(last["results"].as_array().unwrap().len(), 1);
+        assert_eq!(last["results"][0]["node"]["id"], 105);
+        for invalid in [3, 999] {
+            assert!(catalog.search_json("generation-a", 0, "log", 0, Some(invalid)).is_err());
+        }
+        let plan = catalog.prepare_delete("generation-a", 0, 1).unwrap();
+        finish_delete(&mut store, &plan, success()).unwrap();
+        assert!(store.as_ref().unwrap().search_json("generation-a", 1, "log", 0, Some(1)).is_err());
     }
 
     #[test]
@@ -1902,7 +1944,7 @@ mod tests {
         let mut store = Some(Catalog::new(fixture(&entries, false), "generation-a".into()));
         let results = |store: &Option<Catalog>, revision: u32, query: &str| {
             json!(value(
-                store.as_ref().unwrap().search_json("generation-a", revision, query, 0)
+                store.as_ref().unwrap().search_json("generation-a", revision, query, 0, None)
             )["results"]
                 .as_array()
                 .unwrap()
@@ -1919,6 +1961,6 @@ mod tests {
         finish_delete(&mut store, &plan, success()).unwrap();
         assert_eq!(results(&store, 1, "song"), json!([]));
         assert_eq!(results(&store, 1, "readme"), json!([3]));
-        assert!(store.as_ref().unwrap().search_json("generation-a", 0, "song", 0).is_err());
+        assert!(store.as_ref().unwrap().search_json("generation-a", 0, "song", 0, None).is_err());
     }
 }

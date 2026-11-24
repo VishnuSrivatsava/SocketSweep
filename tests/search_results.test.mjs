@@ -12,7 +12,7 @@ const expected = { generation: "scan-a", revision: 2, root_path: "/fixture", rea
 const row = (id, name, size, type = "file", counted = true) => ({ path: `/fixture/${name}`, node: {
   id, parent_id: 0, name, type, size, counted, child_count: type === "directory" ? 1 : 0, can_delete: true,
 } });
-const report = () => ({ generation: "scan-a", revision: 2, query: "log", skip: 0, has_more: false,
+const report = () => ({ generation: "scan-a", revision: 2, query: "log", skip: 0, folder_id: null, has_more: false,
   results: [row(3, "app.log", 7), row(5, "Logs", 3, "directory", true)] });
 const parse = (data, scope = expected, query = "log", skip = 0) => parseSearchResults(JSON.stringify(data), scope, query, skip);
 
@@ -87,4 +87,17 @@ test("directory rows, uncounted entries and Unicode labels stay exact and safe",
     const deletable = report(); deletable.results[0] = row(2, delimiter, 7);
     assert.throws(() => parse(deletable));
   }
+});
+
+test("scoped pages must echo the folder and contain only descendants", () => {
+  const folder = { id: 1, name: "Logs", path: "/fixture/Logs" };
+  const entry = row(3, "app.log", 7);
+  entry.path = "/fixture/Logs/app.log";
+  entry.node.parent_id = 1;
+  const data = { ...report(), folder_id: 1, results: [entry] };
+  const parseScoped = page => parseSearchResults(JSON.stringify(page), expected, "log", 0, folder);
+  assert.equal(parseScoped(data).results[0].path, entry.path);
+  assert.throws(() => parseScoped({ ...data, folder_id: null }));
+  assert.throws(() => parseScoped({ ...data, folder_id: 2 }));
+  assert.throws(() => parseScoped({ ...data, results: [{ ...entry, path: "/fixture/Logs-old/app.log" }] }));
 });

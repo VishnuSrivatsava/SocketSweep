@@ -4,6 +4,9 @@ Choose **Search** in the results to look for entry names anywhere in the
 current scan. The query runs against the existing host catalog: it does not
 rescan the phone, read file contents, or issue ADB commands. Switching from a
 zoomed storage map searches the whole scan, not the visible directory.
+Zoom into a folder in the storage map and choose **Search this folder** to
+search its descendants. Switch between that folder and the entire scan without
+retyping the query. Changing scope starts at the first page.
 
 ## Matching rules
 

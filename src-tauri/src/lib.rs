@@ -601,12 +601,13 @@ fn get_search_results(
     revision: u32,
     query: String,
     skip: u32,
+    folder_id: Option<u32>,
 ) -> Result<String, String> {
     let store = SCAN_STORE.lock().map_err(|_| "Scan state is unavailable")?;
     store
         .as_ref()
         .ok_or("Scan is unavailable; rescan required")?
-        .search_json(&generation, revision, &query, skip)
+        .search_json(&generation, revision, &query, skip, folder_id)
 }
 
 #[tauri::command(async)]
