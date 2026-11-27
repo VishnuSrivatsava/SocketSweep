@@ -406,11 +406,11 @@ fn read_with_tree_budget(
                     if path_bytes > 16 * 1024 || depth > 64 {
                         return Err("Scan path/depth limit exceeded".into());
                     }
-                    // File records share their name with the catalog index.
                     // Ancestor names are already represented by directory records.
-                    // Retain the directory allowance for sparse child indexes.
+                    // Keep the original allowance for directories and the first
+                    // child of each parent, where the child index allocates.
                     let name_bytes = entry.name.len();
-                    let path_allowance = if entry.kind == Kind::Directory {
+                    let path_allowance = if entry.kind == Kind::Directory || next_sibling == NONE {
                         path_bytes
                     } else {
                         name_bytes
@@ -798,7 +798,8 @@ mod tests {
         bytes.extend(encode(&json!({"type":"entries","entries":directories})));
         let files = 25;
         let file_cost = 2 * "file-00000".len() + 256;
-        let budget = directory_budget + files * file_cost;
+        let first_child_allowance = path_bytes + 1;
+        let budget = directory_budget + first_child_allowance + files * file_cost;
         for start in (0..=files).step_by(MAX_BATCH_ENTRIES) {
             let entries: Vec<_> = (start..(start + MAX_BATCH_ENTRIES).min(files + 1))
                 .map(|index| json!({"id":depth+1+index,"parent":depth,

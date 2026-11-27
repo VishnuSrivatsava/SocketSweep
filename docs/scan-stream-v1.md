@@ -113,9 +113,10 @@ interruptible by this socket cancellation mechanism.
 
 The host accepts at most 2,000,000 records, depth 64, and path length 16 KiB.
 A conservative catalog estimate is capped at 128 MiB. Each record is charged
-256 bytes plus its name length and an allowance. Directories use their path
-length as the allowance. Other records use their own name length, since names
-are shared with the catalog index and complete paths are assembled on demand.
+256 bytes plus its name length and an allowance. Directories and the first
+child of each parent use their path length as the allowance. Remaining records
+use their own name length. Names are shared with the catalog index and complete
+paths are assembled on demand.
 Each UI query is capped at 1 MiB. Integer values and
 computed totals must fit JavaScript's exact integer range. These are data
 budgets, not promises that total process RSS equals those limits.
