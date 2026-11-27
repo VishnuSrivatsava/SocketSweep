@@ -129,6 +129,27 @@ rescan/cancel, reconnect and read-only mode. If testing deletion, create a
 throwaway file/directory first and confirm its exact path and updated totals.
 The Android engine has not changed and does not need rebuilding for this PR.
 
+## Large-scan benchmark
+
+Run this offline on macOS or Linux with the app's Rust dependencies already
+cached:
+
+```sh
+python3 tests/benchmark_scan_store.py --capacity
+```
+
+The benchmark runs three release-mode samples per fixture in fresh processes.
+It measures the decoder, catalog construction, and summary and directory
+queries. Successful runs verify totals, the first file page, and chart bytes.
+The output includes peak RSS for the Rust process. It excludes Tauri and the
+WebView, and budget-exhausted runs stop before catalog construction.
+
+The fixtures use short filenames, one folder holding 360,000 files, and
+two nested cases with 300,000 and 360,000 files below four 32-byte directory
+names. The two 360,000-file cases show how path length affects the admission
+budget. The default invocation compares the current store with the historical
+full-tree implementation.
+
 ## Host fixture measurements
 
 On 2026-10-14, Darwin arm64, Rust 1.95.0 and Node 26.7.0, three release-harness
