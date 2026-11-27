@@ -87,6 +87,9 @@ def measure_capacity(work):
         ("wide", 360_000, ["folder-00"]),
         ("nested", 300_000, nested),
         ("nested-large", 360_000, nested),
+        ("deep", 360_000, nested * 4),
+        ("wide-near-budget", 460_000, ["folder-00"]),
+        ("wide-over-budget", 480_000, ["folder-00"]),
     ]
     reports = []
     for label, files, folders in cases:

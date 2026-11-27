@@ -144,11 +144,11 @@ queries. Successful runs verify totals, the first file page, and chart bytes.
 The output includes peak RSS for the Rust process. It excludes Tauri and the
 WebView, and budget-exhausted runs stop before catalog construction.
 
-The fixtures use short filenames, one folder holding 360,000 files, and
-two nested cases with 300,000 and 360,000 files below four 32-byte directory
-names. The two 360,000-file cases show how path length affects the admission
-budget. The default invocation compares the current store with the historical
-full-tree implementation.
+The fixtures include wide folders of 360,000, 460,000, and 480,000 files and
+nested cases with 300,000 or 360,000 files below four or sixteen 32-byte
+directory names. The 360,000-file cases describe how path
+length affects admission and query time. The default invocation compares the
+current store with the historical full-tree implementation.
 
 ## Host fixture measurements
 
