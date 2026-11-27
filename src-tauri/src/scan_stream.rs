@@ -403,7 +403,10 @@ pub fn read(
                         .checked_add(path_bytes + entry.name.len() + 256)
                         .ok_or("Scan memory limit exceeded")?;
                     if tree_bytes > MAX_TREE_BYTES {
-                        return Err("Scan exceeds the current UI memory limit".into());
+                        return Err(format!(
+                            "Scan reached the desktop indexing limit after {} files and {} folders.",
+                            observed.files, observed.directories
+                        ));
                     }
                     if entry.counted {
                         if entry.kind == Kind::Directory {
@@ -762,6 +765,39 @@ mod tests {
             assert_eq!(read(ids, omitted).err().as_deref(), Some("Invalid unreadable directory diagnostics"));
         }
     }
+    #[test]
+    fn indexing_limit_reports_counts_before_the_rejected_entry() {
+        let name = "d".repeat(255);
+        let depth = 63;
+        let mut bytes = encode(&start());
+        let mut directories = vec![root()];
+        let mut path_bytes = "/fixture".len();
+        let mut directory_budget = path_bytes + "fixture".len() + 256;
+        for id in 1..=depth {
+            directories.push(json!({"id":id,"parent":id-1,"name":name,
+                "kind":"directory","size":0,"counted":true}));
+            path_bytes += 1 + name.len();
+            directory_budget += path_bytes + name.len() + 256;
+        }
+        bytes.extend(encode(&json!({"type":"entries","entries":directories})));
+        let file_cost = path_bytes + 1 + 2 * "file-00000".len() + 256;
+        let files = (MAX_TREE_BYTES - directory_budget) / file_cost;
+        for start in (0..=files).step_by(MAX_BATCH_ENTRIES) {
+            let entries: Vec<_> = (start..(start + MAX_BATCH_ENTRIES).min(files + 1))
+                .map(|index| json!({"id":depth+1+index,"parent":depth,
+                    "name":format!("file-{index:05}"),"kind":"file","size":1,"counted":true}))
+                .collect();
+            bytes.extend(encode(&json!({"type":"entries","entries":entries})));
+        }
+        assert_eq!(
+            parse(bytes).err().expect("scan exceeds indexing limit"),
+            format!(
+                "Scan reached the desktop indexing limit after {files} files and {} folders.",
+                depth + 1
+            ),
+        );
+    }
+
     #[test]
     fn rejects_mismatched_completion_and_root_modes() {
         for changes in [
