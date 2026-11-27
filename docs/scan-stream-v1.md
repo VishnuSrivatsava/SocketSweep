@@ -112,8 +112,12 @@ operations. A filesystem operation already blocked in the kernel is not
 interruptible by this socket cancellation mechanism.
 
 The host accepts at most 2,000,000 records, depth 64, and path length 16 KiB.
-A conservative catalog estimate (path bytes, name bytes, 256 bytes per node)
-is capped at 128 MiB; each UI query is capped at 1 MiB. Integer values and
+A conservative catalog estimate is capped at 128 MiB. Each record is charged
+256 bytes plus its name length and an allowance. Directories and the first
+child of each parent use their path length as the allowance. Remaining records
+use their own name length. Names are shared with the catalog index and complete
+paths are assembled on demand.
+Each UI query is capped at 1 MiB. Integer values and
 computed totals must fit JavaScript's exact integer range. These are data
 budgets, not promises that total process RSS equals those limits.
 

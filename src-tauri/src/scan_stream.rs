@@ -312,6 +312,15 @@ fn safe_add(a: u64, b: u64) -> Result<u64, String> {
 pub fn read(
     reader: &mut impl StreamReader,
     expected_read_only: bool,
+    progress: impl FnMut(&Progress) -> Result<(), String>,
+) -> Result<Response, String> {
+    read_with_tree_budget(reader, expected_read_only, MAX_TREE_BYTES, progress)
+}
+
+fn read_with_tree_budget(
+    reader: &mut impl StreamReader,
+    expected_read_only: bool,
+    max_tree_bytes: usize,
     mut progress: impl FnMut(&Progress) -> Result<(), String>,
 ) -> Result<Response, String> {
     let (first, mut bytes_received) = frame(reader)?;
@@ -397,12 +406,19 @@ pub fn read(
                     if path_bytes > 16 * 1024 || depth > 64 {
                         return Err("Scan path/depth limit exceeded".into());
                     }
-                    // Conservative budget covers records, shared names, directory
-                    // indexes, and decoder staging; full paths stay transient.
+                    // Ancestor names are already represented by directory records.
+                    // Keep the original allowance for directories and the first
+                    // child of each parent, where the child index allocates.
+                    let name_bytes = entry.name.len();
+                    let path_allowance = if entry.kind == Kind::Directory || next_sibling == NONE {
+                        path_bytes
+                    } else {
+                        name_bytes
+                    };
                     tree_bytes = tree_bytes
-                        .checked_add(path_bytes + entry.name.len() + 256)
+                        .checked_add(path_allowance + name_bytes + 256)
                         .ok_or("Scan memory limit exceeded")?;
-                    if tree_bytes > MAX_TREE_BYTES {
+                    if tree_bytes > max_tree_bytes {
                         return Err(format!(
                             "Scan reached the desktop indexing limit after {} files and {} folders.",
                             observed.files, observed.directories
@@ -768,7 +784,7 @@ mod tests {
     #[test]
     fn indexing_limit_reports_counts_before_the_rejected_entry() {
         let name = "d".repeat(255);
-        let depth = 63;
+        let depth = 3;
         let mut bytes = encode(&start());
         let mut directories = vec![root()];
         let mut path_bytes = "/fixture".len();
@@ -780,8 +796,10 @@ mod tests {
             directory_budget += path_bytes + name.len() + 256;
         }
         bytes.extend(encode(&json!({"type":"entries","entries":directories})));
-        let file_cost = path_bytes + 1 + 2 * "file-00000".len() + 256;
-        let files = (MAX_TREE_BYTES - directory_budget) / file_cost;
+        let files = 25;
+        let file_cost = 2 * "file-00000".len() + 256;
+        let first_child_allowance = path_bytes + 1;
+        let budget = directory_budget + first_child_allowance + files * file_cost;
         for start in (0..=files).step_by(MAX_BATCH_ENTRIES) {
             let entries: Vec<_> = (start..(start + MAX_BATCH_ENTRIES).min(files + 1))
                 .map(|index| json!({"id":depth+1+index,"parent":depth,
@@ -790,7 +808,9 @@ mod tests {
             bytes.extend(encode(&json!({"type":"entries","entries":entries})));
         }
         assert_eq!(
-            parse(bytes).err().expect("scan exceeds indexing limit"),
+            read_with_tree_budget(&mut Cursor::new(bytes), false, budget, |_| Ok(()))
+                .err()
+                .expect("scan exceeds indexing limit"),
             format!(
                 "Scan reached the desktop indexing limit after {files} files and {} folders.",
                 depth + 1
