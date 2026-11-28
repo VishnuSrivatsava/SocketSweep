@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 
 const keys = {
   Enter: { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r" },
+  Space: { key: " ", code: "Space", windowsVirtualKeyCode: 32, text: " " },
   Tab: { key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 },
   "Shift+Tab": { key: "Tab", code: "Tab", windowsVirtualKeyCode: 9, modifiers: 8 },
   Escape: { key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 },
