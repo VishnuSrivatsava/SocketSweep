@@ -305,7 +305,7 @@
   const report = (passed, error) => {
     const output = document.createElement("pre");
     output.id = "scan-test-report";
-    output.textContent = JSON.stringify({ fixture: "scan-ui", passed, error, ipc_calls: calls.length, wide_paging: widePaging, expanded_tree: expandedTree, checks: passed ? ["offline fonts under CSP", "bounded collapsed discovery diagnostics", "discovery retry recovery", "setup alignment", "result fonts", "file label semantics", "usable file workspace", "keyboard storage map visibility", "collapsible diagnostics", "complete paging", "directory paging focus and retries", "expanded-tree row growth and keyboard focus", "first-scan comparison", "unchanged comparison after rescan", "deletion delta comparison", "cross-device comparison isolation", "bounded package-folder paging and coverage", "package query retries and stale replies", "bounded file-type totals", "file-type retry and malformed response", "file-type generation and deletion revision", "file-type coverage and empty scan", "file-type drilldown paging, keyboard and revision", "bounded largest files", "late largest response", "largest query retry", "malformed largest response recovery", "largest ID-only deletion", "largest read-only guards", "largest folder navigation without rescanning", "bounded search results", "scoped search selection", "late search response", "search retry and malformed response", "search ID-only deletion", "read-only search deletion disabled", "late zoom", "Other tile", "stale confirmation", "exact confirmation whitespace", "reachable long-path confirmation", "native modal keyboard focus and cancellation", "ID-only deletion", "revision refresh", "partial failure", "read-only", "acknowledged shutdown", "unconfirmed shutdown", "reconnect", "stop action ordering", "duplicate rescan guard", "rescan failure recovery", "rescan cancellation recovery", "toast dismissal integration", "bounded diagnostic integration"] : undefined });
+    output.textContent = JSON.stringify({ fixture: "scan-ui", passed, error, ipc_calls: calls.length, wide_paging: widePaging, expanded_tree: expandedTree, checks: passed ? ["offline fonts under CSP", "bounded collapsed discovery diagnostics", "discovery retry recovery", "setup alignment", "result fonts", "file label semantics", "usable file workspace", "keyboard storage map visibility", "collapsible diagnostics", "complete paging", "directory paging focus and retries", "expanded-tree row growth and keyboard focus", "first-scan comparison", "unchanged comparison after rescan", "deletion delta comparison", "cross-device comparison isolation", "bounded package-folder paging and coverage", "package query retries and stale replies", "bounded file-type totals", "file-type retry and malformed response", "file-type generation and deletion revision", "file-type coverage and empty scan", "file-type drilldown paging, keyboard and revision", "bounded largest files", "late largest response", "largest query retry", "malformed largest response recovery", "largest ID-only deletion", "largest read-only guards", "largest folder navigation without rescanning", "bounded search results", "scoped search selection", "search page selection", "late search response", "search retry and malformed response", "search ID-only deletion", "read-only search deletion disabled", "late zoom", "Other tile", "stale confirmation", "exact confirmation whitespace", "reachable long-path confirmation", "native modal keyboard focus and cancellation", "ID-only deletion", "revision refresh", "partial failure", "read-only", "acknowledged shutdown", "unconfirmed shutdown", "reconnect", "stop action ordering", "duplicate rescan guard", "rescan failure recovery", "rescan cancellation recovery", "toast dismissal integration", "bounded diagnostic integration"] : undefined });
     document.body.append(output);
     void fetch("/report", { method: "POST", body: output.textContent }).then(() => {
       if (passed) location.replace("/tests/toast_lifecycle_fixture.html");
@@ -713,6 +713,15 @@
     await waitFor(() => rows().length === 129, "Root entries did not settle after folder search");
     button("Search").click();
     await waitFor(() => document.querySelector("#search-input"), "Search controls missing");
+    searchFor("large-folder");
+    await waitFor(() => searchRows().length === 1, "Folder-only search result missing");
+    check(!searchCheckbox() && !button("Select this page"), "Folder-only results offered file selection");
+    searchFor("l");
+    await waitFor(() => searchRows().length === 100 && searchRows()[0]?.textContent.includes("large-folder"), "Mixed search page missing");
+    button("Select this page").click();
+    await waitFor(() => button("Deselect this page"), "Select this page did not finish updating the mixed page");
+    check(!searchCheckbox() && searchRows().slice(1).every(row => searchCheckbox(row)?.checked)
+      && selectionCount() === "99 files selected", "Page selection included a folder or missed a file");
     // The first response is held; an empty superseding query must win and
     // the held response must never replace it.
     holdSearch = true;
@@ -737,6 +746,18 @@
     await waitFor(() => searchRows()[0]?.textContent.includes("nested-37"), "Short-page continuation skipped matches");
     check(calls.filter(call => call.command === "get_search_results").at(-1).args.skip === 37, "Short-page continuation used a fixed offset");
     check(!searchCheckbox().checked && selectionCount() === "1 file selected", "Paging lost or applied selection to the wrong row");
+    searchCheckbox().click();
+    const selectPage = button("Select this page");
+    selectPage.focus();
+    await pressKey("Enter");
+    await waitFor(() => button("Deselect this page") === selectPage, "Keyboard page selection did not finish updating");
+    check(document.activeElement === selectPage
+      && searchRows().every(row => searchCheckbox(row)?.checked) && selectionCount() === "38 files selected",
+    "Keyboard page selection did not handle the short page or preserve the earlier selection");
+    await pressKey("Enter");
+    await waitFor(() => button("Select this page") === selectPage, "Keyboard page deselection did not finish updating");
+    check(document.activeElement === selectPage && searchRows().every(row => !searchCheckbox(row)?.checked)
+      && selectionCount() === "1 file selected", "Deselecting the page changed the selection on another page");
     searchCheckbox().click();
     check(selectionCount() === "2 files selected", "Selection count did not include both pages");
     button("Previous").click();

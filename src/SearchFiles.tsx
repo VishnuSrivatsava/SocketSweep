@@ -3,8 +3,10 @@ import { getSearchResults } from "./scanIpc";
 import { FILE_TYPE_LABELS } from "./fileTypeSummary";
 import type { FileType } from "./fileTypeSummary";
 import type { SearchFolder, SearchResponse } from "./searchResults";
-import type { ScanResponse } from "./scanView";
+import type { ScanNode, ScanResponse } from "./scanView";
 import { formatBytes } from "./formatBytes";
+
+const isSelectableFile = (node: ScanNode) => node.type === "file" && node.counted;
 
 export function SearchFiles({ scope, folder, category, busy, onZoom, onNuke }: {
   scope: ScanResponse;
@@ -54,15 +56,19 @@ export function SearchFiles({ scope, folder, category, busy, onZoom, onNuke }: {
     setPagination({ scope: pageScope, offsets: [0] });
   };
   const results = data?.results ?? [];
+  const pageFileIds = category ? [] : results.filter(({ node }) => isSelectableFile(node)).map(({ node }) => node.id);
+  const pageSelected = pageFileIds.every(id => selected?.has(id));
   const changeScope = () => {
     setSelection(null);
     setEntireScan(value => !value);
     setPagination({ scope: "", offsets: [0] });
   };
-  const setFileSelected = (id: number, checked: boolean) => {
+  const setFilesSelected = (fileIds: number[], checked: boolean) => {
     setSelection(current => {
       const ids = new Set(current?.scope === selectionScope ? current.ids : undefined);
-      if (checked) ids.add(id); else ids.delete(id);
+      for (const id of fileIds) {
+        if (checked) ids.add(id); else ids.delete(id);
+      }
       return { scope: selectionScope, ids };
     });
   };
@@ -100,6 +106,9 @@ export function SearchFiles({ scope, folder, category, busy, onZoom, onNuke }: {
         {!category && <span id="search-selection-count" role="status" className={selectedCount ? "text-accent-300" : "sr-only"}>
           {selectedCount === 1 ? "1 file selected" : selectedCount > 1 ? `${selectedCount.toLocaleString("en-US")} files selected` : ""}
         </span>}
+        {pageFileIds.length > 0 && <button type="button" disabled={busy}
+          onClick={() => setFilesSelected(pageFileIds, !pageSelected)}
+          className="text-accent-400 hover:underline">{pageSelected ? "Deselect this page" : "Select this page"}</button>}
         {selectedCount > 0 && <button type="button" disabled={busy} onClick={clearSelection}
           className="text-accent-400 hover:underline">Clear selection</button>}
       </div>
@@ -117,9 +126,9 @@ export function SearchFiles({ scope, folder, category, busy, onZoom, onNuke }: {
     <ol className="divide-y divide-zinc-800/80">
       {results.map(({ node, path }) => <li key={node.id} className="search-result-row flex items-center gap-3 py-3">
         {!category && <div className="w-4 shrink-0">
-          {node.type === "file" && node.counted && <input type="checkbox" disabled={busy}
+          {isSelectableFile(node) && <input type="checkbox" disabled={busy}
             aria-label={`Select ${node.name}`} checked={selected?.has(node.id) ?? false}
-            onChange={event => setFileSelected(node.id, event.currentTarget.checked)}
+            onChange={event => setFilesSelected([node.id], event.currentTarget.checked)}
             className="block size-4 accent-accent-500 cursor-pointer" />}
         </div>}
         <div className="flex-1 min-w-0">
