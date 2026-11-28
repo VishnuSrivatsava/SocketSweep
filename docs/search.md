@@ -51,8 +51,9 @@ directory itself; file results open the parent.
 ## Selecting files
 
 Use the checkboxes beside counted files to select them. Press Space to toggle
-a focused checkbox. The selection count includes all pages of the current
-search. Choose **Clear selection** to start over. A different query, folder
+a focused checkbox. **Select this page** and **Deselect this page** apply to
+the files on the visible page. The selection count includes all pages of the
+current search. Choose **Clear selection** to start over. A different query, folder
 scope, or scan clears the selection. Deleting a file also clears it by
 advancing the current scan revision.
 
