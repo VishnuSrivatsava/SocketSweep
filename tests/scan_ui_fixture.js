@@ -719,6 +719,7 @@
     searchFor("l");
     await waitFor(() => searchRows().length === 100 && searchRows()[0]?.textContent.includes("large-folder"), "Mixed search page missing");
     button("Select this page").click();
+    await waitFor(() => button("Deselect this page"), "Select this page did not finish updating the mixed page");
     check(!searchCheckbox() && searchRows().slice(1).every(row => searchCheckbox(row)?.checked)
       && selectionCount() === "99 files selected", "Page selection included a folder or missed a file");
     // The first response is held; an empty superseding query must win and
@@ -749,11 +750,13 @@
     const selectPage = button("Select this page");
     selectPage.focus();
     await pressKey("Enter");
-    check(document.activeElement === selectPage && button("Deselect this page") === selectPage
+    await waitFor(() => button("Deselect this page") === selectPage, "Keyboard page selection did not finish updating");
+    check(document.activeElement === selectPage
       && searchRows().every(row => searchCheckbox(row)?.checked) && selectionCount() === "38 files selected",
     "Keyboard page selection did not handle the short page or preserve the earlier selection");
     await pressKey("Enter");
-    check(button("Select this page") === selectPage && searchRows().every(row => !searchCheckbox(row)?.checked)
+    await waitFor(() => button("Select this page") === selectPage, "Keyboard page deselection did not finish updating");
+    check(document.activeElement === selectPage && searchRows().every(row => !searchCheckbox(row)?.checked)
       && selectionCount() === "1 file selected", "Deselecting the page changed the selection on another page");
     searchCheckbox().click();
     check(selectionCount() === "2 files selected", "Selection count did not include both pages");
