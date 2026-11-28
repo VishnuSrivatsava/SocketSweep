@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { getSearchResults } from "./scanIpc";
 import { FILE_TYPE_LABELS } from "./fileTypeSummary";
 import type { FileType } from "./fileTypeSummary";
@@ -17,10 +17,15 @@ export function SearchFiles({ scope, folder, category, busy, onZoom, onNuke }: {
   const { generation, revision, root_path, read_only, total_size } = scope;
   const [input, setInput] = useState("");
   const [query, setQuery] = useState("");
+  const [selection, setSelection] = useState<{ scope: string; ids: Set<number> } | null>(null);
+  const searchInput = useRef<HTMLInputElement>(null);
   const [entireScan, setEntireScan] = useState(false);
   const fileType = category?.kind ?? null;
   const activeFolder = entireScan ? null : folder;
   const pageScope = JSON.stringify([generation, revision, activeFolder?.id, fileType]);
+  const selectionScope = JSON.stringify([pageScope, query]);
+  const selected = selection?.scope === selectionScope ? selection.ids : undefined;
+  const selectedCount = selected?.size ?? 0;
   const [pagination, setPagination] = useState({ scope: pageScope, offsets: [0] });
   // A revision changes DFS order. Reset synchronously before issuing a request;
   // keep the submitted query, but never carry offsets into a changed snapshot.
@@ -44,13 +49,26 @@ export function SearchFiles({ scope, folder, category, busy, onZoom, onNuke }: {
   const error = state.key === key ? state.error : undefined;
   const submit = () => {
     if (!input) return;
+    if (input !== query) setSelection(null);
     setQuery(input);
     setPagination({ scope: pageScope, offsets: [0] });
   };
   const results = data?.results ?? [];
   const changeScope = () => {
+    setSelection(null);
     setEntireScan(value => !value);
     setPagination({ scope: "", offsets: [0] });
+  };
+  const setFileSelected = (id: number, checked: boolean) => {
+    setSelection(current => {
+      const ids = new Set(current?.scope === selectionScope ? current.ids : undefined);
+      if (checked) ids.add(id); else ids.delete(id);
+      return { scope: selectionScope, ids };
+    });
+  };
+  const clearSelection = () => {
+    setSelection(null);
+    searchInput.current?.focus();
   };
   const range = results.length ? `${skip + 1}–${skip + results.length}` : "0";
   const status = category
@@ -63,7 +81,7 @@ export function SearchFiles({ scope, folder, category, busy, onZoom, onNuke }: {
       <button type="button" autoFocus disabled={busy} onClick={category.clear}
         className="text-xs text-accent-400 hover:underline">Clear filter</button>
     </div> : <form className="flex items-center gap-2 py-3" onSubmit={event => { event.preventDefault(); submit(); }}>
-      <input id="search-input" value={input} disabled={busy}
+      <input id="search-input" ref={searchInput} value={input} disabled={busy}
         onChange={event => setInput(event.target.value)}
         placeholder={activeFolder ? "Search names in this folder" : "Search names in this scan"}
         className="flex-1 bg-zinc-900 border border-zinc-700 rounded px-3 py-1.5 text-sm text-zinc-200" />
@@ -76,8 +94,15 @@ export function SearchFiles({ scope, folder, category, busy, onZoom, onNuke }: {
         {activeFolder ? "Search entire scan" : "Search this folder"}
       </button>
     </div>}
-    <div className="flex items-center justify-between gap-3 pb-3">
-      <p role="status" className="text-xs text-zinc-400">{status}</p>
+    <div className="flex flex-wrap items-center justify-between gap-3 pb-3">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-400">
+        <p role="status" className="break-all">{status}</p>
+        {!category && <span id="search-selection-count" role="status" className={selectedCount ? "text-accent-300" : "sr-only"}>
+          {selectedCount === 1 ? "1 file selected" : selectedCount > 1 ? `${selectedCount.toLocaleString("en-US")} files selected` : ""}
+        </span>}
+        {selectedCount > 0 && <button type="button" disabled={busy} onClick={clearSelection}
+          className="text-accent-400 hover:underline">Clear selection</button>}
+      </div>
       <div className="flex gap-2 shrink-0 text-xs">
         <button disabled={busy || !data || skip === 0} onClick={() => setPagination({ scope: pageScope, offsets: offsets.slice(0, -1) })}
           className="text-zinc-300 hover:underline disabled:text-zinc-600">Previous</button>
@@ -91,6 +116,12 @@ export function SearchFiles({ scope, folder, category, busy, onZoom, onNuke }: {
     </p>}
     <ol className="divide-y divide-zinc-800/80">
       {results.map(({ node, path }) => <li key={node.id} className="search-result-row flex items-center gap-3 py-3">
+        {!category && <div className="w-4 shrink-0">
+          {node.type === "file" && node.counted && <input type="checkbox" disabled={busy}
+            aria-label={`Select ${node.name}`} checked={selected?.has(node.id) ?? false}
+            onChange={event => setFileSelected(node.id, event.currentTarget.checked)}
+            className="block size-4 accent-accent-500 cursor-pointer" />}
+        </div>}
         <div className="flex-1 min-w-0">
           <p className="text-sm text-zinc-200 whitespace-pre-wrap break-all">{node.name}</p>
           <p className="text-xs text-zinc-500 font-mono whitespace-pre-wrap break-all" dir="auto">{path}</p>

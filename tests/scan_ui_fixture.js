@@ -305,7 +305,7 @@
   const report = (passed, error) => {
     const output = document.createElement("pre");
     output.id = "scan-test-report";
-    output.textContent = JSON.stringify({ fixture: "scan-ui", passed, error, ipc_calls: calls.length, wide_paging: widePaging, expanded_tree: expandedTree, checks: passed ? ["offline fonts under CSP", "bounded collapsed discovery diagnostics", "discovery retry recovery", "setup alignment", "result fonts", "file label semantics", "usable file workspace", "keyboard storage map visibility", "collapsible diagnostics", "complete paging", "directory paging focus and retries", "expanded-tree row growth and keyboard focus", "first-scan comparison", "unchanged comparison after rescan", "deletion delta comparison", "cross-device comparison isolation", "bounded package-folder paging and coverage", "package query retries and stale replies", "bounded file-type totals", "file-type retry and malformed response", "file-type generation and deletion revision", "file-type coverage and empty scan", "file-type drilldown paging, keyboard and revision", "bounded largest files", "late largest response", "largest query retry", "malformed largest response recovery", "largest ID-only deletion", "largest read-only guards", "largest folder navigation without rescanning", "bounded search results", "late search response", "search retry and malformed response", "search ID-only deletion", "read-only search deletion disabled", "late zoom", "Other tile", "stale confirmation", "exact confirmation whitespace", "reachable long-path confirmation", "native modal keyboard focus and cancellation", "ID-only deletion", "revision refresh", "partial failure", "read-only", "acknowledged shutdown", "unconfirmed shutdown", "reconnect", "stop action ordering", "duplicate rescan guard", "rescan failure recovery", "rescan cancellation recovery", "toast dismissal integration", "bounded diagnostic integration"] : undefined });
+    output.textContent = JSON.stringify({ fixture: "scan-ui", passed, error, ipc_calls: calls.length, wide_paging: widePaging, expanded_tree: expandedTree, checks: passed ? ["offline fonts under CSP", "bounded collapsed discovery diagnostics", "discovery retry recovery", "setup alignment", "result fonts", "file label semantics", "usable file workspace", "keyboard storage map visibility", "collapsible diagnostics", "complete paging", "directory paging focus and retries", "expanded-tree row growth and keyboard focus", "first-scan comparison", "unchanged comparison after rescan", "deletion delta comparison", "cross-device comparison isolation", "bounded package-folder paging and coverage", "package query retries and stale replies", "bounded file-type totals", "file-type retry and malformed response", "file-type generation and deletion revision", "file-type coverage and empty scan", "file-type drilldown paging, keyboard and revision", "bounded largest files", "late largest response", "largest query retry", "malformed largest response recovery", "largest ID-only deletion", "largest read-only guards", "largest folder navigation without rescanning", "bounded search results", "scoped search selection", "late search response", "search retry and malformed response", "search ID-only deletion", "read-only search deletion disabled", "late zoom", "Other tile", "stale confirmation", "exact confirmation whitespace", "reachable long-path confirmation", "native modal keyboard focus and cancellation", "ID-only deletion", "revision refresh", "partial failure", "read-only", "acknowledged shutdown", "unconfirmed shutdown", "reconnect", "stop action ordering", "duplicate rescan guard", "rescan failure recovery", "rescan cancellation recovery", "toast dismissal integration", "bounded diagnostic integration"] : undefined });
     document.body.append(output);
     void fetch("/report", { method: "POST", body: output.textContent }).then(() => {
       if (passed) location.replace("/tests/toast_lifecycle_fixture.html");
@@ -671,6 +671,8 @@
     // Search: bounded pages, a superseded held response, retry, malformed
     // recovery, and ID-only deletion. No rescan is ever allowed here.
     const searchRows = () => [...document.querySelectorAll(".search-result-row")];
+    const searchCheckbox = (row = searchRows()[0]) => row?.querySelector('input[type="checkbox"]');
+    const selectionCount = () => document.querySelector("#search-selection-count")?.textContent ?? "";
     const searchFor = text => {
       const input = document.querySelector("#search-input");
       const set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
@@ -686,6 +688,11 @@
     searchFor("nested");
     await waitFor(() => searchRows().length === 37, "First folder search page missing");
     check(calls.filter(call => call.command === "get_search_results").at(-1).args.folderId === 1, "Search lost the folder ID");
+    searchNext().focus();
+    await pressKey("Tab");
+    check(document.activeElement === searchCheckbox(), "First search checkbox is missing from the tab order");
+    await pressKey("Space");
+    check(searchCheckbox().checked && selectionCount() === "1 file selected", "Space did not select a search result");
     holdSearch = true;
     searchNext().click();
     await waitFor(() => typeof resolveSearch === "function", "Second folder page did not start");
@@ -695,6 +702,7 @@
     resolveSearch = undefined;
     await pause(30);
     check(searchRows()[0]?.textContent.includes("nested-0"), "Late folder page replaced whole-scan results");
+    check(!searchCheckbox().checked && !selectionCount(), "Folder selection leaked into the whole scan");
     searchFor("file");
     await waitFor(() => searchRows().length === 100, "Whole-scan results missing");
     button("Search this folder").click();
@@ -723,13 +731,23 @@
     searchFor("nested");
     await waitFor(() => searchRows().length === 37, "Byte-bounded search page missing");
     const nestedCount = searchRows().length;
+    searchCheckbox().click();
     const firstNestedNames = searchRows().map(row => row.textContent);
     searchNext().click();
     await waitFor(() => searchRows()[0]?.textContent.includes("nested-37"), "Short-page continuation skipped matches");
     check(calls.filter(call => call.command === "get_search_results").at(-1).args.skip === 37, "Short-page continuation used a fixed offset");
+    check(!searchCheckbox().checked && selectionCount() === "1 file selected", "Paging lost or applied selection to the wrong row");
+    searchCheckbox().click();
+    check(selectionCount() === "2 files selected", "Selection count did not include both pages");
     button("Previous").click();
     await waitFor(() => searchRows()[0]?.textContent.includes("nested-0"), "Short-page Previous failed");
     check(JSON.stringify(searchRows().map(row => row.textContent)) === JSON.stringify(firstNestedNames), "Previous changed short-page boundaries");
+    check(searchCheckbox().checked && selectionCount() === "2 files selected", "Previous lost cross-page selection");
+    button("Clear selection").focus();
+    await pressKey("Enter");
+    check(!searchCheckbox().checked && !selectionCount() && document.activeElement.id === "search-input",
+      "Keyboard clearing did not reset selection and restore focus");
+    searchCheckbox().click();
     searchFor("zzz-no-match");
     await waitFor(() => document.body.textContent.includes("No matching names"), "Empty search state missing");
     failSearch = true;
@@ -743,6 +761,7 @@
     check(searchRows().length === 0, "Malformed search response retained rows");
     button("Retry").click();
     await waitFor(() => searchRows().length === nestedCount, "Malformed search response did not recover");
+    check(!searchCheckbox().checked && !selectionCount(), "Returning to an old query restored its selection");
     searchFor("zzz-no-match");
     await waitFor(() => document.body.textContent.includes("No matching names"), "Pre-delete empty state missing");
     searchFor("file");
@@ -754,6 +773,8 @@
     // disappears on the revision refresh.
     const target = searchRows().find(row => !row.textContent.includes("/large-folder/")
       && !row.textContent.includes(" file-0 ") && !row.textContent.includes(" file-1 "));
+    searchCheckbox(target).click();
+    check(selectionCount() === "1 file selected", "Search target could not be selected before deletion");
     const targetLabel = target.querySelector('[aria-label^="Delete "]').getAttribute("aria-label");
     const deletesBeforeSearch = calls.filter(call => call.command === "delete_item").length;
     const trigger = target.querySelector('[aria-label^="Delete "]');
@@ -797,6 +818,7 @@
     await waitFor(() => searchRows()[0]?.textContent.includes(" file-0 "), "Deletion did not restart search pagination");
     check(calls.filter(call => call.command === "get_search_results").at(-1).args.skip === 0, "Revision refresh retained the old offset");
     check(!button("Previous"), "Previous remained enabled after revision reset");
+    check(!searchCheckbox().checked && !selectionCount(), "Selection survived a deletion revision");
     check(calls.filter(call => call.command === "delete_item").length === deletesBeforeSearch + 1, "Search deletion count wrong");
     check(calls.filter(item => item.command === "run_scan").length === scanCount + 1, "Search browsing rescanned the phone");
     button("Storage map").click();
